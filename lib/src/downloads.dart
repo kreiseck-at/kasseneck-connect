@@ -1,18 +1,29 @@
 /// Dateinamen der Auslieferung — die einzige Quelle für alle Beteiligten.
 ///
 /// Die Kasse verlinkt im Download-Abschnitt **feste** Adressen unter
-/// `connect/latest/`; wenn sich hier ein Name ändert, laufen diese Links ins
+/// [downloadBaseUrl]; wenn sich hier ein Name ändert, laufen diese Links ins
 /// Leere. Deshalb stehen die Namen als Konstanten hier, `tool/release.sh`
 /// baut genau sie, die README führt sie in einer Tabelle — und
 /// `test/downloads_test.dart` nagelt alle drei gegeneinander fest.
 library;
 
+/// Feste Basis-Adresse der Auslieferung: das `latest`-Release des
+/// öffentlichen GitHub-Repos, angehängt an einen Dateinamen aus
+/// [downloadLatestNames] ergibt die stabile Download-URL.
+///
+/// Bewusst nicht der Firebase-Storage-Bucket: der hält Kundendaten und darf
+/// nicht öffentlich lesbar sein. Ein öffentliches GitHub-Repo liefert
+/// dagegen kostenlos stabile Adressen — `releases/latest/download/<name>`
+/// löst GitHub selbst immer auf das jeweils neueste Release auf.
+const String downloadBaseUrl =
+    'https://github.com/kreiseck-at/kasseneck-connect/releases/latest/download/';
+
 /// Namensrumpf jeder ausgelieferten Datei.
 const String downloadPrefix = 'KasseneckConnect';
 
-/// Plattformschlüssel → Dateiname unter `connect/latest/` (ohne Version).
+/// Plattformschlüssel → Dateiname unter [downloadBaseUrl] (ohne Version).
 ///
-/// Die Schlüssel sind zugleich die Schlüssel in `connect/latest.json`.
+/// Die Schlüssel sind zugleich die Schlüssel in `latest.json`.
 const Map<String, String> downloadLatestNames = <String, String>{
   'darwin-arm64': 'KasseneckConnect-macos-arm64.pkg',
   'darwin-x64': 'KasseneckConnect-macos-x64.pkg',
@@ -37,7 +48,7 @@ const Map<String, String> downloadExtension = <String, String>{
   'linux-x64': 'deb',
 };
 
-/// Der versionierte Name, unter dem die Datei in `connect/<version>/` liegt.
+/// Der versionierte Name, unter dem die Datei im Release `v<version>` liegt.
 ///
 /// `KasseneckConnect-1.0.0-macos-arm64.pkg`
 String versionedDownloadName(String platformKey, String version) {

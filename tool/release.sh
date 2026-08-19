@@ -1,29 +1,36 @@
 #!/usr/bin/env bash
-# Veröffentlicht die gebauten Dateien im Update-Feed.
+# Veröffentlicht die gebauten Dateien als GitHub Release.
 #
 #   tool/release.sh --dry-run     # nur zeigen, was passieren würde
-#   tool/release.sh               # wirklich hochladen
+#   tool/release.sh               # wirklich veröffentlichen
 #
 # Der Lauf ist **von Hand** gedacht und läuft nicht in der CI: er braucht eine
-# angemeldete gcloud (`gcloud auth login`) mit Schreibrecht auf den Bucket.
+# angemeldete `gh` (`gh auth login`) mit Schreibrecht auf das Repo.
 #
-# Hochgeladen wird jede Datei zweimal:
-#   gs://…/connect/<version>/KasseneckConnect-<version>-<os>-<arch>.<ext>
-#   gs://…/connect/latest/KasseneckConnect-<os>-<arch>.<ext>
+# Warum GitHub Releases statt Firebase Storage: der Storage-Bucket hält
+# Kundendaten und darf nicht öffentlich lesbar sein. Das Repo hier ist
+# öffentlich — damit liefert es kostenlos stabile Download-Adressen, ohne dass
+# irgendwo ein Bucket-Präfix freigeschaltet werden müsste.
 #
-# Die zweite Adresse ist die, die die **Kasse fest verlinkt** — sie darf sich
-# nie ändern. Die vier Namen stehen zusätzlich in `lib/src/downloads.dart` und
-# in der README-Tabelle; `test/downloads_test.dart` prüft, dass alle drei
-# Stellen dasselbe sagen:
+# Jede Datei landet als Release-Asset **ohne** Version im Namen — die vier
+# Namen sind fest verlinkt (README, Kasse ab v1.2 für die Selbstaktualisierung):
 #
 #   KasseneckConnect-macos-arm64.pkg
 #   KasseneckConnect-macos-x64.pkg
 #   KasseneckConnect-windows-x64.exe
 #   KasseneckConnect-linux-x64.deb
 #
-# `latest.json` (Feed für den Selbstaustausch ab v1.2) trägt die Schlüssel
-# `darwin-arm64`, `darwin-x64`, `windows-x64`, `linux-x64` mit URLs auf
-# `connect/<version>/…` — versioniert, damit ein Update reproduzierbar bleibt.
+# Die Build-Skripte legen sie versioniert in `build/` ab; hier werden sie vor
+# dem Hochladen in die unversionierten Namen kopiert. Dazu kommt `latest.json`
+# (Feed für den Selbstaustausch ab v1.2) mit den Schlüsseln `darwin-arm64`,
+# `darwin-x64`, `windows-x64`, `linux-x64` — die URLs zeigen auf
+# `releases/download/v<version>/<unversionierter Name>`. Die Kasse selbst
+# verlinkt `releases/latest/download/<name>` (siehe lib/src/downloads.dart) —
+# das löst GitHub immer auf das jeweils letzte Release auf, ganz ohne Feed.
+#
+# Die vier Namen stehen zusätzlich in `lib/src/downloads.dart` und in der
+# README-Tabelle; `test/downloads_test.dart` prüft, dass alle drei Stellen
+# dasselbe sagen.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -31,11 +38,9 @@ cd "$ROOT"
 # shellcheck source=tool/_common.sh
 . tool/_common.sh
 
-BUCKET="${BUCKET:-gs://kasseneck.appspot.com}"
-PREFIX="connect"
-PUBLIC_BASE="${PUBLIC_BASE:-https://storage.googleapis.com/kasseneck.appspot.com}"
+REPO="${REPO:-kreiseck-at/kasseneck-connect}"
 VERSION="$(pubspec_version)"
-NOTES="${NOTES:-}"
+TAG="v$VERSION"
 
 DRY_RUN=0
 for arg in "$@"; do
@@ -45,15 +50,16 @@ for arg in "$@"; do
   esac
 done
 
-# Welches Kommando kann Storage? `gcloud storage` ist der Nachfolger von gsutil.
-if command -v gcloud >/dev/null 2>&1; then
-  COPY=(gcloud storage cp)
-elif command -v gsutil >/dev/null 2>&1; then
-  COPY=(gsutil cp)
-elif [ "$DRY_RUN" -eq 1 ]; then
-  COPY=(gcloud storage cp)
-else
-  echo "Weder gcloud noch gsutil gefunden." >&2
+if ! command -v gh >/dev/null 2>&1; then
+  echo "gh (GitHub CLI) wurde nicht gefunden — https://cli.github.com" >&2
+  exit 70
+fi
+
+# Ein zweiter Lauf mit derselben Version darf nicht stillschweigend über ein
+# bestehendes Release drüberbügeln.
+if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+  echo "Release $TAG existiert bereits auf $REPO." >&2
+  echo "Version in pubspec.yaml erhöhen oder das bestehende Release von Hand löschen." >&2
   exit 70
 fi
 
@@ -73,11 +79,13 @@ file_for_key() {
 # Was liegt tatsächlich in build/? Ein Release entsteht auf mehreren Rechnern;
 # fehlende Plattformen werden übersprungen statt zu scheitern.
 PRESENT=()
+MISSING=()
 for key in "${FEED_KEYS[@]}"; do
   candidate="build/$(file_for_key "$key")"
   if [ -f "$candidate" ]; then
     PRESENT+=("$key")
   else
+    MISSING+=("$key")
     echo "Hinweis: $candidate fehlt — $key wird ausgelassen." >&2
   fi
 done
@@ -109,21 +117,31 @@ if [ "${#STALE[@]}" -gt 0 ]; then
   exit 70
 fi
 
+# Unversionierte Kopien anlegen — das sind die eigentlichen Release-Assets.
+ASSET_FILES=()
+for key in "${PRESENT[@]}"; do
+  name="$(file_for_key "$key")"
+  latest="$(strip_version "$name" "$VERSION")"
+  cp -f "build/$name" "build/$latest"
+  ASSET_FILES+=("build/$latest")
+done
+
 # latest.json zusammenbauen.
 FEED="build/latest.json"
 {
   echo '{'
   echo "  \"version\": \"$VERSION\","
-  echo "  \"notes\": \"$NOTES\","
+  echo "  \"notes\": \"${NOTES:-}\","
   echo '  "files": {'
   first=1
   for key in "${PRESENT[@]}"; do
     name="$(file_for_key "$key")"
-    file="build/$name"
+    latest="$(strip_version "$name" "$VERSION")"
+    file="build/$latest"
     [ "$first" -eq 0 ] && echo ','
     first=0
     printf '    "%s": {\n' "$key"
-    printf '      "url": "%s/%s/%s/%s",\n' "$PUBLIC_BASE" "$PREFIX" "$VERSION" "$name"
+    printf '      "url": "https://github.com/%s/releases/download/%s/%s",\n' "$REPO" "$TAG" "$latest"
     printf '      "sha256": "%s",\n' "$(sha256_of "$file")"
     printf '      "size": %s\n' "$(size_of "$file")"
     printf '    }'
@@ -132,10 +150,25 @@ FEED="build/latest.json"
   echo '  }'
   echo '}'
 } > "$FEED"
+ASSET_FILES+=("$FEED")
 
 echo "== $FEED =="
 cat "$FEED"
 echo
+
+# Release-Notes aus dem Changelog-Abschnitt dieser Version ziehen — sonst
+# steht am Release nirgends, was in der Fassung steckt.
+NOTES_FILE="build/RELEASE_NOTES.md"
+awk -v ver="$VERSION" '
+  $0 ~ "^## " ver "([[:space:]]|$)" { found=1; next }
+  found && /^## / { found=0 }
+  found { print }
+' CHANGELOG.md | sed -e '/./,$!d' > "$NOTES_FILE"
+
+if [ ! -s "$NOTES_FILE" ]; then
+  echo "Warnung: kein Changelog-Abschnitt für $VERSION gefunden — Release-Notes bleiben leer." >&2
+  echo "Kasseneck Connect $VERSION." > "$NOTES_FILE"
+fi
 
 run() {
   if [ "$DRY_RUN" -eq 1 ]; then
@@ -145,29 +178,20 @@ run() {
   fi
 }
 
-for key in "${PRESENT[@]}"; do
-  name="$(file_for_key "$key")"
-  latest="$(strip_version "$name" "$VERSION")"
-  run "${COPY[@]}" "build/$name" "$BUCKET/$PREFIX/$VERSION/$name"
-  run "${COPY[@]}" "build/$name" "$BUCKET/$PREFIX/latest/$latest"
-done
+run gh release create "$TAG" --repo "$REPO" --title "$TAG" --notes-file "$NOTES_FILE" "${ASSET_FILES[@]}"
 
-# Die nackten Binaries wandern mit in den Versionsordner (Grundlage des
-# Selbstaustauschs ab v1.2), aber nicht nach latest/ — die Kasse verlinkt dort
-# ausschließlich die Installer.
-for binary in build/kasseneck-connect-*; do
-  [ -f "$binary" ] || continue
-  run "${COPY[@]}" "$binary" "$BUCKET/$PREFIX/$VERSION/$(basename "$binary")"
-done
-
-run "${COPY[@]}" "$FEED" "$BUCKET/$PREFIX/$VERSION/latest.json"
-run "${COPY[@]}" "$FEED" "$BUCKET/$PREFIX/latest.json"
+if [ "${#MISSING[@]}" -gt 0 ]; then
+  echo
+  echo "Ausgelassen (fehlten in build/):" >&2
+  for key in "${MISSING[@]}"; do
+    echo "  $key ($(file_for_key "$key"))" >&2
+  done
+fi
 
 if [ "$DRY_RUN" -eq 1 ]; then
   echo
-  echo "Nur Probelauf — es wurde nichts hochgeladen."
+  echo "Nur Probelauf — es wurde nichts veröffentlicht."
 else
   echo
-  echo "Version $VERSION veröffentlicht: $PUBLIC_BASE/$PREFIX/latest.json"
-  echo "Hinweis: der Präfix $PREFIX/ muss im Bucket öffentlich lesbar sein."
+  echo "Version $VERSION veröffentlicht: https://github.com/$REPO/releases/tag/$TAG"
 fi

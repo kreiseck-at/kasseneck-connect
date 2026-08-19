@@ -4,10 +4,10 @@ import 'package:kasseneck_connect/kasseneck_connect.dart';
 import 'package:test/test.dart';
 
 /// Die vier Dateien, die die Kasse im Download-Abschnitt **fest** verlinkt
-/// (`connect/latest/<name>`). Diese Liste ist hier absichtlich noch einmal von
-/// Hand hingeschrieben statt aus `downloadLatestNames` abgeleitet: sie ist der
-/// Abgleich mit der Kasse. Wer einen Namen ändert, muss ihn hier ändern — und
-/// merkt spätestens dabei, dass drüben Links brechen.
+/// (`releases/latest/download/<name>`). Diese Liste ist hier absichtlich noch
+/// einmal von Hand hingeschrieben statt aus `downloadLatestNames` abgeleitet:
+/// sie ist der Abgleich mit der Kasse. Wer einen Namen ändert, muss ihn hier
+/// ändern — und merkt spätestens dabei, dass drüben Links brechen.
 const List<String> kasseDownloadLinks = <String>[
   'KasseneckConnect-macos-arm64.pkg',
   'KasseneckConnect-macos-x64.pkg',
@@ -77,6 +77,13 @@ void main() {
         throwsArgumentError,
       );
     });
+
+    test('die Basis-Adresse zeigt auf das öffentliche GitHub-Repo', () {
+      expect(
+        downloadBaseUrl,
+        'https://github.com/kreiseck-at/kasseneck-connect/releases/latest/download/',
+      );
+    });
   });
 
   group('Die Skripte bauen genau diese Namen', () {
@@ -117,6 +124,19 @@ void main() {
       for (final name in kasseDownloadLinks) {
         expect(readme, contains(name), reason: 'README nennt $name nicht');
       }
+    });
+
+    test('release.sh veröffentlicht über GitHub Releases, nicht Storage', () {
+      expect(
+        releaseScript,
+        contains('releases/download'),
+        reason: 'tool/release.sh baut keine GitHub-Releases-URL mehr',
+      );
+      expect(
+        releaseScript,
+        isNot(contains('gs://')),
+        reason: 'tool/release.sh lädt noch immer in einen Storage-Bucket hoch',
+      );
     });
   });
 

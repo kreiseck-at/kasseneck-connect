@@ -23,21 +23,30 @@ dazu.
 
 ## Installation
 
-Die Kasse verlinkt im Download-Abschnitt immer die **neueste** Fassung unter
-diesen festen Adressen (`https://storage.googleapis.com/kasseneck.appspot.com/connect/latest/…`):
+Die Kasse verlinkt im Download-Abschnitt immer die **neueste** Fassung als
+GitHub-Release dieses Repos — Adressen der Form
+`https://github.com/kreiseck-at/kasseneck-connect/releases/latest/download/<name>`:
 
 | System | Datei |
 |---|---|
-| macOS, Apple Silicon | `KasseneckConnect-macos-arm64.pkg` |
-| macOS, Intel | `KasseneckConnect-macos-x64.pkg` |
-| Windows | `KasseneckConnect-windows-x64.exe` |
-| Linux (Debian/Ubuntu) | `KasseneckConnect-linux-x64.deb` |
+| macOS, Apple Silicon | [`KasseneckConnect-macos-arm64.pkg`](https://github.com/kreiseck-at/kasseneck-connect/releases/latest/download/KasseneckConnect-macos-arm64.pkg) |
+| macOS, Intel | [`KasseneckConnect-macos-x64.pkg`](https://github.com/kreiseck-at/kasseneck-connect/releases/latest/download/KasseneckConnect-macos-x64.pkg) |
+| Windows | [`KasseneckConnect-windows-x64.exe`](https://github.com/kreiseck-at/kasseneck-connect/releases/latest/download/KasseneckConnect-windows-x64.exe) |
+| Linux (Debian/Ubuntu) | [`KasseneckConnect-linux-x64.deb`](https://github.com/kreiseck-at/kasseneck-connect/releases/latest/download/KasseneckConnect-linux-x64.deb) |
 
-Dieselben Dateien liegen versioniert unter `connect/<version>/` — dort heißen
-sie `KasseneckConnect-<version>-<os>-<arch>.<endung>`. **Diese vier Namen sind
-verbindlich**: sie stehen in `lib/src/downloads.dart`, `tool/_common.sh` und
-`tool/release.sh` und werden von `test/downloads_test.dart` gegeneinander
-festgenagelt.
+`releases/latest/download/…` löst GitHub selbst immer auf das jeweils neueste
+Release auf — die Adresse bleibt über Versionen hinweg stabil. Dieselben
+Dateien liegen zusätzlich versioniert im jeweiligen Release `v<version>`, dort
+heißen sie `KasseneckConnect-<version>-<os>-<arch>.<endung>`. **Diese vier
+Namen sind verbindlich**: sie stehen in `lib/src/downloads.dart`,
+`tool/_common.sh` und `tool/release.sh` und werden von
+`test/downloads_test.dart` gegeneinander festgenagelt.
+
+Warum GitHub Releases statt des Firebase-Storage-Buckets: der Bucket hält
+Kundendaten und darf deshalb nicht öffentlich lesbar sein. Dieses Repo ist
+öffentlich — ein GitHub-Release liefert damit kostenlos stabile, direkt
+verlinkbare Download-Adressen, ohne dass irgendwo ein Bucket-Präfix
+freigeschaltet werden müsste.
 
 ### macOS
 
@@ -345,27 +354,34 @@ Build-Skripte laden sie. `build_linux_deb.sh` braucht `dpkg-deb` und
 überspringt sich mit einem Hinweis, wo es das nicht gibt (z. B. auf einem Mac)
 — das echte `.deb` entsteht in der CI auf ubuntu.
 
-Veröffentlichen in den Update-Feed (von Hand, braucht eine angemeldete
-`gcloud`). **Reihenfolge einhalten** — `build/` zuerst leeren:
+Veröffentlichen als GitHub Release (von Hand, braucht eine angemeldete `gh`,
+`gh auth login` mit Schreibrecht auf dieses Repo). **Reihenfolge einhalten**
+— `build/` zuerst leeren, dann bauen, dann veröffentlichen:
 
 ```bash
 rm -rf build                     # alte Artefakte weg, sonst wandern sie mit
 tool/build_macos.sh && tool/pkg/macos/build_pkg.sh
 #   … dazu die Artefakte der übrigen Systeme nach build/ legen
-tool/release.sh --dry-run        # zeigt latest.json und alle Uploads
-tool/release.sh                  # lädt build/* nach gs://kasseneck.appspot.com/connect/
+tool/release.sh --dry-run        # zeigt latest.json und die geplanten gh-Kommandos
+tool/release.sh                  # legt das Release v<version> mit allen Assets an
 ```
 
-Die nackten Binaries (`build/kasseneck-connect-*`) tragen **keine Version im
-Namen** — aus einem nicht geleerten `build/` lüde das Skript die Binary der
-Vorversion in den neuen Versionsordner. Deshalb bricht `release.sh` ab, sobald
-in `build/` eine Auslieferungsdatei einer fremden Version liegt.
+Veröffentlicht werden nur die vier Installer (unversioniert kopiert, s. o.)
+und `latest.json`. Die nackten Binaries (`build/kasseneck-connect-*`) tragen
+**keine Version im Namen** und sind kein Release-Asset — ein nicht geleertes
+`build/` würde aber unbemerkt eine Installer-Datei der Vorversion mit hochladen.
+Deshalb bricht `release.sh` ab, sobald in `build/` eine Auslieferungsdatei
+einer fremden Version liegt — ebenso, wenn das Release-Tag `v<version>` auf
+GitHub schon existiert. Fehlende Plattform-Dateien in `build/` werden
+übersprungen, nicht abgebrochen (ein Release entsteht auf mehreren Rechnern)
+— `release.sh` warnt je fehlender Datei und listet am Ende noch einmal alle
+ausgelassenen Plattformen.
 
 Die CI (`.github/workflows/ci.yml`) fährt bei jedem Push und jedem Pull Request
 `dart format --set-exit-if-changed`, `dart analyze --fatal-infos` und
 `dart test`, danach die Build-Matrix (macOS arm64/x64, Windows, Linux) und legt
-die Ergebnisse als Artefakte ab. In den Storage lädt die CI **nichts** — das
-bleibt `tool/release.sh` von Hand vorbehalten.
+die Ergebnisse als Artefakte ab. Ein GitHub Release legt die CI **nicht** an
+— das bleibt `tool/release.sh` von Hand vorbehalten.
 
 ### Kasse lokal gegen den Agenten entwickeln
 

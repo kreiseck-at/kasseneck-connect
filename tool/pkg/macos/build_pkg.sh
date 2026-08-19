@@ -11,13 +11,15 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 cd "$ROOT"
+# shellcheck source=tool/_common.sh
+. tool/_common.sh
 
-VERSION="$(awk '/^version:/ {print $2; exit}' pubspec.yaml)"
-ARCH="${ARCH:-$(uname -m)}"
-BINARY="build/kasseneck-connect-macos-$ARCH"
+VERSION="$(pubspec_version)"
+ARCH="$(normalize_arch "${ARCH:-}")"
+BINARY="build/$(binary_name macos "$ARCH")"
 IDENTIFIER="at.kasseneck.connect"
 INSTALL_DIR="/usr/local/kasseneck-connect"
-PKG="build/KasseneckConnect-$VERSION-macos-$ARCH.pkg"
+PKG="build/$(release_name "$VERSION" macos "$ARCH" pkg)"
 
 if [ ! -x "$BINARY" ]; then
   echo "Binary fehlt: $BINARY — zuerst tool/build_macos.sh laufen lassen." >&2
@@ -40,33 +42,53 @@ chmod 755 "$STAGE$INSTALL_DIR/kasseneck-connect"
 # auf die Platte.
 xattr -cr "$STAGE"
 
-# 2. Postinstall: den Autostart als **angemeldeter Benutzer** einrichten.
-#    Der Installer läuft als root; ein LaunchAgent gehört aber in die Sitzung
-#    des Benutzers (~/Library/LaunchAgents). `launchctl asuser` wechselt in
-#    dessen Sitzung, `sudo -u` in dessen Benutzerkonto — beides ist nötig,
-#    damit HOME und die GUI-Domäne stimmen.
+# 2. Postinstall: Symlink in den PATH und Autostart als **angemeldeter
+#    Benutzer**.
 cat > "$SCRIPTS/postinstall" <<'POSTINSTALL'
 #!/bin/bash
 set -u
 
 BINARY="/usr/local/kasseneck-connect/kasseneck-connect"
+
+# Damit `kasseneck-connect doctor` und `… pair` ohne vollen Pfad laufen.
+/bin/mkdir -p /usr/local/bin
+/bin/ln -sf "$BINARY" /usr/local/bin/kasseneck-connect
+
 CONSOLE_USER="$(/usr/bin/stat -f%Su /dev/console)"
 
 if [ -z "$CONSOLE_USER" ] || [ "$CONSOLE_USER" = "root" ]; then
-  echo "Kein angemeldeter Benutzer — Autostart bitte von Hand einrichten:"
-  echo "  $BINARY install-autostart"
+  echo "Kasseneck Connect: kein angemeldeter Benutzer an der Konsole."
+  echo "Kasseneck Connect: Autostart bitte selbst einrichten:"
+  echo "  kasseneck-connect install-autostart"
   exit 0
 fi
 
 CONSOLE_UID="$(/usr/bin/id -u "$CONSOLE_USER")"
+# HOME ausdrücklich setzen: `sudo -u` allein lässt HOME auf /var/root stehen,
+# der LaunchAgent landete dann in /var/root/Library/LaunchAgents und würde nie
+# geladen. `-H` setzt HOME aus der Benutzerdatenbank, und `env HOME=…` macht
+# es auch dann richtig, wenn die sudo-Konfiguration `-H` ignoriert.
+CONSOLE_HOME="$(/usr/bin/dscl . -read "/Users/$CONSOLE_USER" NFSHomeDirectory \
+  | /usr/bin/awk '{print $2}')"
+
+if [ -z "$CONSOLE_HOME" ] || [ ! -d "$CONSOLE_HOME" ]; then
+  echo "Kasseneck Connect: Benutzerverzeichnis von $CONSOLE_USER nicht gefunden."
+  echo "Kasseneck Connect: Autostart bitte selbst einrichten:"
+  echo "  kasseneck-connect install-autostart"
+  exit 0
+fi
 
 # `install-autostart` schreibt den LaunchAgent und lädt ihn; `RunAtLoad`
-# startet den Agenten dabei gleich mit.
-/bin/launchctl asuser "$CONSOLE_UID" /usr/bin/sudo -u "$CONSOLE_USER" \
-  "$BINARY" install-autostart || {
-    echo "Autostart ließ sich nicht einrichten — bitte von Hand:"
-    echo "  $BINARY install-autostart"
-  }
+# startet den Agenten dabei gleich mit. Ein Fehlschlag darf die Installation
+# nicht abbrechen — die Binary liegt dann trotzdem richtig.
+if /bin/launchctl asuser "$CONSOLE_UID" /usr/bin/sudo -H -u "$CONSOLE_USER" \
+     /usr/bin/env HOME="$CONSOLE_HOME" "$BINARY" install-autostart; then
+  echo "Kasseneck Connect: Autostart für $CONSOLE_USER eingerichtet."
+else
+  echo "Kasseneck Connect: Autostart ließ sich nicht einrichten."
+  echo "Kasseneck Connect: bitte als $CONSOLE_USER von Hand nachholen:"
+  echo "  kasseneck-connect install-autostart"
+fi
 
 exit 0
 POSTINSTALL

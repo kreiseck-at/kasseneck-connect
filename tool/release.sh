@@ -6,23 +6,35 @@
 #
 # Der Lauf ist **von Hand** gedacht und läuft nicht in der CI: er braucht eine
 # angemeldete gcloud (`gcloud auth login`) mit Schreibrecht auf den Bucket.
-# Hochgeladen wird nach
-#   gs://kasseneck.appspot.com/connect/<version>/…
-# und zusätzlich als „latest" nach
-#   gs://kasseneck.appspot.com/connect/latest/…
-#   gs://kasseneck.appspot.com/connect/latest.json
 #
-# `latest.json` ist der Feed, den der Agent ab v1.2 beim Selbstaustausch liest:
-# Version, Anmerkungen und je Datei URL, SHA-256 und Größe.
+# Hochgeladen wird jede Datei zweimal:
+#   gs://…/connect/<version>/KasseneckConnect-<version>-<os>-<arch>.<ext>
+#   gs://…/connect/latest/KasseneckConnect-<os>-<arch>.<ext>
+#
+# Die zweite Adresse ist die, die die **Kasse fest verlinkt** — sie darf sich
+# nie ändern. Die vier Namen stehen zusätzlich in `lib/src/downloads.dart` und
+# in der README-Tabelle; `test/downloads_test.dart` prüft, dass alle drei
+# Stellen dasselbe sagen:
+#
+#   KasseneckConnect-macos-arm64.pkg
+#   KasseneckConnect-macos-x64.pkg
+#   KasseneckConnect-windows-x64.exe
+#   KasseneckConnect-linux-x64.deb
+#
+# `latest.json` (Feed für den Selbstaustausch ab v1.2) trägt die Schlüssel
+# `darwin-arm64`, `darwin-x64`, `windows-x64`, `linux-x64` mit URLs auf
+# `connect/<version>/…` — versioniert, damit ein Update reproduzierbar bleibt.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
+# shellcheck source=tool/_common.sh
+. tool/_common.sh
 
 BUCKET="${BUCKET:-gs://kasseneck.appspot.com}"
 PREFIX="connect"
 PUBLIC_BASE="${PUBLIC_BASE:-https://storage.googleapis.com/kasseneck.appspot.com}"
-VERSION="$(awk '/^version:/ {print $2; exit}' pubspec.yaml)"
+VERSION="$(pubspec_version)"
 NOTES="${NOTES:-}"
 
 DRY_RUN=0
@@ -45,56 +57,34 @@ else
   exit 70
 fi
 
-# Ordnet einer Datei ihren Schlüssel im Feed zu.
-#
-# Die nackte Binary trägt den Plattformschlüssel (`darwin-arm64`) — das ist
-# die Datei, die der Agent ab v1.2 gegen sich selbst austauscht. Installer
-# bekommen `-installer` angehängt; sie sind für Menschen, nicht für den
-# Selbstaustausch. Zwei Dateien dürfen nie denselben Schlüssel bekommen,
-# sonst steht der Eintrag zweimal in der JSON-Datei.
-platform_key() {
-  local name platform kind
-  name="$(basename "$1")"
+# Plattformschlüssel des Feeds -> Dateiname (mit Version) in build/.
+FEED_KEYS=(darwin-arm64 darwin-x64 windows-x64 linux-x64)
 
-  case "$name" in
-    *macos-arm64*) platform="darwin-arm64" ;;
-    *macos-x86_64* | *macos-x64*) platform="darwin-x64" ;;
-    *linux-arm64*) platform="linux-arm64" ;;
-    *linux-x64*) platform="linux-x64" ;;
-    *windows*) platform="win32-x64" ;;
-    *) platform="" ;;
+file_for_key() {
+  case "$1" in
+    darwin-arm64) release_name "$VERSION" macos arm64 pkg ;;
+    darwin-x64) release_name "$VERSION" macos x64 pkg ;;
+    windows-x64) release_name "$VERSION" windows x64 exe ;;
+    linux-x64) release_name "$VERSION" linux x64 deb ;;
+    *) echo "" ;;
   esac
-  [ -z "$platform" ] && { echo ""; return; }
-
-  case "$name" in
-    *.pkg | *-setup.exe | *.deb) kind="-installer" ;;
-    *) kind="" ;;
-  esac
-
-  echo "$platform$kind"
 }
 
-sha256_of() {
-  if command -v shasum >/dev/null 2>&1; then
-    shasum -a 256 "$1" | awk '{print $1}'
+# Was liegt tatsächlich in build/? Ein Release entsteht auf mehreren Rechnern;
+# fehlende Plattformen werden übersprungen statt zu scheitern.
+PRESENT=()
+for key in "${FEED_KEYS[@]}"; do
+  candidate="build/$(file_for_key "$key")"
+  if [ -f "$candidate" ]; then
+    PRESENT+=("$key")
   else
-    sha256sum "$1" | awk '{print $1}'
+    echo "Hinweis: $candidate fehlt — $key wird ausgelassen." >&2
   fi
-}
+done
 
-size_of() {
-  # BSD (macOS) und GNU (Linux) haben verschiedene stat-Flaggen.
-  stat -f%z "$1" 2>/dev/null || stat -c%s "$1"
-}
-
-FILES=()
-while IFS= read -r file; do
-  FILES+=("$file")
-done < <(find build -maxdepth 1 -type f \
-  \( -name 'kasseneck-connect-*' -o -name '*.pkg' -o -name '*-setup.exe' \) | sort)
-
-if [ "${#FILES[@]}" -eq 0 ]; then
-  echo "In build/ liegt nichts zum Veröffentlichen." >&2
+if [ "${#PRESENT[@]}" -eq 0 ]; then
+  echo "In build/ liegt keine einzige Auslieferungsdatei." >&2
+  echo "Erwartet wird z. B. build/$(file_for_key darwin-arm64)." >&2
   exit 70
 fi
 
@@ -106,14 +96,13 @@ FEED="build/latest.json"
   echo "  \"notes\": \"$NOTES\","
   echo '  "files": {'
   first=1
-  for file in "${FILES[@]}"; do
-    key="$(platform_key "$file")"
-    [ -z "$key" ] && continue
+  for key in "${PRESENT[@]}"; do
+    name="$(file_for_key "$key")"
+    file="build/$name"
     [ "$first" -eq 0 ] && echo ','
     first=0
     printf '    "%s": {\n' "$key"
-    printf '      "url": "%s/%s/%s/%s",\n' \
-      "$PUBLIC_BASE" "$PREFIX" "$VERSION" "$(basename "$file")"
+    printf '      "url": "%s/%s/%s/%s",\n' "$PUBLIC_BASE" "$PREFIX" "$VERSION" "$name"
     printf '      "sha256": "%s",\n' "$(sha256_of "$file")"
     printf '      "size": %s\n' "$(size_of "$file")"
     printf '    }'
@@ -135,9 +124,19 @@ run() {
   fi
 }
 
-for file in "${FILES[@]}"; do
-  run "${COPY[@]}" "$file" "$BUCKET/$PREFIX/$VERSION/$(basename "$file")"
-  run "${COPY[@]}" "$file" "$BUCKET/$PREFIX/latest/$(basename "$file")"
+for key in "${PRESENT[@]}"; do
+  name="$(file_for_key "$key")"
+  latest="$(strip_version "$name" "$VERSION")"
+  run "${COPY[@]}" "build/$name" "$BUCKET/$PREFIX/$VERSION/$name"
+  run "${COPY[@]}" "build/$name" "$BUCKET/$PREFIX/latest/$latest"
+done
+
+# Die nackten Binaries wandern mit in den Versionsordner (Grundlage des
+# Selbstaustauschs ab v1.2), aber nicht nach latest/ — die Kasse verlinkt dort
+# ausschließlich die Installer.
+for binary in build/kasseneck-connect-*; do
+  [ -f "$binary" ] || continue
+  run "${COPY[@]}" "$binary" "$BUCKET/$PREFIX/$VERSION/$(basename "$binary")"
 done
 
 run "${COPY[@]}" "$FEED" "$BUCKET/$PREFIX/$VERSION/latest.json"

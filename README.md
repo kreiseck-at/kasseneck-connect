@@ -23,10 +23,26 @@ dazu.
 
 ## Installation
 
+Die Kasse verlinkt im Download-Abschnitt immer die **neueste** Fassung unter
+diesen festen Adressen (`https://storage.googleapis.com/kasseneck.appspot.com/connect/latest/…`):
+
+| System | Datei |
+|---|---|
+| macOS, Apple Silicon | `KasseneckConnect-macos-arm64.pkg` |
+| macOS, Intel | `KasseneckConnect-macos-x64.pkg` |
+| Windows | `KasseneckConnect-windows-x64.exe` |
+| Linux (Debian/Ubuntu) | `KasseneckConnect-linux-x64.deb` |
+
+Dieselben Dateien liegen versioniert unter `connect/<version>/` — dort heißen
+sie `KasseneckConnect-<version>-<os>-<arch>.<endung>`. **Diese vier Namen sind
+verbindlich**: sie stehen in `lib/src/downloads.dart`, `tool/_common.sh` und
+`tool/release.sh` und werden von `test/downloads_test.dart` gegeneinander
+festgenagelt.
+
 ### macOS
 
-1. `KasseneckConnect-<version>-macos-arm64.pkg` (Apple Silicon) bzw.
-   `…-macos-x86_64.pkg` (Intel) herunterladen.
+1. `KasseneckConnect-macos-arm64.pkg` (Apple Silicon) bzw.
+   `KasseneckConnect-macos-x64.pkg` (Intel) herunterladen.
 2. Das Paket ist in dieser Fassung **nicht signiert**. Ein Doppelklick bringt
    deshalb „… kann nicht geöffnet werden, da es von einem nicht verifizierten
    Entwickler stammt." So geht es trotzdem:
@@ -37,14 +53,30 @@ dazu.
      „„KasseneckConnect…" wurde blockiert" → **Trotzdem öffnen**, danach mit
      Fingerabdruck oder Kennwort bestätigen.
 3. Durch den Installationsassistenten klicken. Das Paket legt die Binary unter
-   `/usr/local/kasseneck-connect/` ab, richtet den Autostart für den gerade
-   angemeldeten Benutzer ein (LaunchAgent) und startet den Agenten sofort.
+   `/usr/local/kasseneck-connect/` ab, verlinkt sie nach
+   `/usr/local/bin/kasseneck-connect` (damit `kasseneck-connect doctor` und
+   `kasseneck-connect pair` ohne vollen Pfad laufen), richtet den Autostart für
+   den gerade angemeldeten Benutzer ein (LaunchAgent) und startet den Agenten
+   sofort.
 4. Der Agent öffnet beim ersten Start die Kopplungsseite im Browser — siehe
    **Kopplung**.
 
+**Deinstallieren.** macOS-Pakete bringen keinen Deinstallierer mit; dafür gibt
+es `tool/pkg/macos/uninstall.sh` (liegt auch im Repo):
+
+```bash
+sudo bash uninstall.sh            # Autostart, Binary, Symlink, Paketvermerk
+sudo bash uninstall.sh --purge    # zusätzlich Konfiguration und Log
+```
+
+Ohne `--purge` bleiben die gekoppelten Kassen und die Drucker erhalten. Von
+Hand geht es genauso: `kasseneck-connect uninstall-autostart`, dann
+`/usr/local/kasseneck-connect` und `/usr/local/bin/kasseneck-connect` löschen
+und `sudo pkgutil --forget at.kasseneck.connect`.
+
 ### Windows
 
-1. `KasseneckConnect-<version>-windows-x64-setup.exe` herunterladen.
+1. `KasseneckConnect-windows-x64.exe` herunterladen.
 2. Auch dieser Installer ist **nicht signiert**. SmartScreen meldet „Der
    Computer wurde durch Windows geschützt":
    **Weitere Informationen** anklicken → **Trotzdem ausführen**.
@@ -55,7 +87,18 @@ dazu.
 
 ### Linux
 
-Binary herunterladen, ausführbar machen, Autostart einrichten:
+Auf Debian und Ubuntu das Paket einspielen — es legt die Binary ab, verlinkt
+sie nach `/usr/local/bin/` und richtet den Autostart (systemd --user) für den
+aufrufenden Benutzer ein:
+
+```bash
+sudo apt install ./KasseneckConnect-linux-x64.deb
+```
+
+Das Paket ist **unsigniert**; `apt` meldet das beim Einspielen aus einer Datei
+nicht weiter. Entfernen mit `sudo apt remove kasseneck-connect`.
+
+Auf anderen Systemen die nackte Binary aus `connect/<version>/` nehmen:
 
 ```bash
 chmod +x kasseneck-connect-linux-x64
@@ -252,8 +295,15 @@ Bauen:
 tool/build_macos.sh              # -> build/kasseneck-connect-macos-<arch>
 tool/pkg/macos/build_pkg.sh      # -> build/KasseneckConnect-<version>-macos-<arch>.pkg
 tool/build_linux.sh              # -> build/kasseneck-connect-linux-<arch>
+tool/build_linux_deb.sh          # -> build/KasseneckConnect-<version>-linux-<arch>.deb
 powershell -File tool\build_windows.ps1   # Binary + (mit Inno Setup) Installer
 ```
+
+`tool/_common.sh` hält die Namensregel und die Architekturnormalisierung
+(`x86_64`/`amd64` → `x64`, `aarch64` → `arm64`) an einer Stelle; alle
+Build-Skripte laden sie. `build_linux_deb.sh` braucht `dpkg-deb` und
+überspringt sich mit einem Hinweis, wo es das nicht gibt (z. B. auf einem Mac)
+— das echte `.deb` entsteht in der CI auf ubuntu.
 
 Veröffentlichen in den Update-Feed (von Hand, braucht eine angemeldete
 `gcloud`):

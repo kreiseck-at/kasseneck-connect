@@ -4,7 +4,11 @@
 #
 # Ergebnis:
 #   build\kasseneck-connect-windows-x64.exe
-#   build\KasseneckConnect-<version>-windows-x64-setup.exe  (nur mit Inno Setup)
+#   build\KasseneckConnect-<version>-windows-x64.exe        (nur mit Inno Setup)
+#
+# Die erste Datei ist die nackte Binary (Eingang der Paketierung), die zweite
+# der Installer — und nur dessen Name folgt der Auslieferungsregel aus
+# tool/_common.sh bzw. lib/src/downloads.dart.
 
 $ErrorActionPreference = 'Stop'
 
@@ -35,7 +39,14 @@ if (-not $iscc) {
   exit 0
 }
 
+# `ArchitecturesInstallIn64BitMode=x64` braucht mindestens Inno Setup 6.0.
+$isccVersion = (Get-Item $iscc).VersionInfo.FileVersion
+Write-Host "Inno Setup gefunden: $iscc ($isccVersion)"
+if ($isccVersion -and [version]($isccVersion -replace '[^0-9.].*$','') -lt [version]'6.0') {
+  throw "Inno Setup 6.0 oder neuer wird gebraucht, gefunden: $isccVersion"
+}
+
 & $iscc "/DAppVersion=$version" 'tool\installer\windows\KasseneckConnect.iss'
 if ($LASTEXITCODE -ne 0) { throw "Inno Setup ist fehlgeschlagen." }
 
-Write-Host "Fertig: build\KasseneckConnect-$version-windows-x64-setup.exe"
+Write-Host "Fertig: build\KasseneckConnect-$version-windows-x64.exe"

@@ -9,6 +9,7 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 import '../events/bus.dart';
 import '../version.dart';
 import 'context.dart';
+import 'responses.dart';
 
 /// Pfad des Ereignisstroms.
 const String eventsPath = '/v1/events';
@@ -35,14 +36,41 @@ RouteRegistrar eventRoutes({Duration pingInterval = eventsPingInterval}) {
 }
 
 /// Baut den WebSocket-Handler für [ctx].
+///
+/// Vorgeschaltet ist die Prüfung auf die Upgrade-Kopfzeilen: `shelf_web_socket`
+/// beantwortet eine gewöhnliche Anfrage sonst mit einer **HTML**-Seite (404),
+/// und die Kasse bekäme statt der gewohnten Fehlerhülle plötzlich Markup.
 Handler eventsHandler(
   AgentContext ctx, {
   Duration pingInterval = eventsPingInterval,
 }) {
-  return webSocketHandler(
+  final socketHandler = webSocketHandler(
     (WebSocketChannel channel, String? _) => serveEvents(ctx, channel),
     pingInterval: pingInterval,
   );
+
+  return (Request request) {
+    if (!isWebSocketUpgrade(request)) {
+      return failJson(
+        errorUpgradeRequired,
+        'Dieser Pfad spricht nur WebSocket.',
+        status: 426,
+      );
+    }
+    return socketHandler(request);
+  };
+}
+
+/// Ob die Anfrage wirklich ein WebSocket-Upgrade ist.
+bool isWebSocketUpgrade(Request request) {
+  final connection = request.headers['connection'];
+  final upgrade = request.headers['upgrade'];
+  if (connection == null || upgrade == null) return false;
+  final tokens = connection
+      .toLowerCase()
+      .split(',')
+      .map((token) => token.trim());
+  return tokens.contains('upgrade') && upgrade.toLowerCase() == 'websocket';
 }
 
 /// Bedient eine offene Verbindung: Begrüßung, dann jedes Bus-Ereignis.
@@ -51,11 +79,18 @@ Handler eventsHandler(
 /// Abo und muss es beim Schließen abbestellen, sonst schreibt der Agent bis in
 /// alle Ewigkeit in eine tote Senke.
 void serveEvents(AgentContext ctx, WebSocketChannel channel) {
+  var closed = false;
+
   void send(Map<String, Object?> payload) {
+    if (closed) return;
     try {
       channel.sink.add(jsonEncode(payload));
-    } on StateError {
-      // Der Klient ist zwischen Ereignis und Versand verschwunden.
+    } on Object catch (e) {
+      // Der Klient ist zwischen Ereignis und Versand verschwunden, oder die
+      // Senke ist schon zu. Ein Ereignis darf den Agenten nie umbringen —
+      // deshalb hier bewusst alles fangen, nicht nur StateError.
+      closed = true;
+      ctx.log.debug('Ereignis ließ sich nicht senden: $e');
     }
   }
 
@@ -67,9 +102,17 @@ void serveEvents(AgentContext ctx, WebSocketChannel channel) {
 
   final subscription = ctx.events.stream.listen(
     (AgentEvent event) => send(event.toJson()),
+    // Schließt der Bus (Agent hält an), geht auch diese Verbindung höflich zu,
+    // statt als Leiche offen zu bleiben: der Socket ist nach dem Hijack nicht
+    // mehr am HttpServer und überlebt dessen `close()` sonst.
+    onDone: () {
+      closed = true;
+      unawaited(_closeQuietly(channel));
+    },
   );
 
   Future<void> stop() async {
+    closed = true;
     await subscription.cancel();
   }
 
@@ -81,4 +124,12 @@ void serveEvents(AgentContext ctx, WebSocketChannel channel) {
     onError: (Object _) => unawaited(stop()),
     cancelOnError: true,
   );
+}
+
+Future<void> _closeQuietly(WebSocketChannel channel) async {
+  try {
+    await channel.sink.close();
+  } on Object {
+    // Beim Anhalten interessiert kein Fehler mehr.
+  }
 }

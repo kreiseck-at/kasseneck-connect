@@ -208,6 +208,16 @@ void main() {
       expect(args[args.indexOf('/TR') + 1], endsWith('" run'));
     });
 
+    test('ein anders zerlegter Aufruf gilt nicht als Treffer', () async {
+      // `['/TN Kasseneck', 'Connect']` ergibt dieselbe Zeile wie
+      // `['/TN', 'Kasseneck Connect']`, ist als Aufruf aber etwas anderes.
+      await runner.runner('schtasks', <String>['/TN Kasseneck', 'Connect']);
+      expect(
+        runner.sawCall('schtasks', <String>['/TN', 'Kasseneck Connect']),
+        isFalse,
+      );
+    });
+
     test('Löschen erzwingt und nennt die Aufgabe', () {
       expect(schtasksDeleteArguments(), <String>[
         '/Delete',
@@ -252,10 +262,27 @@ void main() {
   group('Linux', () {
     test('die Unit startet die Binary mit `run`', () {
       final unit = systemdUnit('/opt/connect/kasseneck-connect');
-      expect(unit, contains('ExecStart=/opt/connect/kasseneck-connect run'));
+      expect(unit, contains('ExecStart="/opt/connect/kasseneck-connect" run'));
       expect(unit, contains('Restart=always'));
       expect(unit, contains('WantedBy=default.target'));
       expect(unit, contains('[Service]'));
+    });
+
+    test('der Pfad in ExecStart steht in Anführungszeichen', () {
+      // Ohne Anführungszeichen zerlegt systemd den Pfad am Leerzeichen und
+      // startet ein Programm, das es nicht gibt.
+      final unit = systemdUnit('/opt/Kasseneck Connect/kasseneck-connect');
+      expect(
+        unit,
+        contains('ExecStart="/opt/Kasseneck Connect/kasseneck-connect" run'),
+      );
+    });
+
+    test('kein After=network-online.target in einer User-Unit', () {
+      // Das Ziel gehört der System-Instanz und ist hier wirkungslos; der
+      // Agent bindet ohnehin nur die Loopback-Adresse.
+      expect(systemdUnit('/bin/connect'), isNot(contains('After=')));
+      expect(systemdUnit('/bin/connect'), isNot(contains('network')));
     });
 
     test('schreibt die Unit nach ~/.config/systemd/user', () async {

@@ -8,6 +8,17 @@ import 'package:test/test.dart';
 import 'package:web_socket_channel/io.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
+/// Wartet, bis [condition] zutrifft (oder die Geduld am Ende ist).
+Future<void> _waitUntil(
+  bool Function() condition, {
+  Duration timeout = const Duration(seconds: 3),
+}) async {
+  final deadline = DateTime.now().add(timeout);
+  while (!condition() && DateTime.now().isBefore(deadline)) {
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+  }
+}
+
 void main() {
   late Directory temp;
   late ConfigStore store;
@@ -25,6 +36,8 @@ void main() {
   });
 
   tearDown(() async {
+    // Manche Tests halten den Agenten selbst an — `stop()` ist dann ein
+    // No-op, das Aufräumen läuft trotzdem.
     await agent.stop();
     temp.deleteSync(recursive: true);
   });
@@ -48,8 +61,10 @@ void main() {
     return jsonDecode(raw! as String) as Map<String, Object?>;
   }
 
-  /// Ruft einen Pfad ganz normal per HTTP ab und liefert den Statuscode.
-  Future<int> statusOf(String path) async {
+  /// Ruft einen Pfad ganz normal per HTTP ab (Statuscode, Rumpf, Inhaltstyp).
+  Future<({int statusCode, String body, String contentType})> getRaw(
+    String path,
+  ) async {
     final client = HttpClient();
     try {
       final request = await client.openUrl(
@@ -58,12 +73,19 @@ void main() {
       );
       request.headers.set('origin', 'https://kasse.kasseneck.at');
       final response = await request.close();
-      await response.drain<void>();
-      return response.statusCode;
+      final body = await response.transform(utf8.decoder).join();
+      return (
+        statusCode: response.statusCode,
+        body: body,
+        contentType: '${response.headers.contentType}',
+      );
     } finally {
       client.close(force: true);
     }
   }
+
+  /// Nur der Statuscode.
+  Future<int> statusOf(String path) async => (await getRaw(path)).statusCode;
 
   test('begrüßt mit hello samt Version und Port', () async {
     final channel = connect(queryToken: token);
@@ -163,24 +185,72 @@ void main() {
     await expectLater(channel.ready, throwsA(isA<WebSocketChannelException>()));
   });
 
-  test('nach dem Schließen ist das Abo weg', () async {
+  test('nach dem Schließen ist das Abo wirklich weg', () async {
+    expect(
+      agent.events.hasListener,
+      isFalse,
+      reason: 'vor der ersten Verbindung hört niemand zu',
+    );
+
     final channel = connect(queryToken: token);
     await channel.ready;
     final events = channel.stream.asBroadcastStream();
     expect((await next(events))['type'], 'hello');
+    expect(
+      agent.events.hasListener,
+      isTrue,
+      reason: 'die offene Verbindung ist genau ein Zuhörer',
+    );
+
     await channel.sink.close();
 
-    // Der Bus darf nach dem Schließen ohne Zuhörer weiterlaufen; ein Ereignis
-    // in die tote Verbindung darf den Agenten nicht umbringen.
-    await Future<void>.delayed(const Duration(milliseconds: 100));
-    agent.events.publish(eventPrintDone, <String, Object?>{'jobId': 'x'});
-    await Future<void>.delayed(const Duration(milliseconds: 50));
+    // Das Abbestellen laeuft ueber den Ereignisstrom des Sockets; dafuer
+    // braucht es ein paar Runden der Ereignisschleife.
+    await _waitUntil(() => !agent.events.hasListener);
+    expect(
+      agent.events.hasListener,
+      isFalse,
+      reason: 'nach dem Schließen darf kein Abo zurückbleiben',
+    );
 
-    // Der Agent lebt: eine zweite Verbindung wird weiterhin begrüßt.
-    final second = connect(queryToken: token);
-    await second.ready;
-    expect((await next(second.stream.asBroadcastStream()))['type'], 'hello');
-    await second.sink.close();
+    // Und ein Ereignis in die geschlossene Verbindung bleibt folgenlos.
+    agent.events.publish(eventPrintDone, <String, Object?>{'jobId': 'x'});
+    expect(agent.events.hasListener, isFalse);
+  });
+
+  test('zwei Verbindungen zählen als zwei Zuhörer', () async {
+    final a = connect(queryToken: token);
+    await a.ready;
+    expect((await next(a.stream.asBroadcastStream()))['type'], 'hello');
+    final b = connect(queryToken: token);
+    await b.ready;
+    expect((await next(b.stream.asBroadcastStream()))['type'], 'hello');
+
+    await a.sink.close();
+    // Eine geschlossene Verbindung darf die andere nicht mitreißen.
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+    expect(agent.events.hasListener, isTrue);
+
+    await b.sink.close();
+    await _waitUntil(() => !agent.events.hasListener);
+    expect(agent.events.hasListener, isFalse);
+  });
+
+  test('das Anhalten schließt offene Verbindungen', () async {
+    final channel = connect(queryToken: token);
+    await channel.ready;
+    final done = channel.stream.drain<void>();
+    // Nach `stop()` gibt es keinen Context mehr, über den `agent.events`
+    // liefe — den Bus deshalb vorher festhalten.
+    final bus = agent.events;
+
+    await agent.stop();
+
+    // Der Socket haengt nach dem Upgrade nicht mehr am HttpServer — ohne das
+    // Schließen des Busses bliebe er fuer immer offen.
+    await done.timeout(const Duration(seconds: 5));
+    expect(bus.isClosed, isTrue);
+    // tearDown ruft stop() ein zweites Mal — das muss es vertragen.
   });
 
   test('zwei Verbindungen bekommen beide dasselbe Ereignis', () async {
@@ -208,14 +278,19 @@ void main() {
     expect(await statusOf('/v1/events'), 401);
   });
 
-  test(
-    'mit gültigem Token kommt die Anfrage bis zum WebSocket-Handler',
-    () async {
-      // Ohne Upgrade-Kopfzeilen lehnt der WebSocket-Handler selbst ab (404) —
-      // die Anfrage ist also an der Token-Prüfung vorbeigekommen.
-      expect(await statusOf('/v1/events?token=$token'), 404);
-    },
-  );
+  test('ohne Upgrade-Kopfzeilen kommt die gewohnte Fehlerhülle', () async {
+    // Die Anfrage ist an der Token-Prüfung vorbeigekommen und scheitert erst
+    // am fehlenden Upgrade — und zwar als JSON, nicht als HTML-Seite von
+    // shelf_web_socket.
+    final response = await getRaw('/v1/events?token=$token');
+    expect(response.statusCode, 426);
+    final body = jsonDecode(response.body) as Map<String, Object?>;
+    expect(body['ok'], isFalse);
+    final error = body['error']! as Map<String, Object?>;
+    expect(error['code'], 'upgrade_required');
+    expect(error['message'], 'Dieser Pfad spricht nur WebSocket.');
+    expect(response.contentType, contains('application/json'));
+  });
 
   test('der Query-Token gilt nur am Ereignispfad', () async {
     expect(await statusOf('/v1/printers?token=$token'), 401);

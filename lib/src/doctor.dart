@@ -2,8 +2,6 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:path/path.dart' as path;
-
 import 'agent.dart';
 import 'autostart/autostart.dart';
 import 'config/model.dart';
@@ -137,7 +135,7 @@ Future<DoctorReport> collectDoctorReport({
     operatingSystem: operatingSystem ?? Platform.operatingSystem,
     executable: executable ?? Platform.resolvedExecutable,
     configFile: paths.configFile.path,
-    logFile: logFileOf(paths.logDirectory).path,
+    logFile: AgentLog.fileIn(paths.logDirectory).path,
     configExists: paths.configFile.existsSync(),
     tokenCount: config.tokenHashes.length,
     ports: ports,
@@ -176,16 +174,12 @@ Future<Map<String, Object?>?> probeAgentStatus(int port) async {
   }
 }
 
-/// Die aktuelle Logdatei im Logverzeichnis.
-File logFileOf(Directory logDirectory) =>
-    File(path.join(logDirectory.path, 'connect.log'));
-
 /// Liest die letzten Fehlerzeilen aus `connect.log`.
 List<String> readRecentErrors(
   Directory logDirectory, {
   int limit = doctorErrorLimit,
 }) {
-  final file = logFileOf(logDirectory);
+  final file = AgentLog.fileIn(logDirectory);
   if (!file.existsSync()) return const <String>[];
   final List<String> lines;
   try {

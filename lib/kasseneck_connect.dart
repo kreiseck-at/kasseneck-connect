@@ -25,6 +25,7 @@ export 'src/config/model.dart';
 export 'src/config/paths.dart';
 export 'src/config/store.dart';
 export 'src/doctor.dart';
+export 'src/downloads.dart';
 export 'src/events/bus.dart';
 export 'src/log/logger.dart';
 export 'src/pairing/pairing.dart';

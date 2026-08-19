@@ -49,6 +49,13 @@ class EventBus {
   /// Ob der Bus schon geschlossen wurde.
   bool get isClosed => _controller.isClosed;
 
+  /// Ob gerade jemand zuhört.
+  ///
+  /// Jede offene WebSocket-Verbindung ist genau ein Zuhörer — daran prüft der
+  /// Test, dass ein Abo mit der Verbindung wirklich verschwindet und nicht als
+  /// Leiche weiterläuft.
+  bool get hasListener => _controller.hasListener;
+
   /// Meldet ein Ereignis; nach [close] verpufft es folgenlos.
   void emit(AgentEvent event) {
     if (_controller.isClosed) return;

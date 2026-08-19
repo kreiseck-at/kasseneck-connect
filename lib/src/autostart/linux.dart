@@ -10,15 +10,21 @@ import 'autostart.dart';
 /// `--user`-Unit statt Systemdienst: der Agent gehört zur angemeldeten
 /// Sitzung. `Restart=always` entspricht `KeepAlive` unter macOS, und
 /// `WantedBy=default.target` startet ihn bei der Anmeldung.
+///
+/// Kein `After=network-online.target`: das ist ein Ziel der **System**-Instanz
+/// und in einer User-Unit wirkungslos. Der Agent braucht es auch nicht — er
+/// bindet nur die Loopback-Adresse und sucht Drucker erst auf Zuruf.
+///
+/// Der Pfad in `ExecStart` steht in Anführungszeichen, sonst zerlegt systemd
+/// ihn am Leerzeichen.
 String systemdUnit(String executable) =>
     '''
 [Unit]
 Description=Kasseneck Connect — lokaler Agent der Kasseneck-Kasse
-After=network-online.target
 
 [Service]
 Type=simple
-ExecStart=$executable run
+ExecStart="$executable" run
 Restart=always
 RestartSec=5
 

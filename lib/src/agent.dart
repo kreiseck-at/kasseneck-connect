@@ -74,6 +74,11 @@ class Agent {
   PrinterRegistry? _printers;
   List<RouteRegistrar> _routes = const <RouteRegistrar>[];
 
+  /// Ob der Bus dem Agenten gehört. Einen von außen hereingereichten Bus
+  /// (Tests, spätere Etappen) darf [stop] nicht schließen — der Besitzer
+  /// entscheidet über sein Lebensende.
+  bool _ownsEvents = false;
+
   /// Druckerverwaltung des laufenden Agenten (erst nach [start] gültig).
   PrinterRegistry get printers {
     final registry = _printers;
@@ -106,6 +111,7 @@ class Agent {
     // Der Druckstapel gehört zum Agenten: Registry, Warteschlange und Suche
     // hängen alle am selben Ereignisbus, den A4 an `/v1/events` weiterreicht.
     final bus = _events ?? EventBus();
+    _ownsEvents = _events == null;
     final registry =
         _registry ?? PrinterRegistry(store: store, log: log, events: bus);
     final queue =
@@ -157,9 +163,19 @@ class Agent {
   /// gehen), nach [gracefulStopTimeout] mit Nachdruck.
   Future<void> stop() async {
     final server = _server;
+    final ctx = _context;
     _server = null;
     _context = null;
     if (server == null) return;
+
+    // Zuerst der Bus: die offenen WebSocket-Verbindungen hängen nach dem
+    // Hijack nicht mehr am HttpServer und überlebten dessen `close()`. Mit dem
+    // Bus endet ihr Abo, und `serveEvents` schließt daraufhin die Senke —
+    // die Kasse sieht ein sauberes Ende statt einer Verbindung ins Nichts.
+    if (ctx != null && _ownsEvents) {
+      await ctx.events.close();
+    }
+
     try {
       await server.close().timeout(gracefulStopTimeout);
     } on TimeoutException {

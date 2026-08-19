@@ -17,6 +17,9 @@ const String errorBadRequest = 'bad_request';
 /// Rumpf größer als erlaubt — 413.
 const String errorBodyTooLarge = 'body_too_large';
 
+/// Der Pfad spricht nur WebSocket, die Anfrage war eine gewöhnliche (HTTP 426).
+const String errorUpgradeRequired = 'upgrade_required';
+
 /// Voreingestellte Obergrenze für JSON-Rümpfe (64 KB).
 ///
 /// `POST /v1/print` bekommt in A3 eine eigene, größere Grenze — die Beleg-Bytes

@@ -1,6 +1,7 @@
 ; Inno-Setup-Skript für Kasseneck Connect (Windows).
 ;
 ;   ISCC.exe /DAppVersion=0.1.0 tool\installer\windows\KasseneckConnect.iss
+;   -> build\KasseneckConnect-<version>-windows-x64.exe
 ;
 ; Installiert ohne Administratorrechte nach %LocalAppData%\KasseneckConnect,
 ; richtet danach den Autostart über die Aufgabenplanung ein und startet den
@@ -26,9 +27,13 @@ DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
 ; Ohne Administratorrechte: der Agent gehört zur angemeldeten Kassenkraft.
 PrivilegesRequired=lowest
-ArchitecturesInstallIn64BitMode=x64compatible
+; `x64` statt `x64compatible`: das versteht auch Inno Setup 6.0. Neuere
+; Fassungen halten es für veraltet, bauen damit aber weiterhin.
+ArchitecturesInstallIn64BitMode=x64
 OutputDir=..\..\..\build
-OutputBaseFilename=KasseneckConnect-{#AppVersion}-windows-x64-setup
+; Der Name muss zur Regel in tool/_common.sh passen — er wird beim Release zu
+; KasseneckConnect-windows-x64.exe unter connect/latest/.
+OutputBaseFilename=KasseneckConnect-{#AppVersion}-windows-x64
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
@@ -54,3 +59,27 @@ Filename: "{app}\{#AppExe}"; Parameters: "pair"; Description: "Kasse jetzt koppe
 [UninstallRun]
 ; Vor dem Löschen der Dateien: Aufgabe entfernen und Agenten anhalten.
 Filename: "{app}\{#AppExe}"; Parameters: "uninstall-autostart"; RunOnceId: "UninstallAutostart"; Flags: runhidden waituntilterminated
+
+[Code]
+// Beim Update läuft der alte Agent noch und hält seine eigene .exe offen —
+// [Files] käme dann an der gesperrten Datei nicht vorbei. `PrepareToInstall`
+// ist der einzige Haken, der **vor** dem Kopieren greift: er nimmt den
+// Autostart-Eintrag heraus und hält den laufenden Agenten an.
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  ExistingExe: String;
+  ResultCode: Integer;
+begin
+  Result := '';
+  NeedsRestart := False;
+  ExistingExe := ExpandConstant('{app}\{#AppExe}');
+
+  if FileExists(ExistingExe) then
+  begin
+    Exec(ExistingExe, 'uninstall-autostart', '', SW_HIDE,
+      ewWaitUntilTerminated, ResultCode);
+    // Ein Fehlschlag darf das Update nicht aufhalten: schlimmstenfalls meldet
+    // [Files] gleich darauf eine gesperrte Datei, und der Assistent bietet
+    // seinen eigenen Ausweg an.
+  end;
+end;

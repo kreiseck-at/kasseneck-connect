@@ -78,7 +78,14 @@ class AgentLog {
   String? _currentDay;
 
   /// Aktuelle Logdatei.
-  File get file => File(p.join(directory.path, 'connect.log'));
+  File get file => fileIn(directory);
+
+  /// Die aktuelle Logdatei eines Verzeichnisses, ohne ein [AgentLog] zu bauen.
+  ///
+  /// Die Diagnose (`doctor`) braucht nur den Pfad und darf dabei nichts
+  /// anlegen — der Konstruktor legt das Verzeichnis an.
+  static File fileIn(Directory directory) =>
+      File(p.join(directory.path, 'connect.log'));
 
   /// Die letzten Fehler (ältester zuerst), höchstens [errorBufferSize] Stück.
   List<LogEntry> get recentErrors => List<LogEntry>.unmodifiable(_recentErrors);

@@ -6,14 +6,12 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
+# shellcheck source=tool/_common.sh
+. tool/_common.sh
 
 DART="${DART:-dart}"
-case "$(uname -m)" in
-  x86_64) ARCH="x64" ;;
-  aarch64 | arm64) ARCH="arm64" ;;
-  *) ARCH="$(uname -m)" ;;
-esac
-OUT="build/kasseneck-connect-linux-$ARCH"
+ARCH="$(normalize_arch)"
+OUT="build/$(binary_name linux "$ARCH")"
 
 mkdir -p build
 "$DART" pub get

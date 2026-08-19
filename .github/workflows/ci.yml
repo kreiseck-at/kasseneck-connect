@@ -68,9 +68,11 @@ jobs:
           tool/build_macos.sh
           tool/pkg/macos/build_pkg.sh
 
-      - name: Binary bauen (Linux)
+      - name: Binary und .deb bauen (Linux)
         if: matrix.script == 'linux'
-        run: tool/build_linux.sh
+        run: |
+          tool/build_linux.sh
+          tool/build_linux_deb.sh
 
       - name: Binary und Installer bauen (Windows)
         if: matrix.script == 'windows'
@@ -96,6 +98,5 @@ jobs:
           # von Hand über tool/release.sh — die CI hat keine Bucket-Rechte.
           path: |
             build/kasseneck-connect-*
-            build/*.pkg
-            build/*-setup.exe
+            build/KasseneckConnect-*
           if-no-files-found: error

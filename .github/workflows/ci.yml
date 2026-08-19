@@ -1,0 +1,99 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: Analyse und Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: stable
+
+      - name: Abhängigkeiten holen
+        run: dart pub get
+
+      - name: Formatierung prüfen
+        run: dart format --output=none --set-exit-if-changed .
+
+      - name: Statische Analyse
+        run: dart analyze --fatal-infos
+
+      - name: Tests
+        # Kein Testlauf darf einen Browser aufmachen.
+        env:
+          KASSENECK_CONNECT_NO_BROWSER: '1'
+        run: dart test --reporter expanded
+
+  build:
+    name: Binary ${{ matrix.label }}
+    needs: test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            label: macOS arm64
+            script: macos
+            artifact: kasseneck-connect-macos-arm64
+          - os: macos-13
+            label: macOS x64
+            script: macos
+            artifact: kasseneck-connect-macos-x64
+          - os: windows-latest
+            label: Windows x64
+            script: windows
+            artifact: kasseneck-connect-windows-x64
+          - os: ubuntu-latest
+            label: Linux x64
+            script: linux
+            artifact: kasseneck-connect-linux-x64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: stable
+
+      - name: Binary und Paket bauen (macOS)
+        if: matrix.script == 'macos'
+        run: |
+          tool/build_macos.sh
+          tool/pkg/macos/build_pkg.sh
+
+      - name: Binary bauen (Linux)
+        if: matrix.script == 'linux'
+        run: tool/build_linux.sh
+
+      - name: Binary und Installer bauen (Windows)
+        if: matrix.script == 'windows'
+        shell: pwsh
+        run: tool\build_windows.ps1
+
+      - name: Ergebnis prüfen
+        if: matrix.script != 'windows'
+        run: |
+          BINARY="$(ls build/kasseneck-connect-* | head -1)"
+          "$BINARY" version
+
+      - name: Ergebnis prüfen (Windows)
+        if: matrix.script == 'windows'
+        shell: pwsh
+        run: .\build\kasseneck-connect-windows-x64.exe version
+
+      - name: Artefakte hochladen
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          # Der Upload in den Storage-Feed läuft bewusst NICHT hier, sondern
+          # von Hand über tool/release.sh — die CI hat keine Bucket-Rechte.
+          path: |
+            build/kasseneck-connect-*
+            build/*.pkg
+            build/*-setup.exe
+          if-no-files-found: error

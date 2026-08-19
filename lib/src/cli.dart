@@ -4,8 +4,10 @@ import 'dart:io';
 import 'package:args/args.dart';
 
 import 'agent.dart';
+import 'autostart/autostart.dart';
 import 'config/paths.dart';
 import 'config/store.dart';
+import 'doctor.dart';
 import 'log/logger.dart';
 import 'pairing/pairing.dart';
 import 'version.dart';
@@ -47,9 +49,11 @@ ArgParser buildArgParser() {
 
 /// Führt die Kommandozeile aus und liefert den Exit-Code.
 ///
-/// [paths], [awaitShutdown], [preferredPort] und [openBrowser] sind Nahtstellen
-/// für Tests: Datenverzeichnis, Ersatz für das Warten auf SIGINT/SIGTERM,
-/// Wunschport und das Öffnen des Browsers.
+/// Alle benannten Parameter außer [out]/[err] sind **Nahtstellen für Tests**:
+/// Datenverzeichnis, Ersatz für das Warten auf SIGINT/SIGTERM, Wunschport,
+/// Browser, Autostart-Weg sowie die beiden Abfragen der Diagnose. Ohne sie
+/// entscheidet das laufende System — kein Test startet ein echtes `launchctl`
+/// und keiner fragt echte Drucker.
 Future<int> runCli(
   List<String> arguments, {
   StringSink? out,
@@ -58,6 +62,9 @@ Future<int> runCli(
   Future<void> Function()? awaitShutdown,
   int? preferredPort,
   bool? openBrowser,
+  Autostart? autostart,
+  StatusProbe? statusProbe,
+  PrinterStates? printerStates,
 }) async {
   final stdoutSink = out ?? stdout;
   final stderrSink = err ?? stderr;
@@ -107,10 +114,72 @@ Future<int> runCli(
       );
     case 'pair':
       return _printPairingCode(resolvedPaths, stdoutSink);
+    case 'install-autostart':
+      return _changeAutostart(
+        resolvedPaths,
+        stdoutSink,
+        stderrSink,
+        autostart: autostart,
+        install: true,
+      );
+    case 'uninstall-autostart':
+      return _changeAutostart(
+        resolvedPaths,
+        stdoutSink,
+        stderrSink,
+        autostart: autostart,
+        install: false,
+      );
+    case 'doctor':
+      return _printDoctorReport(
+        resolvedPaths,
+        stdoutSink,
+        autostart: autostart,
+        statusProbe: statusProbe,
+        printerStates: printerStates,
+      );
     default:
       stderrSink.writeln('Befehl „$command“: noch nicht verfügbar.');
       return exitCodeNotImplemented;
   }
+}
+
+/// `install-autostart` / `uninstall-autostart`.
+Future<int> _changeAutostart(
+  ConfigPaths paths,
+  StringSink out,
+  StringSink err, {
+  required bool install,
+  Autostart? autostart,
+}) async {
+  final target = autostart ?? autostartForPlatform(paths: paths);
+  final result = install ? await target.install() : await target.uninstall();
+
+  if (result.ok) {
+    out.writeln(result.message);
+    return 0;
+  }
+  err.writeln(result.message);
+  if (result.detail != null) err.writeln(result.detail);
+  return exitCodeFailed;
+}
+
+/// `doctor` — Zustand des Rechners für den Support.
+Future<int> _printDoctorReport(
+  ConfigPaths paths,
+  StringSink out, {
+  Autostart? autostart,
+  StatusProbe? statusProbe,
+  PrinterStates? printerStates,
+}) async {
+  final report = await collectDoctorReport(
+    paths: paths,
+    probe: statusProbe,
+    printerStates: printerStates,
+    autostart: autostart,
+  );
+  out.write(formatDoctorReport(report));
+  return 0;
 }
 
 /// `run` — Agent starten und laufen lassen, bis SIGINT/SIGTERM kommt.

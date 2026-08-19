@@ -7,6 +7,7 @@ import 'package:crypto/crypto.dart';
 import '../config/model.dart';
 import '../config/store.dart';
 import '../log/logger.dart';
+import '../process_runner.dart';
 
 /// Gültigkeit eines Kopplungscodes.
 const Duration pairingCodeLifetime = Duration(minutes: 10);
@@ -49,10 +50,6 @@ enum PairFailure {
   /// Deutscher Klartext für die Kasse.
   final String message;
 }
-
-/// Startet ein Programm — in Tests austauschbar.
-typedef ProcessRunner =
-    Future<ProcessResult> Function(String executable, List<String> arguments);
 
 /// SHA-256-Hash eines Tokens in Hex — nur der landet in der Konfiguration.
 String hashToken(String token) => sha256.convert(utf8.encode(token)).toString();

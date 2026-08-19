@@ -48,12 +48,16 @@ const Map<String, Object> _varyOrigin = <String, Object>{'vary': 'Origin'};
 /// Dort ist nur die Diagnose plus die Kopplung sinnvoll — alles andere wäre
 /// eine Hintertür an der Allowlist vorbei.
 bool isPublicRoute(String method, String path) {
-  final normalized = path.endsWith('/') && path.length > 1
-      ? path.substring(0, path.length - 1)
-      : path;
+  final normalized = normalizeRoutePath(path);
   return (method == 'GET' && normalized == '/v1/status') ||
       (method == 'POST' && normalized == '/v1/pair');
 }
+
+/// Schneidet einen abschließenden Schrägstrich ab, damit `/v1/status` und
+/// `/v1/status/` als dieselbe Route gelten.
+String normalizeRoutePath(String path) => path.endsWith('/') && path.length > 1
+    ? path.substring(0, path.length - 1)
+    : path;
 
 /// Origin-Prüfung, Preflight und die CORS-Kopfzeilen der Antwort.
 ///

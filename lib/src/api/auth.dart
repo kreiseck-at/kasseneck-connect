@@ -5,6 +5,7 @@ import '../config/store.dart';
 import '../pairing/pairing.dart';
 import 'cors.dart';
 import 'responses.dart';
+import 'routes_events.dart';
 
 /// Schlüssel im `Request.context`: gültiger Token vorhanden (`bool`).
 const String contextAuthenticated = 'connect.authenticated';
@@ -15,6 +16,10 @@ const String contextConfig = 'connect.config';
 /// Schlüssel im `Request.context`: der mitgeschickte Token im Klartext.
 const String contextToken = 'connect.token';
 
+/// Name des Query-Parameters, unter dem allein `GET /v1/events` den Token
+/// annimmt.
+const String tokenQueryParameter = 'token';
+
 /// Liest den Token aus `Authorization: Bearer <token>`.
 String? bearerToken(String? header) {
   if (header == null) return null;
@@ -22,6 +27,27 @@ String? bearerToken(String? header) {
   if (trimmed.length < 8) return null;
   if (trimmed.substring(0, 7).toLowerCase() != 'bearer ') return null;
   final token = trimmed.substring(7).trim();
+  return token.isEmpty ? null : token;
+}
+
+/// Token dieser Anfrage: Kopfzeile, ersatzweise `?token=` an `GET /v1/events`.
+///
+/// Der Browser kann bei `new WebSocket(url)` **keine** Kopfzeilen setzen — es
+/// gibt keine Entsprechung zu `fetch(…, {headers})`. Damit die Kasse den
+/// Ereignisstrom trotzdem authentifiziert öffnen kann, zählt der Token dort
+/// auch als Query-Parameter. Bewusst **nur** an dieser einen Route: an allen
+/// anderen bliebe eine Adresse mit Geheimnis in Verläufen und Protokollen
+/// liegen. Der Agent selbst schreibt keine Anfrageadressen ins Log, und die
+/// Verbindung geht nicht über das Netz hinaus (127.0.0.1).
+String? requestToken(Request request) {
+  final header = bearerToken(request.headers['authorization']);
+  if (header != null) return header;
+
+  if (request.method.toUpperCase() != 'GET') return null;
+  if (normalizeRoutePath(request.requestedUri.path) != eventsPath) return null;
+  final query = request.requestedUri.queryParameters[tokenQueryParameter];
+  if (query == null) return null;
+  final token = query.trim();
   return token.isEmpty ? null : token;
 }
 
@@ -54,7 +80,7 @@ Middleware tokenAuth() {
   return (Handler innerHandler) {
     return (Request request) async {
       final config = configOf(request);
-      final token = bearerToken(request.headers['authorization']);
+      final token = requestToken(request);
       final authenticated =
           token != null && config.tokenHashes.contains(hashToken(token));
 

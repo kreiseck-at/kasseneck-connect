@@ -9,6 +9,11 @@ const String eventPrintFailed = 'print.failed';
 /// Ereignis: der bekannte Zustand eines Druckers hat sich geändert.
 const String eventPrinterState = 'printer.state';
 
+/// Ereignis: der Agent hält gleich an und kommt über den Autostart zurück
+/// (ab v1.2 beim Selbstaustausch — die Kasse soll dann kurz keinen Druck
+/// erwarten).
+const String eventAgentRestarting = 'agent.restarting';
+
 /// Ein Ereignis des Agenten, so wie es über `/v1/events` hinausgeht.
 ///
 /// Die Daten werden beim Serialisieren **flach** neben `type` gelegt — genau

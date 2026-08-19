@@ -45,29 +45,38 @@ void main() {
     expect(out.toString().trim(), '$agentName $agentVersion');
   });
 
-  test('noch nicht gebaute Befehle enden mit Code 2', () async {
-    for (final command in <String>[
-      'install-autostart',
-      'uninstall-autostart',
-      'doctor',
-    ]) {
+  test('alle Befehle der Hilfe sind gebaut', () async {
+    // Kein Befehl darf mehr „noch nicht verfügbar" melden. `run` klemmt bis
+    // zum Abschaltsignal und `install-autostart` würde am echten System
+    // schrauben — beide sind hier bewusst außen vor und in eigenen Tests
+    // abgedeckt (cli_test „run …", doctor_test „Autostart über die
+    // Kommandozeile").
+    for (final command in <String>['pair', 'doctor', 'version']) {
       final buffer = StringBuffer();
-      expect(
-        await runCli(
-          <String>[command],
-          out: StringBuffer(),
-          err: buffer,
+      final code = await runCli(
+        <String>[command],
+        out: StringBuffer(),
+        err: buffer,
+        paths: paths,
+        // Die Diagnose darf im Test weder Ports abklopfen noch Drucker
+        // anfassen noch nach einem echten Autostart sehen.
+        statusProbe: (int _) async => null,
+        printerStates: () async => <Map<String, Object?>>[],
+        autostart: autostartForPlatform(
+          operatingSystem: 'linux',
+          environment: <String, String>{'HOME': temp.path},
           paths: paths,
+          runProcess: (String _, List<String> _) async =>
+              ProcessResult(0, 0, '', ''),
+          executable: '/bin/connect',
         ),
-        exitCodeNotImplemented,
-        reason: command,
       );
+      expect(code, 0, reason: command);
       expect(
         buffer.toString(),
-        contains('noch nicht verfügbar'),
+        isNot(contains('noch nicht verfügbar')),
         reason: command,
       );
-      expect(buffer.toString(), contains(command), reason: command);
     }
   });
 

@@ -222,15 +222,18 @@ void main() {
     unawaited(get(agent.port, '/v1/haengt').catchError((Object _) => ''));
     await Future<void>.delayed(const Duration(milliseconds: 100));
 
+    // Der Port muss **vor** dem Anhalten festgehalten werden: danach meldet
+    // `agent.port` 0, und die Abfrage unten prüfte einen Port, auf dem nie ein
+    // Agent lauschte — sie schlüge auch dann fehl, wenn er noch stünde.
+    final port = agent.port;
+    expect(port, greaterThan(0));
+
     final started = DateTime.now();
     await agent.stop();
     final needed = DateTime.now().difference(started);
 
     expect(needed, lessThan(gracefulStopTimeout + const Duration(seconds: 2)));
     expect(log.file.readAsStringSync(), contains('Agent angehalten.'));
-    await expectLater(
-      get(agent.port, '/v1/status'),
-      throwsA(isA<SocketException>()),
-    );
+    await expectLater(get(port, '/v1/status'), throwsA(isA<SocketException>()));
   });
 }

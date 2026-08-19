@@ -88,6 +88,27 @@ if [ "${#PRESENT[@]}" -eq 0 ]; then
   exit 70
 fi
 
+# Fremde Versionen in build/ sind ein Abbruchgrund, kein Schönheitsfehler: die
+# nackten Binaries (kasseneck-connect-<os>-<arch>) tragen keine Version im
+# Namen. Aus einem nicht geleerten Verzeichnis wanderte die Binary der
+# Vorversion unbemerkt in den Ordner der neuen — und wäre ab v1.2 die Grundlage
+# des Selbstaustauschs. Vor jedem Release also: `rm -rf build`, dann bauen.
+STALE=()
+for candidate in build/KasseneckConnect-*; do
+  [ -f "$candidate" ] || continue
+  case "$(basename "$candidate")" in
+    *-"$VERSION"-*) ;;
+    *) STALE+=("$candidate") ;;
+  esac
+done
+
+if [ "${#STALE[@]}" -gt 0 ]; then
+  echo "In build/ liegen Dateien einer anderen Version als $VERSION:" >&2
+  for file in "${STALE[@]}"; do echo "  $file" >&2; done
+  echo "Bitte 'rm -rf build' und neu bauen — sonst gehen alte Binaries mit hoch." >&2
+  exit 70
+fi
+
 # latest.json zusammenbauen.
 FEED="build/latest.json"
 {

@@ -76,10 +76,17 @@ begin
 
   if FileExists(ExistingExe) then
   begin
+    // Erst hart beenden: `uninstall-autostart` nimmt die Aufgabe aus der
+    // Aufgabenplanung und hält den von ihr gestarteten Agenten an — einen von
+    // Hand gestarteten oder einen hängenden Prozess erwischt es nicht, und
+    // genau der hält weiter seine .exe gesperrt. taskkill räumt beide ab.
+    Exec(ExpandConstant('{sys}\taskkill.exe'), '/IM {#AppExe} /F', '', SW_HIDE,
+      ewWaitUntilTerminated, ResultCode);
     Exec(ExistingExe, 'uninstall-autostart', '', SW_HIDE,
       ewWaitUntilTerminated, ResultCode);
-    // Ein Fehlschlag darf das Update nicht aufhalten: schlimmstenfalls meldet
-    // [Files] gleich darauf eine gesperrte Datei, und der Assistent bietet
-    // seinen eigenen Ausweg an.
+    // Fehlschläge beider Aufrufe sind erwartbar (kein Prozess, keine Aufgabe)
+    // und dürfen das Update nicht aufhalten: schlimmstenfalls meldet [Files]
+    // gleich darauf eine gesperrte Datei, und der Assistent bietet seinen
+    // eigenen Ausweg an.
   end;
 end;

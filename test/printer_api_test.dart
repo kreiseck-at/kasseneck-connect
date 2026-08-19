@@ -469,9 +469,20 @@ void main() {
 
       expect(response.status, 200);
       expect(response.errorCode, errorPrinterOffline);
+      final error = response.json['error']! as Map<String, Object?>;
+      expect(error['message'], contains('nicht erreichbar'));
+
+      // Der Zusatz des Treibers geht mit: ohne ihn stünde in der Kasse nur
+      // „printer_offline", und der Support müsste raten, was das
+      // Betriebssystem gemeldet hat.
+      final detail = error['detail']! as Map<String, Object?>;
+      expect(detail['jobId'], 'bon-1');
+      expect(detail['reason'], isA<String>());
+      expect(detail['reason'] as String, isNotEmpty);
       expect(
-        (response.json['error']! as Map<String, Object?>)['message'],
-        contains('nicht erreichbar'),
+        log.file.readAsStringSync(),
+        contains('Auftrag bon-1'),
+        reason: 'dieselbe Angabe steht im Log',
       );
     });
 

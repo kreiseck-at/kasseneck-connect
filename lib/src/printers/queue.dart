@@ -25,7 +25,10 @@ const Duration defaultAttemptGrace = Duration(seconds: 2);
 ///   [idempotencyWindow] kommt das erste Ergebnis zurück, ohne dass ein
 ///   zweiter Bon aus dem Drucker läuft. Der Schlüssel enthält den Drucker:
 ///   derselbe Beleg an Kasse *und* Küche sind zwei Aufträge, und beide sollen
-///   drucken.
+///   drucken. Gemerkt wird dabei nur, was ein zweiter Druck verschlimmern
+///   könnte: Erfolge und Fehler mit offenem Ausgang. Ein sauber gescheiterter
+///   Auftrag — kein Papier, Drucker aus — bleibt wiederholbar, sonst wäre der
+///   Bon nach dem Beheben der Ursache eine Minute lang unerreichbar.
 /// * **Ein Wiederholversuch, aber nur wenn sicher nichts hinausging** —
 ///   `PrinterFailure.mayHavePrinted` entscheidet. Ein `refused` ist die
 ///   Antwort des Geräts („kein Papier"), die beim zweiten Mal genauso ausfiele.
@@ -124,7 +127,16 @@ class PrintQueue {
           return;
         }
         result = await _run(printerId, jobId, driver, bytes);
-        record.finish(result, _clock());
+        if (_worthRemembering(result)) {
+          record.finish(result, _clock());
+        } else {
+          // Sauber gescheitert — es ist nachweislich nichts gedruckt worden.
+          // Derselbe Auftrag darf es sofort noch einmal versuchen: die Kasse
+          // schickt ihn nach dem Papiernachlegen mit derselben `jobId`, und
+          // ein Gedächtnis, das dann „schon erledigt" antwortet, ließe den
+          // Bon für immer verschwinden.
+          _jobs.remove(key);
+        }
       } on Object catch (e) {
         _jobs.remove(key);
         _log?.error(
@@ -144,6 +156,15 @@ class PrintQueue {
     _chains[printerId] = chain.catchError((Object _) {});
     return completer.future;
   }
+
+  /// Ob ein Ergebnis die `jobId` für das Idempotenzfenster sperrt.
+  ///
+  /// Gemerkt wird nur, was ein zweiter Druck **verschlimmern** würde: der
+  /// gelungene Druck und der Fehler, bei dem offen blieb, ob der Bon doch
+  /// gelaufen ist. Alles andere ist ein Fehlschlag mit gesicherter Lage —
+  /// nichts ist hinausgegangen, also darf die Kasse es erneut versuchen.
+  static bool _worthRemembering(PrintResult result) =>
+      result.ok || result.mayHavePrinted;
 
   /// Vergisst Kette und Aufträge eines Druckers (beim Löschen aufzurufen).
   void forgetPrinter(String printerId) {
@@ -205,7 +226,15 @@ class PrintQueue {
           ? PrinterState.online
           : PrinterState.offline,
     );
-    _log?.error('Auftrag $jobId an $printerId: ${failure.code}');
+    // Der Zusatz des Treibers (ePOS-Statuscode, Socket-Meldung) gehört ins
+    // Log **und** in die Antwort: ohne ihn steht dort nur „printer_offline",
+    // und der Support fragt zurück, was das Gerät denn gesagt hat. Beleginhalt
+    // steht nie darin — das sichert der Treiber zu.
+    final reason = failure.detail;
+    _log?.error(
+      'Auftrag $jobId an $printerId: ${failure.code}'
+      '${reason == null ? '' : ' ($reason)'}',
+    );
     _events.publish(eventPrintFailed, <String, Object?>{
       'printerId': printerId,
       'jobId': jobId,
@@ -217,8 +246,11 @@ class PrintQueue {
     return PrintResult.failure(
       failure.code,
       failure.message,
-      detail: failure.mayHavePrinted
-          ? <String, Object?>{'mayHavePrinted': true}
+      detail: (failure.mayHavePrinted || reason != null)
+          ? <String, Object?>{
+              if (failure.mayHavePrinted) 'mayHavePrinted': true,
+              if (reason != null) 'reason': '$reason',
+            }
           : null,
     );
   }

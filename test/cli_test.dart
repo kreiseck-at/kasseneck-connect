@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:kasseneck_connect/kasseneck_connect.dart';
@@ -126,4 +127,50 @@ void main() {
     shutdown.complete();
     expect(await result, 0);
   });
+
+  // Der Agent ist ein Dauerläufer ohne Aufpasser: stirbt der Prozess, steht die
+  // Kasse, und unter Windows startet ihn bis zur nächsten Anmeldung niemand
+  // neu. Ein verwaistes Future darf ihn deshalb nicht mitreißen.
+  test(
+    'ein unbehandelter asynchroner Fehler reißt den Agenten nicht mit',
+    () async {
+      final shutdown = Completer<void>();
+      final result = run(
+        <String>['run'],
+        // Diese Naht läuft **in** der abgeschirmten Zone: was hier an Fehlern
+        // entsteht, entsteht so, wie es auch im Betrieb entstünde.
+        shutdown: () async {
+          unawaited(Future<void>.error(StateError('Verwaistes Future')));
+          await shutdown.future;
+        },
+        preferredPort: 0,
+      );
+
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+
+      // Der Agent antwortet weiter — der Prozess lebt, der Server steht.
+      final port = int.parse(
+        RegExp(r'127\.0\.0\.1:(\d+)').firstMatch(out.toString())!.group(1)!,
+      );
+      final client = HttpClient();
+      final String body;
+      try {
+        final response = await (await client.getUrl(
+          Uri.parse('http://127.0.0.1:$port/v1/status'),
+        )).close();
+        body = await response.transform(utf8.decoder).join();
+      } finally {
+        client.close(force: true);
+      }
+      expect((jsonDecode(body) as Map)['ok'], isTrue);
+
+      // Und der Fehler steht im Log, statt spurlos verschluckt zu werden.
+      final logText = AgentLog.fileIn(paths.logDirectory).readAsStringSync();
+      expect(logText, contains('Unbehandelter Fehler'));
+      expect(logText, contains('Verwaistes Future'));
+
+      shutdown.complete();
+      expect(await result, 0);
+    },
+  );
 }

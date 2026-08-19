@@ -12,9 +12,6 @@ import 'log/logger.dart';
 import 'pairing/pairing.dart';
 import 'version.dart';
 
-/// Exit-Code für Befehle, die es noch nicht gibt.
-const int exitCodeNotImplemented = 2;
-
 /// Exit-Code für falsche Verwendung (unbekannter Befehl, fehlende Option).
 const int exitCodeUsage = 64;
 
@@ -138,10 +135,11 @@ Future<int> runCli(
         statusProbe: statusProbe,
         printerStates: printerStates,
       );
-    default:
-      stderrSink.writeln('Befehl „$command“: noch nicht verfügbar.');
-      return exitCodeNotImplemented;
   }
+
+  // Hierher kommt nur, wer einen Befehl in [agentCommands] einträgt und das
+  // Verdrahten vergisst — der Parser kennt keine anderen Namen.
+  throw StateError('Befehl „$command“ ist nicht verdrahtet.');
 }
 
 /// `install-autostart` / `uninstall-autostart`.
@@ -183,6 +181,18 @@ Future<int> _printDoctorReport(
 }
 
 /// `run` — Agent starten und laufen lassen, bis SIGINT/SIGTERM kommt.
+///
+/// Der ganze Betrieb läuft in einer abgeschirmten Zone. Ein unbehandelter
+/// asynchroner Fehler — ein verwaistes `Future`, ein stolpernder
+/// Timer-Rückruf irgendwo im Druckstapel — würde den Prozess sonst mitreißen,
+/// und auf einem Windows-Kassenrechner startet ihn niemand neu: die Aufgabe
+/// der Aufgabenplanung greift erst bei der nächsten Anmeldung. Hier landet der
+/// Fehler im Log, und der Agent nimmt weiter Anfragen an.
+///
+/// `Isolate.current.addErrorListener` hilft dabei ausdrücklich **nicht**: ein
+/// Fehler aus der Wurzelzone beendet die Isolate auch mit Zuhörer, und zwar
+/// bevor dieser gerufen wird — der Fehler stünde dann nicht einmal mehr auf
+/// stderr. Die Zone ist der Schutz, nicht der Zuhörer.
 Future<int> _runAgent(
   ConfigPaths paths,
   StringSink out,
@@ -190,9 +200,52 @@ Future<int> _runAgent(
   Future<void> Function()? awaitShutdown,
   int? preferredPort,
   bool? openBrowser,
+}) {
+  final log = AgentLog(paths.logDirectory);
+  final done = Completer<int>();
+
+  runZonedGuarded(
+    () async {
+      var code = exitCodeFailed;
+      try {
+        code = await _serveAgent(
+          paths,
+          log,
+          out,
+          err,
+          awaitShutdown: awaitShutdown,
+          preferredPort: preferredPort,
+          openBrowser: openBrowser,
+        );
+      } on Object catch (e) {
+        // Der Ablauf selbst ist gescheitert — das beendet den Befehl.
+        log.error('Der Agent ist abgebrochen', e);
+        err.writeln('Der Agent ist abgebrochen: $e');
+      } finally {
+        if (!done.isCompleted) done.complete(code);
+      }
+    },
+    (error, stackTrace) {
+      // Alles, was **neben** dem Ablauf schiefgeht: nur vermerken.
+      log.error('Unbehandelter Fehler — der Agent läuft weiter', error);
+      err.writeln('Unbehandelter Fehler (siehe Log): $error');
+    },
+  );
+
+  return done.future;
+}
+
+/// Der eigentliche Ablauf von `run`, aufgerufen aus der abgeschirmten Zone.
+Future<int> _serveAgent(
+  ConfigPaths paths,
+  AgentLog log,
+  StringSink out,
+  StringSink err, {
+  Future<void> Function()? awaitShutdown,
+  int? preferredPort,
+  bool? openBrowser,
 }) async {
   final store = ConfigStore(paths);
-  final log = AgentLog(paths.logDirectory);
   final config = await store.load();
   final agent = Agent(
     store: store,

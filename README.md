@@ -84,6 +84,14 @@ und `sudo pkgutil --forget at.kasseneck.connect`.
    `%LocalAppData%\KasseneckConnect`. Der Installer legt danach die Aufgabe
    „Kasseneck Connect" in der Aufgabenplanung an (Auslöser: bei der Anmeldung)
    und startet den Agenten.
+4. Im selben Ordner liegen auch `config.json` und `logs\` — alles gehört dem
+   angemeldeten Benutzer. Beim Deinstallieren nimmt Windows nur die
+   Programmdateien mit; Kopplung und Drucker bleiben stehen, bis der Ordner von
+   Hand gelöscht wird.
+
+Ein Update (dieselbe `.exe` über eine vorhandene Installation) beendet zuerst
+den laufenden Agenten — sonst hielte er seine eigene Datei gesperrt — und
+richtet den Autostart danach neu ein.
 
 ### Linux
 
@@ -162,8 +170,13 @@ Konfiguration und Log liegen im Datenverzeichnis des Agenten:
 | System | Verzeichnis |
 |---|---|
 | macOS | `~/Library/Application Support/KasseneckConnect` |
-| Windows | `%ProgramData%\KasseneckConnect` |
+| Windows | `%LocalAppData%\KasseneckConnect` |
 | Linux | `$XDG_CONFIG_HOME/kasseneck-connect`, sonst `~/.config/kasseneck-connect` |
+
+Unter Windows liegt alles beim angemeldeten Benutzer, im selben Ordner, in den
+auch das Paket installiert — dort darf der Agent ohne Administratorrechte
+schreiben. Nur wenn `LOCALAPPDATA` gar nicht gesetzt ist (Dienstkonten), weicht
+er auf `%ProgramData%\KasseneckConnect` aus.
 
 Darin: `config.json` (Port, Token-Hashes, Drucker, Terminal, Update-Kanal; atomar
 geschrieben, Rechte 600) und `logs/connect.log` (täglich rotierend, 7 Dateien).
@@ -184,7 +197,8 @@ Alle Pfade außer `GET /v1/status` und `POST /v1/pair` brauchen den
 Kopplungstoken (`Authorization: Bearer …`) **und** eine erlaubte Herkunft.
 Fachfehler kommen mit **HTTP 200** und `{ok: false, error: {code, message}}`;
 eigene HTTP-Codes gibt es nur für 401 (Token fehlt/falsch), 403 (fremde
-Herkunft), 404 (Pfad unbekannt) und 413 (Rumpf zu groß).
+Herkunft), 404 (Pfad unbekannt), 413 (Rumpf zu groß) und 426 (`/v1/events` ohne
+WebSocket-Upgrade).
 
 | Methode | Pfad | Zweck |
 |---|---|---|
@@ -225,7 +239,11 @@ kam nicht zustande). Sobald Bytes abgeschickt sind, gibt es keinen zweiten
 Versuch: ein doppelter Bon wiegt schwerer als ein fehlender, den die Kasse
 nachdrucken kann. Derselbe `jobId` druckt auf demselben Drucker innerhalb von
 60 Sekunden kein zweites Mal (Schlüssel ist `printerId` + `jobId` — derselbe
-Beleg an Kasse und Küche sind zwei Aufträge).
+Beleg an Kasse und Küche sind zwei Aufträge). Gemerkt wird dabei nur, was ein
+zweiter Druck verschlimmern könnte: der gelungene Druck und der Fehler mit
+offenem Ausgang (`detail.mayHavePrinted`). Ist ein Auftrag **sauber**
+gescheitert — kein Papier, Drucker aus, nichts hinausgegangen —, druckt
+dieselbe `jobId` sofort wieder, sobald die Ursache behoben ist.
 
 ### Ereignisse (`GET /v1/events`, WebSocket)
 
@@ -264,6 +282,7 @@ schnelle Benachrichtigung obendrauf.
 | `not_found` | diesen Pfad gibt es nicht (HTTP 404) |
 | `bad_request` | Angaben fehlen oder sind unbrauchbar |
 | `body_too_large` | Rumpf über der Grenze (HTTP 413) |
+| `upgrade_required` | `/v1/events` wurde ohne WebSocket-Upgrade aufgerufen (HTTP 426) |
 | `pair_invalid` | Kopplungscode stimmt nicht |
 | `pair_expired` | Kopplungscode ist abgelaufen |
 | `pair_locked` | zu viele Fehlversuche, 60 s Sperre |
@@ -273,6 +292,10 @@ schnelle Benachrichtigung obendrauf.
 | `refused` | das Gerät lehnt ab (kein Papier, Deckel offen) |
 | `print_in_progress` | derselbe Auftrag läuft gerade noch |
 | `internal_error` | der Agent selbst ist gestolpert (steht im Log) |
+
+Bei Druckfehlern steht in `detail.reason` zusätzlich, was das Gerät gemeldet hat
+(ePOS-Statuscode, Socket-Meldung) — dieselbe Angabe wie in der Logzeile, damit
+Kasse und Support nicht raten müssen. Beleginhalte stehen dort nie.
 
 ## Fehlersuche
 
@@ -323,12 +346,20 @@ Build-Skripte laden sie. `build_linux_deb.sh` braucht `dpkg-deb` und
 — das echte `.deb` entsteht in der CI auf ubuntu.
 
 Veröffentlichen in den Update-Feed (von Hand, braucht eine angemeldete
-`gcloud`):
+`gcloud`). **Reihenfolge einhalten** — `build/` zuerst leeren:
 
 ```bash
+rm -rf build                     # alte Artefakte weg, sonst wandern sie mit
+tool/build_macos.sh && tool/pkg/macos/build_pkg.sh
+#   … dazu die Artefakte der übrigen Systeme nach build/ legen
 tool/release.sh --dry-run        # zeigt latest.json und alle Uploads
 tool/release.sh                  # lädt build/* nach gs://kasseneck.appspot.com/connect/
 ```
+
+Die nackten Binaries (`build/kasseneck-connect-*`) tragen **keine Version im
+Namen** — aus einem nicht geleerten `build/` lüde das Skript die Binary der
+Vorversion in den neuen Versionsordner. Deshalb bricht `release.sh` ab, sobald
+in `build/` eine Auslieferungsdatei einer fremden Version liegt.
 
 Die CI (`.github/workflows/ci.yml`) fährt bei jedem Push und jedem Pull Request
 `dart format --set-exit-if-changed`, `dart analyze --fatal-infos` und

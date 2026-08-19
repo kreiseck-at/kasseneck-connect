@@ -12,8 +12,15 @@ const String configHomeEnvVar = 'KASSENECK_CONNECT_HOME';
 /// Verzeichnisse des Agenten je Betriebssystem.
 ///
 /// - macOS:   `~/Library/Application Support/KasseneckConnect`
-/// - Windows: `%ProgramData%\KasseneckConnect`
+/// - Windows: `%LOCALAPPDATA%\KasseneckConnect`
 /// - sonst:   `$XDG_CONFIG_HOME/kasseneck-connect` bzw. `~/.config/kasseneck-connect`
+///
+/// Unter Windows installiert das Paket ohne Administratorrechte nach
+/// `%LocalAppData%\KasseneckConnect` und richtet den Autostart für den
+/// angemeldeten Benutzer ein — die Konfiguration gehört deshalb demselben
+/// Benutzer. In `%ProgramData%` dürfte er ohne Rechteerhöhung gar nicht
+/// schreiben; `%ProgramData%` bleibt nur der Notnagel, falls `LOCALAPPDATA`
+/// nicht gesetzt ist (Dienstkonten, abgespeckte Umgebungen).
 class ConfigPaths {
   const ConfigPaths(this.directory);
 
@@ -45,9 +52,16 @@ class ConfigPaths {
           ),
         );
       case 'windows':
-        final programData =
-            env['ProgramData'] ?? env['PROGRAMDATA'] ?? r'C:\ProgramData';
-        return ConfigPaths(Directory(p.join(programData, 'KasseneckConnect')));
+        final base = _firstSet(env, const <String>[
+          'LOCALAPPDATA',
+          'LocalAppData',
+          // Notnagel ohne LOCALAPPDATA — dort schreibt nur, wer darf.
+          'ProgramData',
+          'PROGRAMDATA',
+        ]);
+        return ConfigPaths(
+          Directory(p.join(base ?? r'C:\ProgramData', 'KasseneckConnect')),
+        );
       default:
         final xdg = env['XDG_CONFIG_HOME'];
         final base = (xdg != null && xdg.trim().isNotEmpty)
@@ -78,4 +92,17 @@ class ConfigPaths {
 
   @override
   String toString() => 'ConfigPaths(${directory.path})';
+}
+
+/// Der erste gesetzte und nicht leere Wert aus [names].
+///
+/// `Platform.environment` ist unter Windows selbst schon
+/// groß-/kleinschreibungsblind; eine von Hand gereichte Karte (Tests) ist es
+/// nicht — deshalb stehen beide Schreibweisen in der Liste.
+String? _firstSet(Map<String, String> env, List<String> names) {
+  for (final name in names) {
+    final value = env[name];
+    if (value != null && value.trim().isNotEmpty) return value.trim();
+  }
+  return null;
 }

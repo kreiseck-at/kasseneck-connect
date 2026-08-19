@@ -227,7 +227,11 @@ void main() {
     expect(driver.attempts, 1);
   });
 
-  test('auch ein fehlgeschlagener Auftrag bleibt idempotent', () async {
+  // Ein sauberer Fehlschlag ist gesicherte Lage: es ist nichts hinausgegangen.
+  // Die Kasse schickt denselben Auftrag nach dem Papiernachlegen mit derselben
+  // `jobId` — hielte das Gedächtnis daran fest, bliebe der Bon eine Minute
+  // lang unerreichbar, ohne dass jemand versteht, warum.
+  test('ein sauber gescheiterter Auftrag darf es erneut versuchen', () async {
     final driver = ScriptedDriver(
       script: <PrinterFailure?>[
         const PrinterFailure(errorPrintRefused, 'Kein Papier.'),
@@ -236,11 +240,61 @@ void main() {
     final (_, queue) = await build(<String, ScriptedDriver>{'a': driver});
 
     final first = await queue.enqueue('a', 'job1', bytes);
+    // Papier nachgelegt, gleiche jobId, kein Zeitsprung.
     final second = await queue.enqueue('a', 'job1', bytes);
 
     expect(first.code, errorPrintRefused);
-    expect(second.code, errorPrintRefused);
-    expect(driver.attempts, 1);
+    expect(second.ok, isTrue, reason: 'jetzt geht der Bon durch');
+    expect(driver.attempts, 2);
+    expect(driver.printed, hasLength(1));
+  });
+
+  test('ein Fehler mit offenem Ausgang bleibt dagegen gemerkt', () async {
+    final driver = ScriptedDriver(
+      script: <PrinterFailure?>[
+        const PrinterFailure(
+          errorPrintTimeout,
+          unconfirmedPrintMessage,
+          mayHavePrinted: true,
+        ),
+      ],
+    );
+    final (_, queue) = await build(<String, ScriptedDriver>{'a': driver});
+
+    final first = await queue.enqueue('a', 'job1', bytes);
+    final second = await queue.enqueue('a', 'job1', bytes);
+
+    expect(first.code, errorPrintTimeout);
+    expect(second.code, errorPrintTimeout, reason: 'dasselbe Ergebnis');
+    expect(
+      driver.attempts,
+      1,
+      reason: 'der Bon könnte gelaufen sein — kein zweiter blind hinterher',
+    );
+  });
+
+  // Ohne den Zusatz des Treibers steht in Log und Antwort nur „printer_offline",
+  // und Kasse wie Support raten, was das Gerät eigentlich gesagt hat.
+  test('der Zusatz des Treibers steht im Log und in der Antwort', () async {
+    final driver = ScriptedDriver(
+      script: <PrinterFailure?>[
+        const PrinterFailure(
+          errorPrintRefused,
+          'Der Drucker lehnt ab.',
+          detail: 'code=EPTR_COVER_OPEN status=252',
+        ),
+      ],
+    );
+    final (_, queue) = await build(<String, ScriptedDriver>{'a': driver});
+
+    final result = await queue.enqueue('a', 'job1', bytes);
+
+    expect(result.code, errorPrintRefused);
+    expect(result.detail?['reason'], 'code=EPTR_COVER_OPEN status=252');
+    expect(
+      log.file.readAsStringSync(),
+      contains('Auftrag job1 an a: refused (code=EPTR_COVER_OPEN status=252)'),
+    );
   });
 
   test('Transportfehler wird genau einmal wiederholt', () async {

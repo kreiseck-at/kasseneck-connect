@@ -414,12 +414,6 @@ List<LocalInterface> scanInterfaces(
   return chosen;
 }
 
-/// Erste brauchbare IPv4-Adresse dieses Rechners.
-Future<String?> firstLocalIpv4() async {
-  final chosen = scanInterfaces(await listLocalIpv4Interfaces());
-  return chosen.isEmpty ? null : chosen.first.address;
-}
-
 /// Das /24 zu einer Adresse in Schreibweise `192.168.0.0/24`.
 ///
 /// Eine unbrauchbare Adresse kommt unverändert zurück — der Wert steht nur im

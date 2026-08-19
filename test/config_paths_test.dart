@@ -16,13 +16,37 @@ void main() {
       expect(p.basename(paths.configFile.path), 'config.json');
     });
 
-    test('Windows nutzt ProgramData', () {
+    // Installiert wird ohne Administratorrechte nach %LocalAppData% — dorthin
+    // gehört auch die Konfiguration, sonst schriebe der Agent in ein
+    // Verzeichnis, in dem die Kassenkraft gar nichts zu sagen hat.
+    test('Windows nutzt LOCALAPPDATA', () {
+      final paths = ConfigPaths.forPlatform(
+        environment: <String, String>{
+          'LOCALAPPDATA': r'C:\Users\kasse\AppData\Local',
+          'ProgramData': r'C:\ProgramData',
+        },
+        operatingSystem: 'windows',
+      );
+      expect(paths.directory.path, contains(r'C:\Users\kasse\AppData\Local'));
+      expect(p.basename(paths.directory.path), 'KasseneckConnect');
+      expect(paths.directory.path, isNot(contains('ProgramData')));
+    });
+
+    test('ohne LOCALAPPDATA bleibt ProgramData der Notnagel', () {
       final paths = ConfigPaths.forPlatform(
         environment: <String, String>{'ProgramData': r'C:\ProgramData'},
         operatingSystem: 'windows',
       );
-      expect(paths.directory.path, contains('KasseneckConnect'));
       expect(paths.directory.path, contains('ProgramData'));
+      expect(p.basename(paths.directory.path), 'KasseneckConnect');
+    });
+
+    test('ohne jede Umgebung bleibt C:\\ProgramData', () {
+      final paths = ConfigPaths.forPlatform(
+        environment: <String, String>{},
+        operatingSystem: 'windows',
+      );
+      expect(paths.directory.path, contains(r'C:\ProgramData'));
     });
 
     test('Linux nutzt XDG_CONFIG_HOME, sonst ~/.config', () {

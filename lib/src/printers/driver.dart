@@ -52,11 +52,15 @@ abstract class PrinterDriver {
   /// Fragt ab, ob das Gerät erreichbar ist. Wirft nicht.
   Future<PrinterState> status({Duration timeout = defaultPrintTimeout});
 
-  /// Bricht einen laufenden Versuch ab (Verbindung wegwerfen).
+  /// Wirft die Verbindung des letzten Versuchs weg.
   ///
-  /// Die Warteschlange ruft das **vor jeder Wiederholung** auf: sonst hinge
-  /// womöglich noch die erste Verbindung am Drucker, und die Bytes des ersten
-  /// Versuchs kämen doch noch hinterher.
+  /// Die Warteschlange ruft das **vor jeder Wiederholung** auf. Wiederholt
+  /// wird nur, wenn sicher nichts hinausgegangen ist — hier hängen also keine
+  /// Druckdaten mehr in der Leitung. Es geht allein um das Aufräumen: eine
+  /// halb offene Verbindung des gescheiterten Versuchs soll dem zweiten nicht
+  /// im Weg stehen, und der Drucker nimmt ohnehin meist nur eine gleichzeitig
+  /// an. Der Aufruf muss auch dann in Ordnung gehen, wenn gerade nichts offen
+  /// ist.
   Future<void> abort();
 }
 
@@ -118,8 +122,15 @@ class PrintResult {
   /// Klartext im Fehlerfall.
   final String? message;
 
-  /// Zusatzangaben für die Kasse, z. B. `{mayHavePrinted: true}`.
+  /// Zusatzangaben für die Kasse, z. B. `{mayHavePrinted: true, reason: …}`.
   final Map<String, Object?>? detail;
+
+  /// Ob offen ist, dass der Bon doch gelaufen ist.
+  ///
+  /// Die Warteschlange entscheidet daran, ob sie sich den Auftrag merkt: nur
+  /// ein Ergebnis, das ein zweiter Druck verschlimmern würde, sperrt die
+  /// `jobId`.
+  bool get mayHavePrinted => detail?['mayHavePrinted'] == true;
 
   @override
   String toString() => ok ? 'PrintResult(ok)' : 'PrintResult($code, $message)';

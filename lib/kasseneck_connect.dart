@@ -4,4 +4,8 @@
 library;
 
 export 'src/cli.dart';
+export 'src/config/model.dart';
+export 'src/config/paths.dart';
+export 'src/config/store.dart';
+export 'src/log/logger.dart';
 export 'src/version.dart';

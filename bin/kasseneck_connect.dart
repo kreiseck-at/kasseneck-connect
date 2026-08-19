@@ -2,6 +2,6 @@ import 'dart:io';
 
 import 'package:kasseneck_connect/kasseneck_connect.dart';
 
-void main(List<String> arguments) {
-  exitCode = runCli(arguments);
+Future<void> main(List<String> arguments) async {
+  exitCode = await runCli(arguments);
 }

@@ -1,0 +1,134 @@
+import 'dart:async';
+import 'dart:io';
+
+import 'package:shelf/shelf_io.dart' as shelf_io;
+
+import 'api/context.dart';
+import 'api/server.dart';
+import 'config/model.dart';
+import 'config/store.dart';
+import 'log/logger.dart';
+import 'pairing/pairing.dart';
+import 'version.dart';
+
+/// Wie viele Ports der Agent ab dem Wunschport durchprobiert
+/// (27182 … 27189).
+const int portFallbackRange = 8;
+
+/// Der laufende Agent: lokaler HTTP-Server auf 127.0.0.1 samt Kopplung.
+///
+/// Gebunden wird ausschließlich die Loopback-Adresse — aus dem LAN ist der
+/// Agent damit gar nicht erreichbar.
+class Agent {
+  Agent({
+    required this.store,
+    required this.log,
+    this.preferredPort = defaultAgentPort,
+    DateTime Function()? clock,
+    Pairing? pairing,
+    List<RouteRegistrar> extraRoutes = const <RouteRegistrar>[],
+    bool? openBrowser,
+  }) : _clock = clock ?? DateTime.now,
+       _pairing = pairing,
+       _extraRoutes = extraRoutes,
+       _openBrowser = openBrowser;
+
+  final ConfigStore store;
+  final AgentLog log;
+
+  /// Wunschport; von dort an wird bis [portFallbackRange] Ports weit gesucht.
+  /// `0` bindet einen freien Port des Systems (Tests).
+  final int preferredPort;
+
+  final DateTime Function() _clock;
+  final Pairing? _pairing;
+  final List<RouteRegistrar> _extraRoutes;
+  final bool? _openBrowser;
+
+  HttpServer? _server;
+  AgentContext? _context;
+
+  /// Port, auf dem der Agent tatsächlich lauscht (erst nach [start] gültig).
+  int get port => _server?.port ?? 0;
+
+  /// Zustand für die Endpunkte (erst nach [start] gültig).
+  AgentContext get context {
+    final ctx = _context;
+    if (ctx == null) {
+      throw StateError('Der Agent läuft nicht — zuerst start() aufrufen.');
+    }
+    return ctx;
+  }
+
+  /// Startet den Server, merkt sich den Port und stößt bei Bedarf die
+  /// Kopplung an (Code erzeugen, loggen, Browser öffnen).
+  Future<void> start() async {
+    if (_server != null) return;
+
+    final ctx = AgentContext(
+      store: store,
+      log: log,
+      startedAt: _clock(),
+      clock: _clock,
+      pairing: _pairing,
+    );
+    _context = ctx;
+
+    final server = await _bind();
+    _server = server;
+    ctx.port = server.port;
+    log.info(
+      '$agentName $agentVersion lauscht auf http://127.0.0.1:${server.port}',
+    );
+
+    final config = await store.load();
+    if (config.port != server.port) {
+      await store.mutate((current) => current.copyWith(port: server.port));
+    }
+
+    if (config.tokenHashes.isEmpty) {
+      final code = await ctx.pairing.newCode();
+      log.info('Kopplungscode $code (10 Minuten gültig).');
+      if (_openBrowser ?? true) {
+        await ctx.pairing.openPairingPage(code, server.port);
+      }
+    }
+  }
+
+  /// Hält den Server an.
+  Future<void> stop() async {
+    final server = _server;
+    _server = null;
+    _context = null;
+    if (server == null) return;
+    await server.close(force: true);
+    log.info('Agent angehalten.');
+  }
+
+  /// Bindet den ersten freien Port ab [preferredPort].
+  Future<HttpServer> _bind() async {
+    final handler = buildHandler(context, extraRoutes: _extraRoutes);
+    final attempts = preferredPort == 0 ? 1 : portFallbackRange;
+    Object? lastError;
+
+    for (var offset = 0; offset < attempts; offset++) {
+      final candidate = preferredPort == 0 ? 0 : preferredPort + offset;
+      try {
+        return await shelf_io.serve(
+          handler,
+          InternetAddress.loopbackIPv4,
+          candidate,
+        );
+      } on SocketException catch (e) {
+        lastError = e;
+        log.warn('Port $candidate ist belegt — nächster Versuch.');
+      }
+    }
+
+    log.error('Kein freier Port ab $preferredPort gefunden', lastError);
+    throw StateError(
+      'Kein freier Port zwischen $preferredPort und '
+      '${preferredPort + portFallbackRange - 1}.',
+    );
+  }
+}

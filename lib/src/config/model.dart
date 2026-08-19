@@ -157,6 +157,77 @@ class TerminalConfig {
   String toString() => 'TerminalConfig($kind, $host:$port)';
 }
 
+/// Offener Kopplungsvorgang: Code, Ablauf, Fehlversuche, Sperre.
+///
+/// Der Code steht im Klartext in der Datei — er ist sechsstellig, zehn Minuten
+/// gültig und steht ohnehin im Log bzw. auf der Konsole (`kasseneck-connect
+/// pair`). Ein Hash brächte hier keine Sicherheit, verhinderte aber, dass ein
+/// zweiter Prozess (CLI neben laufendem Agent) denselben Vorgang sieht.
+class PairingState {
+  const PairingState({
+    this.code,
+    this.expiresAt,
+    this.failedAttempts = 0,
+    this.lockedUntil,
+  });
+
+  /// Kein Vorgang offen.
+  static const PairingState none = PairingState();
+
+  /// Sechsstelliger Code, `null` wenn kein Vorgang offen ist.
+  final String? code;
+
+  /// Zeitpunkt, ab dem [code] nicht mehr gilt.
+  final DateTime? expiresAt;
+
+  /// Fehlversuche seit dem letzten gültigen Code.
+  final int failedAttempts;
+
+  /// Sperre nach zu vielen Fehlversuchen.
+  final DateTime? lockedUntil;
+
+  bool get isEmpty =>
+      code == null &&
+      expiresAt == null &&
+      failedAttempts == 0 &&
+      lockedUntil == null;
+
+  PairingState copyWith({
+    String? code,
+    DateTime? expiresAt,
+    int? failedAttempts,
+    DateTime? lockedUntil,
+    bool clearCode = false,
+    bool clearLock = false,
+  }) {
+    return PairingState(
+      code: clearCode ? null : (code ?? this.code),
+      expiresAt: clearCode ? null : (expiresAt ?? this.expiresAt),
+      failedAttempts: failedAttempts ?? this.failedAttempts,
+      lockedUntil: clearLock ? null : (lockedUntil ?? this.lockedUntil),
+    );
+  }
+
+  Map<String, Object?> toJson() => <String, Object?>{
+    if (code != null) 'code': code,
+    if (expiresAt != null) 'expiresAt': expiresAt!.toIso8601String(),
+    'failedAttempts': failedAttempts,
+    if (lockedUntil != null) 'lockedUntil': lockedUntil!.toIso8601String(),
+  };
+
+  static PairingState fromJson(Map<String, Object?> json) => PairingState(
+    code: readString(json['code']),
+    expiresAt: readDateTime(json['expiresAt']),
+    failedAttempts: readInt(json['failedAttempts']) ?? 0,
+    lockedUntil: readDateTime(json['lockedUntil']),
+  );
+
+  @override
+  String toString() =>
+      'PairingState(${code == null ? 'kein Code' : 'Code offen'}, '
+      '$failedAttempts Fehlversuche)';
+}
+
 /// Gesamte Konfiguration des Agenten (`config.json`).
 class AgentConfig {
   AgentConfig({
@@ -166,6 +237,7 @@ class AgentConfig {
     List<PrinterConfig>? printers,
     this.terminal,
     this.updateChannel = defaultUpdateChannel,
+    this.pairing = PairingState.none,
   }) : tokenHashes = List<String>.unmodifiable(tokenHashes ?? const <String>[]),
        printers = List<PrinterConfig>.unmodifiable(
          printers ?? const <PrinterConfig>[],
@@ -185,6 +257,9 @@ class AgentConfig {
 
   final String updateChannel;
 
+  /// Offener Kopplungsvorgang (leer, wenn keiner läuft).
+  final PairingState pairing;
+
   AgentConfig copyWith({
     int? schemaVersion,
     int? port,
@@ -193,6 +268,7 @@ class AgentConfig {
     TerminalConfig? terminal,
     bool clearTerminal = false,
     String? updateChannel,
+    PairingState? pairing,
   }) {
     return AgentConfig(
       schemaVersion: schemaVersion ?? this.schemaVersion,
@@ -201,6 +277,7 @@ class AgentConfig {
       printers: printers ?? this.printers,
       terminal: clearTerminal ? null : (terminal ?? this.terminal),
       updateChannel: updateChannel ?? this.updateChannel,
+      pairing: pairing ?? this.pairing,
     );
   }
 
@@ -211,11 +288,16 @@ class AgentConfig {
     'printers': printers.map((p) => p.toJson()).toList(),
     'terminal': terminal?.toJson(),
     'updateChannel': updateChannel,
+    if (!pairing.isEmpty) 'pairing': pairing.toJson(),
   };
 
   static AgentConfig fromJson(Map<String, Object?> json) {
     final terminalJson = readMap(json['terminal']);
+    final pairingJson = readMap(json['pairing']);
     return AgentConfig(
+      pairing: pairingJson == null
+          ? PairingState.none
+          : PairingState.fromJson(pairingJson),
       schemaVersion: readInt(json['schemaVersion']) ?? currentSchemaVersion,
       port: readInt(json['port']) ?? defaultAgentPort,
       tokenHashes: readStringList(json['tokenHashes']),
@@ -244,6 +326,12 @@ int? readInt(Object? value) {
   if (value is num) return value.toInt();
   if (value is String) return int.tryParse(value);
   return null;
+}
+
+/// Liest einen Zeitpunkt aus einer ISO-8601-Zeichenkette.
+DateTime? readDateTime(Object? value) {
+  if (value is! String) return null;
+  return DateTime.tryParse(value);
 }
 
 /// Liest eine Map mit String-Schlüsseln.

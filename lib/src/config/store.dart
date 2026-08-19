@@ -18,7 +18,27 @@ class ConfigStore {
 
   final ConfigPaths paths;
 
+  /// Serialisiert die Änderungen dieses Prozesses.
+  Future<void> _queue = Future<void>.value();
+
   File get file => paths.configFile;
+
+  /// Ändert die Konfiguration: frisch laden, [change] anwenden, atomar
+  /// schreiben. Aufrufe laufen nacheinander, damit zwei Änderungen sich nicht
+  /// gegenseitig überschreiben.
+  ///
+  /// Das ist der vorgesehene Weg für alle Schreibzugriffe (Kopplung, Drucker,
+  /// Terminal) — nie `load()`/`save()` von Hand kombinieren.
+  Future<AgentConfig> mutate(AgentConfig Function(AgentConfig current) change) {
+    final result = _queue.then((_) async {
+      final current = await load();
+      final updated = change(current);
+      await save(updated);
+      return updated;
+    });
+    _queue = result.then<void>((_) {}).catchError((Object _) {});
+    return result;
+  }
 
   /// Lädt die Konfiguration. Fehlt oder bricht die Datei, liefert `load()`
   /// die Standardkonfiguration — der Agent startet dann mit leerem Zustand.

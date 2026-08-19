@@ -1,7 +1,13 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:args/args.dart';
 
+import 'agent.dart';
+import 'config/paths.dart';
+import 'config/store.dart';
+import 'log/logger.dart';
+import 'pairing/pairing.dart';
 import 'version.dart';
 
 /// Exit-Code für Befehle, die es noch nicht gibt.
@@ -9,6 +15,9 @@ const int exitCodeNotImplemented = 2;
 
 /// Exit-Code für falsche Verwendung (unbekannter Befehl, fehlende Option).
 const int exitCodeUsage = 64;
+
+/// Exit-Code, wenn der Agent nicht starten konnte.
+const int exitCodeFailed = 70;
 
 /// Befehle der Kommandozeile.
 const List<String> agentCommands = <String>[
@@ -38,9 +47,15 @@ ArgParser buildArgParser() {
 
 /// Führt die Kommandozeile aus und liefert den Exit-Code.
 ///
-/// Bis auf `version` sind die Befehle in dieser Etappe noch nicht gebaut; sie
-/// melden das ausdrücklich und enden mit [exitCodeNotImplemented].
-int runCli(List<String> arguments, {StringSink? out, StringSink? err}) {
+/// [paths] und [awaitShutdown] sind für Tests da: das eine legt das
+/// Datenverzeichnis fest, das andere ersetzt das Warten auf SIGINT/SIGTERM.
+Future<int> runCli(
+  List<String> arguments, {
+  StringSink? out,
+  StringSink? err,
+  ConfigPaths? paths,
+  Future<void> Function()? awaitShutdown,
+}) async {
   final stdoutSink = out ?? stdout;
   final stderrSink = err ?? stderr;
   final parser = buildArgParser();
@@ -72,13 +87,89 @@ int runCli(List<String> arguments, {StringSink? out, StringSink? err}) {
     return exitCodeUsage;
   }
 
-  if (command == 'version') {
-    stdoutSink.writeln('$agentName $agentVersion');
-    return 0;
+  final resolvedPaths = paths ?? ConfigPaths.forPlatform();
+
+  switch (command) {
+    case 'version':
+      stdoutSink.writeln('$agentName $agentVersion');
+      return 0;
+    case 'run':
+      return _runAgent(resolvedPaths, stdoutSink, stderrSink, awaitShutdown);
+    case 'pair':
+      return _printPairingCode(resolvedPaths, stdoutSink);
+    default:
+      stderrSink.writeln('Befehl „$command“: noch nicht verfügbar.');
+      return exitCodeNotImplemented;
+  }
+}
+
+/// `run` — Agent starten und laufen lassen, bis SIGINT/SIGTERM kommt.
+Future<int> _runAgent(
+  ConfigPaths paths,
+  StringSink out,
+  StringSink err,
+  Future<void> Function()? awaitShutdown,
+) async {
+  final store = ConfigStore(paths);
+  final log = AgentLog(paths.logDirectory);
+  final config = await store.load();
+  final agent = Agent(store: store, log: log, preferredPort: config.port);
+
+  try {
+    await agent.start();
+  } on Object catch (e) {
+    log.error('Start fehlgeschlagen', e);
+    err.writeln('Start fehlgeschlagen: $e');
+    return exitCodeFailed;
   }
 
-  stderrSink.writeln('Befehl „$command“: noch nicht verfügbar.');
-  return exitCodeNotImplemented;
+  out.writeln('Lokale API: http://127.0.0.1:${agent.port}');
+  final pending = (await store.load()).pairing.code;
+  if (pending != null) {
+    out.writeln('Kopplungscode: $pending (10 Minuten gültig)');
+  }
+
+  await (awaitShutdown ?? _awaitShutdownSignal)();
+  await agent.stop();
+  return 0;
+}
+
+/// `pair` — neuen Code erzeugen und anzeigen.
+///
+/// Läuft in einem eigenen Prozess neben dem Agenten: der Code steht in der
+/// `config.json`, und der laufende Agent liest ihn dort bei `POST /v1/pair`.
+Future<int> _printPairingCode(ConfigPaths paths, StringSink out) async {
+  final store = ConfigStore(paths);
+  final log = AgentLog(paths.logDirectory);
+  final code = await Pairing(store: store, log: log).newCode();
+  final config = await store.load();
+
+  out
+    ..writeln('Kopplungscode: $code')
+    ..writeln('Gültig 10 Minuten. In der Kasse eingeben oder aufrufen:')
+    ..writeln(pairingPageUrl(code, config.port));
+  return 0;
+}
+
+/// Wartet auf das Abschaltsignal des Betriebssystems.
+Future<void> _awaitShutdownSignal() {
+  final completer = Completer<void>();
+  final subscriptions = <StreamSubscription<ProcessSignal>>[];
+
+  void shutdown(ProcessSignal signal) {
+    if (!completer.isCompleted) completer.complete();
+  }
+
+  subscriptions.add(ProcessSignal.sigint.watch().listen(shutdown));
+  if (!Platform.isWindows) {
+    subscriptions.add(ProcessSignal.sigterm.watch().listen(shutdown));
+  }
+
+  return completer.future.whenComplete(() async {
+    for (final subscription in subscriptions) {
+      await subscription.cancel();
+    }
+  });
 }
 
 void _writeUsage(StringSink sink, ArgParser parser) {

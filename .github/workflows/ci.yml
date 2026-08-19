@@ -25,9 +25,11 @@ jobs:
         run: dart analyze --fatal-infos
 
       - name: Tests
-        # Kein Testlauf darf einen Browser aufmachen.
-        env:
-          KASSENECK_CONNECT_NO_BROWSER: '1'
+        # Bewusst OHNE KASSENECK_CONNECT_NO_BROWSER: dass kein Test einen
+        # Browser aufmacht, sichern die Nahtstellen im Testaufbau
+        # (`openBrowser: false` bzw. ein injizierter ProcessRunner) — und der
+        # Test „ohne Token wird die Kopplungsseite geöffnet" prüft genau das
+        # Öffnen, die Variable würde ihn aushebeln.
         run: dart test --reporter expanded
 
   build:

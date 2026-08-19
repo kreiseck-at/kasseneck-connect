@@ -76,9 +76,12 @@ class JsonBody {
 /// Die Grenze wird beim Lesen geprüft, nicht danach: ein Angreifer auf der
 /// Loopback-Schnittstelle soll den Agenten nicht mit einem endlosen Rumpf
 /// vollaufen lassen können.
+/// [allowEmpty] lässt einen leeren Rumpf als `{}` durchgehen — für Endpunkte,
+/// deren Angaben allesamt freiwillig sind (`POST /v1/printers/discover`).
 Future<JsonBody> readJsonBody(
   Request request, {
   int maxBytes = defaultJsonBodyLimit,
+  bool allowEmpty = false,
 }) async {
   final bytes = <int>[];
   await for (final chunk in request.read()) {
@@ -96,7 +99,11 @@ Future<JsonBody> readJsonBody(
   }
 
   try {
-    final decoded = jsonDecode(utf8.decode(bytes)) as Object?;
+    final raw = utf8.decode(bytes);
+    if (allowEmpty && raw.trim().isEmpty) {
+      return const JsonBody._(<String, Object?>{}, null);
+    }
+    final decoded = jsonDecode(raw) as Object?;
     if (decoded is! Map) {
       return JsonBody._(
         null,

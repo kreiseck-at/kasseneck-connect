@@ -4,6 +4,7 @@ import 'package:shelf_router/shelf_router.dart';
 
 import '../config/model.dart';
 import '../config/store.dart';
+import '../events/bus.dart';
 import '../log/logger.dart';
 import '../pairing/pairing.dart';
 
@@ -32,7 +33,9 @@ class AgentContext {
     DateTime Function()? clock,
     Pairing? pairing,
     PrinterSummaries? printers,
+    EventBus? events,
   }) : clock = clock ?? DateTime.now,
+       events = events ?? EventBus(),
        printers = printers ?? _noPrinters {
     this.pairing =
         pairing ?? Pairing(store: store, log: log, clock: this.clock);
@@ -55,8 +58,14 @@ class AgentContext {
   /// Kopplung: Code erzeugen, prüfen, Token ausgeben und widerrufen.
   late final Pairing pairing;
 
-  /// Drucker für die Langform des Status (bis A3 leer).
+  /// Drucker für die Langform des Status.
   final PrinterSummaries printers;
+
+  /// Gemeinsamer Ereignisbus (Druck, Druckerzustand, später Terminal).
+  ///
+  /// Die Melder schreiben hier hinein; `/v1/events` (Etappe A4) hängt sich als
+  /// Zuhörer daran.
+  final EventBus events;
 
   Future<AgentConfig> config() => store.load();
 

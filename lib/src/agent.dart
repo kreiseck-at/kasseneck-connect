@@ -4,11 +4,16 @@ import 'dart:io';
 import 'package:shelf/shelf_io.dart' as shelf_io;
 
 import 'api/context.dart';
+import 'api/routes_printers.dart';
 import 'api/server.dart';
 import 'config/model.dart';
 import 'config/store.dart';
+import 'events/bus.dart';
 import 'log/logger.dart';
 import 'pairing/pairing.dart';
+import 'printers/discovery.dart';
+import 'printers/queue.dart';
+import 'printers/registry.dart';
 import 'version.dart';
 
 /// Wie viele Ports der Agent ab dem Wunschport durchprobiert
@@ -32,11 +37,19 @@ class Agent {
     List<RouteRegistrar> extraRoutes = const <RouteRegistrar>[],
     bool? openBrowser,
     Map<String, String>? environment,
+    EventBus? events,
+    PrinterRegistry? registry,
+    PrintQueue? queue,
+    PrinterDiscovery? discovery,
   }) : _clock = clock ?? DateTime.now,
        _pairing = pairing,
        _extraRoutes = extraRoutes,
        _openBrowser = openBrowser,
-       _environment = environment;
+       _environment = environment,
+       _events = events,
+       _registry = registry,
+       _queue = queue,
+       _discovery = discovery;
 
   final ConfigStore store;
   final AgentLog log;
@@ -50,9 +63,27 @@ class Agent {
   final List<RouteRegistrar> _extraRoutes;
   final bool? _openBrowser;
   final Map<String, String>? _environment;
+  final EventBus? _events;
+  final PrinterRegistry? _registry;
+  final PrintQueue? _queue;
+  final PrinterDiscovery? _discovery;
 
   HttpServer? _server;
   AgentContext? _context;
+  PrinterRegistry? _printers;
+  List<RouteRegistrar> _routes = const <RouteRegistrar>[];
+
+  /// Druckerverwaltung des laufenden Agenten (erst nach [start] gültig).
+  PrinterRegistry get printers {
+    final registry = _printers;
+    if (registry == null) {
+      throw StateError('Der Agent läuft nicht — zuerst start() aufrufen.');
+    }
+    return registry;
+  }
+
+  /// Ereignisbus des laufenden Agenten (erst nach [start] gültig).
+  EventBus get events => context.events;
 
   /// Port, auf dem der Agent tatsächlich lauscht (erst nach [start] gültig).
   int get port => _server?.port ?? 0;
@@ -71,14 +102,33 @@ class Agent {
   Future<void> start() async {
     if (_server != null) return;
 
+    // Der Druckstapel gehört zum Agenten: Registry, Warteschlange und Suche
+    // hängen alle am selben Ereignisbus, den A4 an `/v1/events` weiterreicht.
+    final bus = _events ?? EventBus();
+    final registry =
+        _registry ?? PrinterRegistry(store: store, log: log, events: bus);
+    final queue =
+        _queue ?? PrintQueue(registry: registry, events: bus, log: log);
+    _printers = registry;
+
     final ctx = AgentContext(
       store: store,
       log: log,
       startedAt: _clock(),
       clock: _clock,
       pairing: _pairing,
+      events: bus,
+      printers: registry.summaries,
     );
     _context = ctx;
+    _routes = <RouteRegistrar>[
+      printerRoutes(
+        registry: registry,
+        queue: queue,
+        discovery: _discovery ?? PrinterDiscovery(log: log),
+      ),
+      ..._extraRoutes,
+    ];
 
     final server = await _bind();
     _server = server;
@@ -121,7 +171,7 @@ class Agent {
   Future<HttpServer> _bind() async {
     final handler = buildHandler(
       context,
-      extraRoutes: _extraRoutes,
+      extraRoutes: _routes,
       environment: _environment,
     );
     final attempts = preferredPort == 0 ? 1 : portFallbackRange;

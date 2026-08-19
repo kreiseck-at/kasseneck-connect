@@ -80,9 +80,20 @@ class ConfigStore {
 
     final temp = paths.configTempFile();
     final json = const JsonEncoder.withIndent('  ').convert(config.toJson());
-    await temp.writeAsString('$json\n', flush: true);
-    _restrict(temp.path, '600');
-    await temp.rename(file.path);
+    try {
+      await temp.writeAsString('$json\n', flush: true);
+      _restrict(temp.path, '600');
+      await temp.rename(file.path);
+    } on Object {
+      // Bleibt die Datei liegen (volle Platte, Rechte weg), sammeln sich sonst
+      // mit jedem Versuch neue `.tmp`-Reste im Datenverzeichnis an.
+      try {
+        if (temp.existsSync()) temp.deleteSync();
+      } on FileSystemException {
+        // Auch das Aufräumen darf den eigentlichen Fehler nicht verdecken.
+      }
+      rethrow;
+    }
   }
 
   /// Holt die prozessübergreifende Sperre (blockiert, bis sie frei ist).

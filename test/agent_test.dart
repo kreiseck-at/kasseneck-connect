@@ -26,13 +26,18 @@ void main() {
     openBrowser: false,
   );
 
-  Future<String> get(int port, String path) async {
+  Future<String> get(int port, String path, {String? token}) async {
     final client = HttpClient();
     try {
       final request = await client.openUrl(
         'GET',
         Uri.parse('http://127.0.0.1:$port$path'),
       );
+      if (token != null) {
+        request.headers
+          ..set('origin', 'https://kasse.kasseneck.at')
+          ..set('authorization', 'Bearer $token');
+      }
       final response = await request.close();
       return response.transform(utf8.decoder).join();
     } finally {
@@ -102,6 +107,42 @@ void main() {
     await agent.stop();
 
     await expectLater(get(port, '/v1/status'), throwsA(isA<SocketException>()));
+  });
+
+  test('der Agent bringt die Drucker-Endpunkte mit', () async {
+    const token = 'agent-token';
+    await store.save(AgentConfig(tokenHashes: <String>[hashToken(token)]));
+
+    final agent = makeAgent();
+    await agent.start();
+    addTearDown(agent.stop);
+
+    final saved = await agent.printers.upsert(
+      PrinterConfig(
+        id: '',
+        name: 'Kasse vorne',
+        kind: PrinterKind.tcp9100,
+        host: '192.168.0.50',
+      ),
+    );
+
+    final printers =
+        jsonDecode(await get(agent.port, '/v1/printers?probe=0', token: token))
+            as Map<String, Object?>;
+    expect((printers['printers']! as List).single, <String, Object?>{
+      'id': saved.id,
+      'name': 'Kasse vorne',
+      'kind': 'tcp9100',
+      'host': '192.168.0.50',
+      'port': 9100,
+      'state': 'unknown',
+    });
+
+    // Dieselbe Liste hängt in der Langform des Status.
+    final status =
+        jsonDecode(await get(agent.port, '/v1/status', token: token))
+            as Map<String, Object?>;
+    expect((status['printers']! as List).single, isA<Map<String, Object?>>());
   });
 
   test('die Kopplungsseite trägt Code und Port', () {

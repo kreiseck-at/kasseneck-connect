@@ -86,4 +86,20 @@ void main() {
     store.file.writeAsStringSync('\n');
     expect((await store.load()).port, 27182);
   });
+
+  test('ein misslungenes Speichern lässt keine .tmp-Datei liegen', () async {
+    final store = storeIn(temp);
+    // `config.json` als Verzeichnis: das Umbenennen muss scheitern.
+    Directory(store.file.path).createSync(recursive: true);
+
+    await expectLater(
+      store.save(AgentConfig()),
+      throwsA(isA<FileSystemException>()),
+    );
+
+    final leftovers = temp.listSync().whereType<File>().where(
+      (f) => f.path.endsWith('.tmp'),
+    );
+    expect(leftovers, isEmpty);
+  });
 }

@@ -8,8 +8,9 @@ Zahlungsterminal (v1.1) und die Selbstaktualisierung (v1.2) dazu.
 
 Die Kasse erzeugt die ESC/POS-Bytes weiterhin selbst — Connect ist reiner Transport.
 
-> Stand: Etappe v1.0 im Aufbau. Fertig sind Projektgerüst, Konfiguration und Log;
-> die lokale API, Pairing und die Druckertreiber folgen.
+> Stand: Etappe v1.0 im Aufbau. Fertig sind Projektgerüst, Konfiguration, Log,
+> lokale API mit Kopplung sowie die Netzwerkdrucker samt Suche und
+> Warteschlange; offen sind `/v1/events`, Autostart und die Installer.
 
 ## Befehle
 
@@ -34,6 +35,28 @@ Start einen sechsstelligen Code (10 Minuten gültig), schreibt ihn ins Log und
 öffnet `https://kasse.kasseneck.at/connect#code=…&port=…` im Standardbrowser.
 `KASSENECK_CONNECT_NO_BROWSER=1` unterdrückt das Öffnen; `pair` zeigt jederzeit
 einen frischen Code an — auch neben dem laufenden Agenten.
+
+## Drucker über die lokale API
+
+Alle Pfade brauchen den Kopplungstoken (`Authorization: Bearer …`) und eine
+erlaubte Herkunft; Fachfehler kommen mit HTTP 200 und `{ok: false, error: …}`.
+
+| Methode | Pfad | Zweck |
+|---|---|---|
+| GET | `/v1/printers` | konfigurierte Drucker samt Zustand (`?probe=0` fragt die Geräte nicht an) |
+| PUT | `/v1/printers` | anlegen — `{name, kind, host, port?, devid?}`, die ID vergibt der Agent |
+| PUT | `/v1/printers/{id}` | anlegen oder ändern |
+| DELETE | `/v1/printers/{id}` | entfernen |
+| POST | `/v1/printers/discover` | `{scan?: bool}` → mDNS (3 s) und auf Wunsch Portscan im lokalen /24 |
+| POST | `/v1/printers/{id}/test` | Testseite mit den Bytes aus dem Rumpf |
+| POST | `/v1/print` | `{printerId, jobId, bytes}` (base64, bis 4 MB) |
+
+`kind` ist `tcp9100` (roher ESC/POS-Strom) oder `epos` (Epson ePOS-Print über
+HTTP/HTTPS, `devid` je Gerät). Gedruckt wird **seriell je Drucker**, mit 10 s
+Zeitlimit und genau einem Wiederholversuch bei Transportfehlern; derselbe
+`jobId` druckt innerhalb von 60 Sekunden kein zweites Mal. Fehlercodes:
+`printer_unknown`, `printer_offline`, `timeout`, `refused` (das Gerät lehnt ab,
+z. B. kein Papier), `bad_request`.
 
 ## Konfigurationspfade
 

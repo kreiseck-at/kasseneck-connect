@@ -39,7 +39,7 @@ const Map<String, String> downloadExtension = <String, String>{
 
 /// Der versionierte Name, unter dem die Datei in `connect/<version>/` liegt.
 ///
-/// `KasseneckConnect-0.1.0-macos-arm64.pkg`
+/// `KasseneckConnect-1.0.0-macos-arm64.pkg`
 String versionedDownloadName(String platformKey, String version) {
   final suffix = downloadPlatformSuffix[platformKey];
   final extension = downloadExtension[platformKey];

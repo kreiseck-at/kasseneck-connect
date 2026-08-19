@@ -263,7 +263,7 @@ JSON-Zeile; alle 30 Sekunden geht ein Ping hinaus, damit tote Verbindungen
 auffallen.
 
 ```json
-{"type": "hello", "version": "0.1.0", "port": 27182}
+{"type": "hello", "version": "1.0.0", "port": 27182}
 {"type": "printer.state", "printerId": "p_ab12cd34", "state": "online"}
 {"type": "print.done",    "printerId": "p_ab12cd34", "jobId": "beleg-42", "attempts": 1}
 {"type": "print.failed",  "printerId": "p_ab12cd34", "jobId": "beleg-43", "code": "printer_offline", "message": "…"}

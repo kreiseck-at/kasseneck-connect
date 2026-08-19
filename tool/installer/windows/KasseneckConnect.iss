@@ -1,6 +1,6 @@
 ; Inno-Setup-Skript für Kasseneck Connect (Windows).
 ;
-;   ISCC.exe /DAppVersion=0.1.0 tool\installer\windows\KasseneckConnect.iss
+;   ISCC.exe /DAppVersion=1.0.0 tool\installer\windows\KasseneckConnect.iss
 ;   -> build\KasseneckConnect-<version>-windows-x64.exe
 ;
 ; Installiert ohne Administratorrechte nach %LocalAppData%\KasseneckConnect,

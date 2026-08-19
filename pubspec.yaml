@@ -2,7 +2,7 @@ name: kasseneck_connect
 description: >-
   Kasseneck Connect — lokaler Agent für die Browser-Kasse: findet Netzwerk-Bondrucker,
   druckt Beleg-Bytes über TCP 9100 bzw. ePOS und steuert später das Zahlungsterminal.
-version: 0.1.0
+version: 1.0.0
 homepage: https://kreiseck.com
 publish_to: none
 

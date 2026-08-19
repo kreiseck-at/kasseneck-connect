@@ -20,6 +20,7 @@ void main() {
   final common = File('tool/_common.sh').readAsStringSync();
   final readme = File('README.md').readAsStringSync();
   final pubspec = File('pubspec.yaml').readAsStringSync();
+  final changelog = File('CHANGELOG.md').readAsStringSync();
   final innoScript = File(
     'tool/installer/windows/KasseneckConnect.iss',
   ).readAsStringSync();
@@ -137,6 +138,16 @@ void main() {
 
     test('die Version ist ein SemVer-Dreiklang', () {
       expect(agentVersion, matches(RegExp(r'^\d+\.\d+\.\d+(?:[-+].*)?$')));
+    });
+
+    // Ohne Eintrag im Changelog weiß beim Support niemand, was in der Fassung
+    // steckt, die auf dem Kassenrechner läuft.
+    test('der Changelog führt die aktuelle Version', () {
+      expect(
+        changelog,
+        contains('## $agentVersion'),
+        reason: 'CHANGELOG.md hat keinen Abschnitt für $agentVersion',
+      );
     });
   });
 }

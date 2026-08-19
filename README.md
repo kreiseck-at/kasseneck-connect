@@ -26,8 +26,14 @@ kasseneck-connect <befehl>
 | `doctor` | Diagnose ausgeben |
 | `version` | Version ausgeben |
 
-Bis auf `version` melden die Befehle derzeit „noch nicht verfügbar" und enden mit
-Exit-Code 2.
+`run`, `pair` und `version` sind gebaut; die übrigen Befehle melden derzeit
+„noch nicht verfügbar" und enden mit Exit-Code 2.
+
+`run` läuft, bis SIGINT/SIGTERM kommt. Ist noch kein Gerät gekoppelt, erzeugt der
+Start einen sechsstelligen Code (10 Minuten gültig), schreibt ihn ins Log und
+öffnet `https://kasse.kasseneck.at/connect#code=…&port=…` im Standardbrowser.
+`KASSENECK_CONNECT_NO_BROWSER=1` unterdrückt das Öffnen; `pair` zeigt jederzeit
+einen frischen Code an — auch neben dem laufenden Agenten.
 
 ## Konfigurationspfade
 
@@ -55,6 +61,32 @@ dart analyze
 dart format .
 dart compile exe bin/kasseneck_connect.dart -o build/kasseneck-connect
 ```
+
+### Kasse lokal gegen den Agenten entwickeln
+
+Ansprechen darf den Agenten nur die Kasse selbst:
+`https://kasse.kasseneck.at`, `https://kasseneck-kasse.web.app`,
+`https://kasseneck-kasse.firebaseapp.com`. Ein lokaler Entwicklungsserver
+(`http://localhost:5173`, `http://127.0.0.1:4173`) ist **standardmäßig gesperrt** —
+sonst könnte auf einem Kundenrechner jede beliebige lokale Webseite drucken.
+
+Zum Entwickeln freischalten, eines von beiden:
+
+```bash
+KASSENECK_CONNECT_DEV=1 kasseneck-connect run     # nur für diesen Lauf
+```
+
+oder dauerhaft in der `config.json` des Entwicklungsrechners:
+
+```json
+{ "allowDevOrigins": true }
+```
+
+Auf Kundenrechnern bleibt beides aus.
+
+Ohne `Origin`-Kopfzeile (curl, Diagnosewerkzeuge) sind nur `GET /v1/status` und
+`POST /v1/pair` erreichbar; alles andere verlangt eine erlaubte Herkunft **und**
+einen Token.
 
 ---
 

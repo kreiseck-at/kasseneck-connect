@@ -50,6 +50,10 @@ enum PairFailure {
   final String message;
 }
 
+/// Startet ein Programm — in Tests austauschbar.
+typedef ProcessRunner =
+    Future<ProcessResult> Function(String executable, List<String> arguments);
+
 /// SHA-256-Hash eines Tokens in Hex — nur der landet in der Konfiguration.
 String hashToken(String token) => sha256.convert(utf8.encode(token)).toString();
 
@@ -77,11 +81,13 @@ class Pairing {
     required this.log,
     DateTime Function()? clock,
     Random? random,
+    ProcessRunner? runProcess,
     this.codeLifetime = pairingCodeLifetime,
     this.lockDuration = pairingLockDuration,
     this.maxFailures = pairingMaxFailures,
   }) : _clock = clock ?? DateTime.now,
-       _random = random ?? Random.secure();
+       _random = random ?? Random.secure(),
+       _runProcess = runProcess ?? Process.run;
 
   final ConfigStore store;
   final AgentLog log;
@@ -91,6 +97,7 @@ class Pairing {
 
   final DateTime Function() _clock;
   final Random _random;
+  final ProcessRunner _runProcess;
 
   /// Erzeugt einen neuen Code, hinterlegt ihn und hebt eine Sperre auf.
   Future<String> newCode() async {
@@ -212,15 +219,18 @@ class Pairing {
         executable = 'open';
         arguments = <String>[url];
       case 'windows':
-        executable = 'cmd';
-        arguments = <String>['/c', 'start', '', url];
+        // Nicht `cmd /c start`: die Eingabeaufforderung zerlegt die Adresse am
+        // `&` und öffnete nur `…#code=123456`. `FileProtocolHandler` bekommt
+        // die Adresse unzerlegt.
+        executable = 'rundll32';
+        arguments = <String>['url.dll,FileProtocolHandler', url];
       default:
         executable = 'xdg-open';
         arguments = <String>[url];
     }
 
     try {
-      final result = await Process.run(executable, arguments);
+      final result = await _runProcess(executable, arguments);
       if (result.exitCode != 0) {
         log.warn('Browser ließ sich nicht öffnen (Code ${result.exitCode}).');
       }

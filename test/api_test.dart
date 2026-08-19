@@ -110,8 +110,6 @@ void main() {
         'https://kasse.kasseneck.at',
         'https://kasseneck-kasse.web.app',
         'https://kasseneck-kasse.firebaseapp.com',
-        'http://localhost:5173',
-        'http://127.0.0.1:4173',
       ]) {
         final response = await send('GET', '/v1/status', origin: origin);
         expect(response.status, 200, reason: origin);
@@ -133,6 +131,9 @@ void main() {
       expect(response.status, 403);
       expect(response.errorCode, errorOriginForbidden);
       expect(response.headers.value('access-control-allow-origin'), isNull);
+      // Auch die Ablehnung hängt von der Herkunft ab — sonst legt ein Cache sie
+      // für eine erlaubte Herkunft ab.
+      expect(response.headers.value('vary'), contains('Origin'));
     });
 
     test('Herkunft mit gleichem Präfix zählt nicht als erlaubt', () async {
@@ -415,5 +416,69 @@ void main() {
 
     expect(response.statusCode, 200);
     expect((jsonDecode(body) as Map)['ok'], isTrue);
+  });
+
+  group('Entwicklungsherkünfte', () {
+    const dev = 'http://localhost:5173';
+
+    test('sind standardmäßig gesperrt', () async {
+      final response = await send('GET', '/v1/status', origin: dev);
+      expect(response.status, 403);
+      expect(response.errorCode, errorOriginForbidden);
+    });
+
+    test('auch 127.0.0.1 ist standardmäßig gesperrt', () async {
+      final response = await send(
+        'GET',
+        '/v1/status',
+        origin: 'http://127.0.0.1:4173',
+      );
+      expect(response.status, 403);
+    });
+
+    test('allowDevOrigins in der Konfiguration schaltet sie frei', () async {
+      await store.mutate((current) => current.copyWith(allowDevOrigins: true));
+
+      final response = await send('GET', '/v1/status', origin: dev);
+      expect(response.status, 200);
+      expect(response.headers.value('access-control-allow-origin'), dev);
+    });
+
+    test('KASSENECK_CONNECT_DEV=1 schaltet sie frei', () async {
+      final devServer = await shelf_io.serve(
+        buildHandler(
+          ctx,
+          environment: const <String, String>{devOriginsEnvVar: '1'},
+        ),
+        InternetAddress.loopbackIPv4,
+        0,
+      );
+      addTearDown(() => devServer.close(force: true));
+
+      final client = HttpClient();
+      final request = await client.openUrl(
+        'GET',
+        Uri.parse('http://127.0.0.1:${devServer.port}/v1/status'),
+      );
+      request.headers.set('origin', dev);
+      final response = await request.close();
+      await response.drain<void>();
+      client.close(force: true);
+
+      expect(response.statusCode, 200);
+      expect(response.headers.value('access-control-allow-origin'), dev);
+    });
+  });
+
+  test('zu großer Rumpf wird abgewiesen (413)', () async {
+    final response = await send(
+      'POST',
+      '/v1/pair',
+      origin: kasse,
+      body: <String, Object?>{'code': '1' * (64 * 1024 + 1)},
+    );
+
+    expect(response.status, 413);
+    expect(response.errorCode, errorBodyTooLarge);
   });
 }

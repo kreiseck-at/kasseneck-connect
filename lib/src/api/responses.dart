@@ -14,6 +14,15 @@ const String errorNotFound = 'not_found';
 /// Rumpf oder Parameter unbrauchbar.
 const String errorBadRequest = 'bad_request';
 
+/// Rumpf größer als erlaubt — 413.
+const String errorBodyTooLarge = 'body_too_large';
+
+/// Voreingestellte Obergrenze für JSON-Rümpfe (64 KB).
+///
+/// `POST /v1/print` bekommt in A3 eine eigene, größere Grenze — die Beleg-Bytes
+/// kommen base64-kodiert im Rumpf.
+const int defaultJsonBodyLimit = 64 * 1024;
+
 /// Kopplungscode falsch oder verbraucht.
 const String errorPairInvalid = 'pair_invalid';
 
@@ -49,6 +58,61 @@ Response failJson(
       if (detail != null) 'detail': detail,
     },
   }, headers);
+}
+
+/// Ergebnis von [readJsonBody]: entweder [data] oder eine fertige [error].
+class JsonBody {
+  const JsonBody._(this.data, this.error);
+
+  /// Der gelesene Rumpf (`null`, wenn [error] gesetzt ist).
+  final Map<String, Object?>? data;
+
+  /// Fertige Fehlerantwort für den Aufrufer.
+  final Response? error;
+}
+
+/// Liest einen JSON-Rumpf mit Obergrenze.
+///
+/// Die Grenze wird beim Lesen geprüft, nicht danach: ein Angreifer auf der
+/// Loopback-Schnittstelle soll den Agenten nicht mit einem endlosen Rumpf
+/// vollaufen lassen können.
+Future<JsonBody> readJsonBody(
+  Request request, {
+  int maxBytes = defaultJsonBodyLimit,
+}) async {
+  final bytes = <int>[];
+  await for (final chunk in request.read()) {
+    bytes.addAll(chunk);
+    if (bytes.length > maxBytes) {
+      return JsonBody._(
+        null,
+        failJson(
+          errorBodyTooLarge,
+          'Der Rumpf ist zu groß (höchstens ${maxBytes ~/ 1024} KB).',
+          status: 413,
+        ),
+      );
+    }
+  }
+
+  try {
+    final decoded = jsonDecode(utf8.decode(bytes)) as Object?;
+    if (decoded is! Map) {
+      return JsonBody._(
+        null,
+        failJson(errorBadRequest, 'Erwartet wird ein JSON-Objekt.'),
+      );
+    }
+    return JsonBody._(
+      decoded.map((key, dynamic value) => MapEntry('$key', value as Object?)),
+      null,
+    );
+  } on FormatException {
+    return JsonBody._(
+      null,
+      failJson(errorBadRequest, 'Der Rumpf ist kein gültiges JSON.'),
+    );
+  }
 }
 
 Response _json(

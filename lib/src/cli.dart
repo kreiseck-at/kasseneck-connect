@@ -47,14 +47,17 @@ ArgParser buildArgParser() {
 
 /// Führt die Kommandozeile aus und liefert den Exit-Code.
 ///
-/// [paths] und [awaitShutdown] sind für Tests da: das eine legt das
-/// Datenverzeichnis fest, das andere ersetzt das Warten auf SIGINT/SIGTERM.
+/// [paths], [awaitShutdown], [preferredPort] und [openBrowser] sind Nahtstellen
+/// für Tests: Datenverzeichnis, Ersatz für das Warten auf SIGINT/SIGTERM,
+/// Wunschport und das Öffnen des Browsers.
 Future<int> runCli(
   List<String> arguments, {
   StringSink? out,
   StringSink? err,
   ConfigPaths? paths,
   Future<void> Function()? awaitShutdown,
+  int? preferredPort,
+  bool? openBrowser,
 }) async {
   final stdoutSink = out ?? stdout;
   final stderrSink = err ?? stderr;
@@ -94,7 +97,14 @@ Future<int> runCli(
       stdoutSink.writeln('$agentName $agentVersion');
       return 0;
     case 'run':
-      return _runAgent(resolvedPaths, stdoutSink, stderrSink, awaitShutdown);
+      return _runAgent(
+        resolvedPaths,
+        stdoutSink,
+        stderrSink,
+        awaitShutdown: awaitShutdown,
+        preferredPort: preferredPort,
+        openBrowser: openBrowser,
+      );
     case 'pair':
       return _printPairingCode(resolvedPaths, stdoutSink);
     default:
@@ -107,13 +117,22 @@ Future<int> runCli(
 Future<int> _runAgent(
   ConfigPaths paths,
   StringSink out,
-  StringSink err,
+  StringSink err, {
   Future<void> Function()? awaitShutdown,
-) async {
+  int? preferredPort,
+  bool? openBrowser,
+}) async {
   final store = ConfigStore(paths);
   final log = AgentLog(paths.logDirectory);
   final config = await store.load();
-  final agent = Agent(store: store, log: log, preferredPort: config.port);
+  final agent = Agent(
+    store: store,
+    log: log,
+    preferredPort: preferredPort ?? config.port,
+    // Ohne ausdrückliche Angabe entscheidet die Umgebung: im Testlauf und auf
+    // Servern ist `KASSENECK_CONNECT_NO_BROWSER=1` gesetzt.
+    openBrowser: openBrowser ?? (Platform.environment[noBrowserEnvVar] != '1'),
+  );
 
   try {
     await agent.start();

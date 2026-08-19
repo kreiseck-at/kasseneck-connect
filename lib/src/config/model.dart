@@ -238,6 +238,7 @@ class AgentConfig {
     this.terminal,
     this.updateChannel = defaultUpdateChannel,
     this.pairing = PairingState.none,
+    this.allowDevOrigins = false,
   }) : tokenHashes = List<String>.unmodifiable(tokenHashes ?? const <String>[]),
        printers = List<PrinterConfig>.unmodifiable(
          printers ?? const <PrinterConfig>[],
@@ -260,6 +261,13 @@ class AgentConfig {
   /// Offener Kopplungsvorgang (leer, wenn keiner läuft).
   final PairingState pairing;
 
+  /// Lässt zusätzlich `http://localhost:<port>` und `http://127.0.0.1:<port>`
+  /// als Herkunft zu — nur für die Entwicklung der Kasse.
+  ///
+  /// Standard `false`: auf einem Kundenrechner darf keine beliebige lokale
+  /// Webseite den Agenten ansprechen.
+  final bool allowDevOrigins;
+
   AgentConfig copyWith({
     int? schemaVersion,
     int? port,
@@ -269,6 +277,7 @@ class AgentConfig {
     bool clearTerminal = false,
     String? updateChannel,
     PairingState? pairing,
+    bool? allowDevOrigins,
   }) {
     return AgentConfig(
       schemaVersion: schemaVersion ?? this.schemaVersion,
@@ -278,6 +287,7 @@ class AgentConfig {
       terminal: clearTerminal ? null : (terminal ?? this.terminal),
       updateChannel: updateChannel ?? this.updateChannel,
       pairing: pairing ?? this.pairing,
+      allowDevOrigins: allowDevOrigins ?? this.allowDevOrigins,
     );
   }
 
@@ -289,6 +299,7 @@ class AgentConfig {
     'terminal': terminal?.toJson(),
     'updateChannel': updateChannel,
     if (!pairing.isEmpty) 'pairing': pairing.toJson(),
+    'allowDevOrigins': allowDevOrigins,
   };
 
   static AgentConfig fromJson(Map<String, Object?> json) {
@@ -298,8 +309,12 @@ class AgentConfig {
       pairing: pairingJson == null
           ? PairingState.none
           : PairingState.fromJson(pairingJson),
+      allowDevOrigins: json['allowDevOrigins'] == true,
       schemaVersion: readInt(json['schemaVersion']) ?? currentSchemaVersion,
-      port: readInt(json['port']) ?? defaultAgentPort,
+      // Port 0 (freier Port vom System) ist nur programmatisch sinnvoll; aus
+      // der Datei gelesen wäre er ein Fehler und ergäbe bei jedem Start einen
+      // anderen Port, den die Kasse nicht findet.
+      port: _readPort(json['port']),
       tokenHashes: readStringList(json['tokenHashes']),
       printers: readMapList(
         json['printers'],
@@ -315,6 +330,13 @@ class AgentConfig {
   String toString() =>
       'AgentConfig(v$schemaVersion, port $port, ${tokenHashes.length} Token, '
       '${printers.length} Drucker)';
+}
+
+/// Liest den Port aus der Datei; 0 oder Unsinn ergibt den Standardport.
+int _readPort(Object? value) {
+  final port = readInt(value);
+  if (port == null || port <= 0 || port > 65535) return defaultAgentPort;
+  return port;
 }
 
 /// Liest einen String, wenn der Wert einer ist.

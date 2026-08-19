@@ -25,6 +25,23 @@ String? bearerToken(String? header) {
   return token.isEmpty ? null : token;
 }
 
+/// Liest die Konfiguration **einmal je Anfrage** und legt sie in den
+/// `Request.context`.
+///
+/// Steht ganz vorn in der Kette, weil schon die Origin-Prüfung wissen muss, ob
+/// Entwicklungsherkünfte freigeschaltet sind — und danach die Token-Prüfung und
+/// die Routen dieselbe Momentaufnahme sehen sollen.
+Middleware configLoader(ConfigStore store) {
+  return (Handler innerHandler) {
+    return (Request request) async {
+      final config = await store.load();
+      return innerHandler(
+        request.change(context: <String, Object?>{contextConfig: config}),
+      );
+    };
+  };
+}
+
 /// Token-Pflicht für alles außer `GET /v1/status` und `POST /v1/pair`.
 ///
 /// Verglichen wird nur der SHA-256-Hash gegen `tokenHashes` — der Agent kennt
@@ -33,10 +50,10 @@ String? bearerToken(String? header) {
 ///
 /// `GET /v1/status` läuft auch ohne Token durch; die Route sieht am
 /// [contextAuthenticated]-Flag, ob sie die Kurz- oder die Langform liefert.
-Middleware tokenAuth(ConfigStore store) {
+Middleware tokenAuth() {
   return (Handler innerHandler) {
     return (Request request) async {
-      final config = await store.load();
+      final config = configOf(request);
       final token = bearerToken(request.headers['authorization']);
       final authenticated =
           token != null && config.tokenHashes.contains(hashToken(token));
@@ -57,7 +74,6 @@ Middleware tokenAuth(ConfigStore store) {
         request.change(
           context: <String, Object?>{
             contextAuthenticated: authenticated,
-            contextConfig: config,
             if (token != null) contextToken: token,
           },
         ),

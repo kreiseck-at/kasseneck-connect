@@ -19,8 +19,20 @@ void main() {
 
   tearDown(() => temp.deleteSync(recursive: true));
 
-  Future<int> run(List<String> args, {Future<void> Function()? shutdown}) =>
-      runCli(args, out: out, err: err, paths: paths, awaitShutdown: shutdown);
+  Future<int> run(
+    List<String> args, {
+    Future<void> Function()? shutdown,
+    int? preferredPort,
+  }) => runCli(
+    args,
+    out: out,
+    err: err,
+    paths: paths,
+    awaitShutdown: shutdown,
+    preferredPort: preferredPort,
+    // Der Testlauf darf keinen echten Browser aufmachen.
+    openBrowser: false,
+  );
 
   test('version gibt Name und Version aus', () async {
     expect(await run(<String>['version']), 0);
@@ -92,10 +104,13 @@ void main() {
 
   test('run startet den Agenten und endet beim Abschaltsignal', () async {
     // Port 0: der Test bekommt einen freien Port vom System.
-    await ConfigStore(paths).save(AgentConfig(port: 0));
     final shutdown = Completer<void>();
 
-    final result = run(<String>['run'], shutdown: () => shutdown.future);
+    final result = run(
+      <String>['run'],
+      shutdown: () => shutdown.future,
+      preferredPort: 0,
+    );
     await Future<void>.delayed(const Duration(milliseconds: 200));
     expect(out.toString(), contains('127.0.0.1'));
 

@@ -8,16 +8,19 @@ import 'responses.dart';
 import 'routes_pair.dart';
 import 'routes_status.dart';
 
-/// Baut die Anfragekette des Agenten: CORS → Token → Router.
+/// Baut die Anfragekette des Agenten: Konfiguration → CORS → Token → Router.
 ///
-/// Die Reihenfolge ist bindend: eine fremde Herkunft fliegt raus, bevor
-/// irgendetwas den Token prüft oder eine Route läuft.
+/// Die Reihenfolge ist bindend: die Konfiguration wird einmal gelesen (beide
+/// Prüfungen und die Routen sehen dieselbe Momentaufnahme), dann fliegt eine
+/// fremde Herkunft raus, bevor irgendetwas den Token prüft oder eine Route
+/// läuft.
 ///
 /// [extraRoutes] hängt spätere Endpunkte an (Drucker, Terminal, `/v1/events`),
 /// ohne diese Datei zu ändern.
 Handler buildHandler(
   AgentContext ctx, {
   List<RouteRegistrar> extraRoutes = const <RouteRegistrar>[],
+  Map<String, String>? environment,
 }) {
   final router = Router(
     notFoundHandler: (Request request) =>
@@ -33,7 +36,8 @@ Handler buildHandler(
   }
 
   return const Pipeline()
-      .addMiddleware(corsMiddleware())
-      .addMiddleware(tokenAuth(ctx.store))
+      .addMiddleware(configLoader(ctx.store))
+      .addMiddleware(corsMiddleware(environment: environment))
+      .addMiddleware(tokenAuth())
       .addHandler(router.call);
 }

@@ -15,6 +15,9 @@ import 'version.dart';
 /// (27182 … 27189).
 const int portFallbackRange = 8;
 
+/// So lange darf das höfliche Schließen dauern, bevor hart geschlossen wird.
+const Duration gracefulStopTimeout = Duration(seconds: 2);
+
 /// Der laufende Agent: lokaler HTTP-Server auf 127.0.0.1 samt Kopplung.
 ///
 /// Gebunden wird ausschließlich die Loopback-Adresse — aus dem LAN ist der
@@ -28,10 +31,12 @@ class Agent {
     Pairing? pairing,
     List<RouteRegistrar> extraRoutes = const <RouteRegistrar>[],
     bool? openBrowser,
+    Map<String, String>? environment,
   }) : _clock = clock ?? DateTime.now,
        _pairing = pairing,
        _extraRoutes = extraRoutes,
-       _openBrowser = openBrowser;
+       _openBrowser = openBrowser,
+       _environment = environment;
 
   final ConfigStore store;
   final AgentLog log;
@@ -44,6 +49,7 @@ class Agent {
   final Pairing? _pairing;
   final List<RouteRegistrar> _extraRoutes;
   final bool? _openBrowser;
+  final Map<String, String>? _environment;
 
   HttpServer? _server;
   AgentContext? _context;
@@ -95,19 +101,29 @@ class Agent {
     }
   }
 
-  /// Hält den Server an.
+  /// Hält den Server an: erst höflich (laufende Anfragen dürfen zu Ende
+  /// gehen), nach [gracefulStopTimeout] mit Nachdruck.
   Future<void> stop() async {
     final server = _server;
     _server = null;
     _context = null;
     if (server == null) return;
-    await server.close(force: true);
+    try {
+      await server.close().timeout(gracefulStopTimeout);
+    } on TimeoutException {
+      log.warn('Anfragen hängen — Server wird hart geschlossen.');
+      await server.close(force: true);
+    }
     log.info('Agent angehalten.');
   }
 
   /// Bindet den ersten freien Port ab [preferredPort].
   Future<HttpServer> _bind() async {
-    final handler = buildHandler(context, extraRoutes: _extraRoutes);
+    final handler = buildHandler(
+      context,
+      extraRoutes: _extraRoutes,
+      environment: _environment,
+    );
     final attempts = preferredPort == 0 ? 1 : portFallbackRange;
     Object? lastError;
 

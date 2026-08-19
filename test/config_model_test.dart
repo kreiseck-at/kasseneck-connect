@@ -98,4 +98,54 @@ void main() {
       expect(() => config.printers.clear(), throwsUnsupportedError);
     });
   });
+
+  group('Port aus der Datei', () {
+    test('0 wird auf den Standardport normalisiert', () {
+      expect(
+        AgentConfig.fromJson(<String, Object?>{'port': 0}).port,
+        defaultAgentPort,
+      );
+    });
+
+    test('Unsinn wird auf den Standardport normalisiert', () {
+      for (final value in <Object?>[-1, 70000, 'abc', null]) {
+        expect(
+          AgentConfig.fromJson(<String, Object?>{'port': value}).port,
+          defaultAgentPort,
+          reason: '$value',
+        );
+      }
+    });
+
+    test('ein echter Port bleibt stehen', () {
+      expect(
+        AgentConfig.fromJson(<String, Object?>{'port': 27185}).port,
+        27185,
+      );
+    });
+
+    test('programmatisch bleibt 0 erlaubt (freier Port im Test)', () {
+      expect(AgentConfig(port: 0).port, 0);
+    });
+  });
+
+  group('allowDevOrigins', () {
+    test('ist standardmäßig aus und überlebt den Roundtrip', () {
+      expect(AgentConfig().allowDevOrigins, isFalse);
+      final config = AgentConfig(allowDevOrigins: true);
+      expect(AgentConfig.fromJson(config.toJson()).allowDevOrigins, isTrue);
+    });
+
+    test('nur echtes true schaltet frei', () {
+      for (final value in <Object?>['true', 1, null]) {
+        expect(
+          AgentConfig.fromJson(<String, Object?>{
+            'allowDevOrigins': value,
+          }).allowDevOrigins,
+          isFalse,
+          reason: '$value',
+        );
+      }
+    });
+  });
 }

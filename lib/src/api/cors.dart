@@ -1,5 +1,8 @@
+import 'dart:io';
+
 import 'package:shelf/shelf.dart';
 
+import 'auth.dart';
 import 'responses.dart';
 
 /// Herkünfte, die den Agenten ansprechen dürfen (exakter Vergleich).
@@ -14,6 +17,9 @@ final RegExp _localhostOrigin = RegExp(
   r'^http://(localhost|127\.0\.0\.1)(:\d{1,5})?$',
 );
 
+/// Umgebungsvariable, die die Entwicklungsherkünfte freischaltet.
+const String devOriginsEnvVar = 'KASSENECK_CONNECT_DEV';
+
 /// Methoden, die die lokale API kennt.
 const String allowedMethods = 'GET, POST, PUT, DELETE, OPTIONS';
 
@@ -21,8 +27,20 @@ const String allowedMethods = 'GET, POST, PUT, DELETE, OPTIONS';
 const String allowedHeaders = 'Content-Type, Authorization';
 
 /// Prüft eine Herkunft gegen die Allowlist.
-bool isAllowedOrigin(String origin) =>
-    allowedOrigins.contains(origin) || _localhostOrigin.hasMatch(origin);
+///
+/// Die Entwicklungsherkünfte (`http://localhost:<port>`,
+/// `http://127.0.0.1:<port>`) sind **standardmäßig gesperrt**: auf einem
+/// Kundenrechner könnte sonst jede beliebige lokale Webseite drucken. Frei
+/// schaltet sie `allowDevOrigins` in der `config.json` oder
+/// `KASSENECK_CONNECT_DEV=1`.
+bool isAllowedOrigin(String origin, {bool allowDev = false}) {
+  if (allowedOrigins.contains(origin)) return true;
+  return allowDev && _localhostOrigin.hasMatch(origin);
+}
+
+/// `Vary: Origin` gehört auch an abgelehnte Antworten — sonst legt ein Cache
+/// die 403 für eine erlaubte Herkunft ab.
+const Map<String, Object> _varyOrigin = <String, Object>{'vary': 'Origin'};
 
 /// Routen, die ohne Origin-Kopfzeile und ohne Token erreichbar sind.
 ///
@@ -42,7 +60,10 @@ bool isPublicRoute(String method, String path) {
 /// Der Browser darf eine private Adresse (127.0.0.1) nur ansprechen, wenn der
 /// Preflight `Access-Control-Allow-Private-Network: true` trägt (Private
 /// Network Access) — deshalb steht die Zeile an jedem erlaubten Preflight.
-Middleware corsMiddleware() {
+Middleware corsMiddleware({Map<String, String>? environment}) {
+  final env = environment ?? Platform.environment;
+  final devByEnv = env[devOriginsEnvVar] == '1';
+
   return (Handler innerHandler) {
     return (Request request) async {
       final origin = request.headers['origin'];
@@ -55,17 +76,20 @@ Middleware corsMiddleware() {
             errorOriginForbidden,
             'Ohne Herkunft ist nur der Status abrufbar.',
             status: 403,
+            headers: _varyOrigin,
           );
         }
         return innerHandler(request);
       }
 
-      if (!isAllowedOrigin(origin)) {
+      final allowDev = devByEnv || configOf(request).allowDevOrigins;
+      if (!isAllowedOrigin(origin, allowDev: allowDev)) {
         return failJson(
           errorOriginForbidden,
           'Diese Herkunft darf den Agenten nicht ansprechen.',
           status: 403,
           detail: origin,
+          headers: _varyOrigin,
         );
       }
 

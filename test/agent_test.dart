@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -107,6 +108,88 @@ void main() {
     expect(
       pairingPageUrl('123456', 27182),
       'https://kasse.kasseneck.at/connect#code=123456&port=27182',
+    );
+  });
+
+  group('Browser beim ersten Start', () {
+    late List<List<String>> calls;
+
+    Agent agentWithRecorder({bool? openBrowser}) {
+      calls = <List<String>>[];
+      return Agent(
+        store: store,
+        log: log,
+        preferredPort: 0,
+        openBrowser: openBrowser,
+        pairing: Pairing(
+          store: store,
+          log: log,
+          runProcess: (executable, arguments) async {
+            calls.add(<String>[executable, ...arguments]);
+            return ProcessResult(0, 0, '', '');
+          },
+        ),
+      );
+    }
+
+    test('ohne Token wird die Kopplungsseite geöffnet', () async {
+      final agent = agentWithRecorder();
+      await agent.start();
+      addTearDown(agent.stop);
+
+      final code = (await store.load()).pairing.code;
+      expect(calls, hasLength(1));
+      expect(calls.single.last, contains('code=$code'));
+      expect(calls.single.last, contains('port=${agent.port}'));
+    });
+
+    test('openBrowser: false öffnet nichts', () async {
+      final agent = agentWithRecorder(openBrowser: false);
+      await agent.start();
+      addTearDown(agent.stop);
+
+      expect((await store.load()).pairing.code, isNotNull);
+      expect(calls, isEmpty);
+    });
+  });
+
+  // Der harte Zweig (`close(force: true)` nach dem Zeitablauf) lässt sich von
+  // außen nicht provozieren: `HttpServer.close()` kehrt auch bei einer offenen,
+  // unbeantworteten Anfrage sofort zurück. Getestet ist deshalb, dass `stop()`
+  // in diesem Fall nicht hängen bleibt — die Zeitgrenze bleibt Sicherheitsnetz.
+  test('stop bleibt bei einer hängenden Anfrage nicht stehen', () async {
+    final hanging = Completer<void>();
+    addTearDown(() {
+      if (!hanging.isCompleted) hanging.complete();
+    });
+
+    final agent = Agent(
+      store: store,
+      log: log,
+      preferredPort: 0,
+      openBrowser: false,
+      extraRoutes: <RouteRegistrar>[
+        (router, context) => router.get('/v1/haengt', (_) async {
+          await hanging.future;
+          return okJson(<String, Object?>{});
+        }),
+      ],
+    );
+    await agent.start();
+
+    // Anfrage abschicken und laufen lassen — die Antwort kommt nie.
+    unawaited(get(agent.port, '/v1/haengt').catchError((Object _) => ''));
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+
+    final started = DateTime.now();
+    await agent.stop();
+    final needed = DateTime.now().difference(started);
+
+    expect(needed, lessThan(gracefulStopTimeout + const Duration(seconds: 2)));
+    expect(log.file.readAsStringSync(), contains('Agent angehalten.'));
+    await expectLater(
+      get(agent.port, '/v1/status'),
+      throwsA(isA<SocketException>()),
     );
   });
 }

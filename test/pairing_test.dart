@@ -121,4 +121,82 @@ void main() {
       expect(await makePairing().verify(code), isNull);
     },
   );
+
+  group('openPairingPage', () {
+    late List<List<String>> calls;
+    late Pairing pairing;
+
+    setUp(() {
+      calls = <List<String>>[];
+      pairing = Pairing(
+        store: store,
+        log: log,
+        clock: () => now,
+        random: Random(7),
+        runProcess: (executable, arguments) async {
+          calls.add(<String>[executable, ...arguments]);
+          return ProcessResult(0, 0, '', '');
+        },
+      );
+    });
+
+    Future<void> open(String os) => pairing.openPairingPage(
+      '123456',
+      27182,
+      operatingSystem: os,
+      environment: const <String, String>{},
+    );
+
+    test('macOS öffnet mit open', () async {
+      await open('macos');
+      expect(calls.single, <String>[
+        'open',
+        'https://kasse.kasseneck.at/connect#code=123456&port=27182',
+      ]);
+    });
+
+    test('Linux öffnet mit xdg-open', () async {
+      await open('linux');
+      expect(calls.single.first, 'xdg-open');
+      expect(calls.single.last, contains('&port=27182'));
+    });
+
+    test('Windows nimmt rundll32, nicht cmd start', () async {
+      await open('windows');
+      expect(calls.single, <String>[
+        'rundll32',
+        'url.dll,FileProtocolHandler',
+        'https://kasse.kasseneck.at/connect#code=123456&port=27182',
+      ]);
+      // `cmd /c start` zerlegte die Adresse am `&` — genau das darf nicht sein.
+      expect(calls.single.first, isNot('cmd'));
+      expect(calls.single.last, endsWith('&port=27182'));
+    });
+
+    test('KASSENECK_CONNECT_NO_BROWSER=1 unterdrückt das Öffnen', () async {
+      await pairing.openPairingPage(
+        '123456',
+        27182,
+        operatingSystem: 'macos',
+        environment: const <String, String>{noBrowserEnvVar: '1'},
+      );
+      expect(calls, isEmpty);
+    });
+
+    test('scheitert das Programm, bleibt es bei einer Warnung', () async {
+      final failing = Pairing(
+        store: store,
+        log: log,
+        runProcess: (executable, arguments) async =>
+            throw ProcessException(executable, arguments, 'nicht gefunden'),
+      );
+      await failing.openPairingPage(
+        '123456',
+        27182,
+        operatingSystem: 'linux',
+        environment: const <String, String>{},
+      );
+      expect(log.file.readAsStringSync(), contains('Browser'));
+    });
+  });
 }

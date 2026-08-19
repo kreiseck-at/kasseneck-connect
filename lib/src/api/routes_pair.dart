@@ -1,5 +1,3 @@
-import 'dart:convert';
-
 import 'package:shelf/shelf.dart';
 
 import '../config/model.dart';
@@ -12,19 +10,10 @@ import 'responses.dart';
 /// Diese Route ist absichtlich ohne Token erreichbar; geschützt ist sie durch
 /// den kurzlebigen Code, die Fehlversuchssperre und die Origin-Allowlist.
 Future<Response> handlePair(AgentContext ctx, Request request) async {
-  final Map<String, Object?> body;
-  try {
-    final raw = await request.readAsString();
-    final decoded = readMap(jsonDecode(raw) as Object?);
-    if (decoded == null) {
-      return failJson(errorBadRequest, 'Erwartet wird ein JSON-Objekt.');
-    }
-    body = decoded;
-  } on FormatException {
-    return failJson(errorBadRequest, 'Der Rumpf ist kein gültiges JSON.');
-  }
+  final body = await readJsonBody(request);
+  if (body.error != null) return body.error!;
 
-  final code = readString(body['code'])?.trim();
+  final code = readString(body.data!['code'])?.trim();
   if (code == null || code.isEmpty) {
     return failJson(errorBadRequest, 'Es fehlt der Kopplungscode.');
   }

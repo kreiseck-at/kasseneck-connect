@@ -1,6 +1,9 @@
 import 'dart:io';
+import 'dart:math';
 
 import 'package:path/path.dart' as p;
+
+final Random _random = Random();
 
 /// Umgebungsvariable, mit der das Datenverzeichnis überschrieben wird
 /// (für Tests und portable Installationen).
@@ -58,7 +61,17 @@ class ConfigPaths {
   File get configFile => File(p.join(directory.path, 'config.json'));
 
   /// Temporärdatei des atomaren Schreibvorgangs.
-  File get configTempFile => File(p.join(directory.path, 'config.json.tmp'));
+  ///
+  /// Der Name enthält Prozess-ID und Zufall: `run` und `pair` schreiben
+  /// gleichzeitig, und ein fester Name (`config.json.tmp`) würde bedeuten, dass
+  /// ein Prozess die halbfertige Datei des anderen umbenennt.
+  File configTempFile([Random? random]) {
+    final suffix = (random ?? _random).nextInt(1 << 32).toRadixString(36);
+    return File(p.join(directory.path, 'config.json.$pid.$suffix.tmp'));
+  }
+
+  /// Sperrdatei, über die sich mehrere Prozesse abstimmen.
+  File get configLockFile => File(p.join(directory.path, 'config.lock'));
 
   /// Verzeichnis der rotierenden Logdateien.
   Directory get logDirectory => Directory(p.join(directory.path, 'logs'));

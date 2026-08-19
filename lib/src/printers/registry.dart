@@ -113,9 +113,11 @@ class PrinterRegistry {
 
   /// Baut den Treiber zu einem Drucker.
   ///
-  /// ePOS über HTTPS wird am Port 443 erkannt: die Konfiguration führt kein
-  /// eigenes Feld dafür, und ein Drucker, der sein ePOS auf 443 anbietet,
-  /// spricht dort ausschließlich TLS.
+  /// ePOS über HTTPS wird **allein am Port 443** erkannt: die Konfiguration
+  /// führt kein eigenes Feld dafür, und ein Drucker, der sein ePOS auf 443
+  /// anbietet, spricht dort ausschließlich TLS. Jeder andere Port gilt als
+  /// Klartext — auch 8443 oder 10443. Wer TLS auf einem krummen Port braucht,
+  /// bekommt dafür ein eigenes Feld in der Konfiguration, keine Rateregel.
   PrinterDriver driverFor(PrinterConfig printer) {
     final factory = _driverFactory;
     if (factory != null) return factory(printer);

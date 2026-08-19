@@ -303,6 +303,45 @@ void main() {
       expect(fake.connections, 1);
     });
 
+    test('derselbe jobId an zwei Druckern druckt auf beiden', () async {
+      final vorne = await FakeTcpPrinter.start();
+      final kueche = await FakeTcpPrinter.start();
+      addTearDown(vorne.stop);
+      addTearDown(kueche.stop);
+      final a = await addPrinter(vorne.port);
+      final b = await addPrinter(kueche.port, name: 'Küche');
+      final bytes = base64Encode(Uint8List.fromList(<int>[65, 66]));
+
+      expect(
+        (await send(
+          'POST',
+          '/v1/print',
+          body: <String, Object?>{
+            'printerId': a,
+            'jobId': 'bon-9',
+            'bytes': bytes,
+          },
+        )).ok,
+        isTrue,
+      );
+      expect(
+        (await send(
+          'POST',
+          '/v1/print',
+          body: <String, Object?>{
+            'printerId': b,
+            'jobId': 'bon-9',
+            'bytes': bytes,
+          },
+        )).ok,
+        isTrue,
+      );
+
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      expect(vorne.received, <int>[65, 66]);
+      expect(kueche.received, <int>[65, 66], reason: 'die Küche druckt auch');
+    });
+
     test('unbekannter Drucker und Unsinn im Rumpf', () async {
       expect(
         (await send(
@@ -383,6 +422,10 @@ void main() {
       expect(response.ok, isTrue);
       await Future<void>.delayed(const Duration(milliseconds: 100));
       expect(fake.received, hasLength(bytes.length));
+    });
+
+    test('die Grenze liegt bei 4 MB', () {
+      expect(printBodyLimit, 4 * 1024 * 1024);
     });
 
     test('über 4 MB wird abgewiesen', () async {

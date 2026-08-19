@@ -26,6 +26,9 @@ class Tcp9100Printer implements PrinterDriver {
   /// Zeitlimit für den Verbindungsaufbau (immer höchstens das Auftragslimit).
   final Duration connectTimeout;
 
+  /// Verbindung des laufenden Versuchs — nur damit [abort] sie wegwerfen kann.
+  Socket? _current;
+
   @override
   Future<void> print(
     Uint8List bytes, {
@@ -33,31 +36,49 @@ class Tcp9100Printer implements PrinterDriver {
   }) async {
     final watch = Stopwatch()..start();
     final socket = await _connect(timeout);
+    _current = socket;
 
     // Der Drucker schickt auf 9100 nichts; gelesen wird trotzdem, damit ein
     // Fehler auf der Verbindung nicht als unbehandelt im Zone-Handler landet.
     final drain = socket.listen((_) {}, onError: (Object _) {});
 
+    // Ab dem ersten `add` weiß niemand mehr, wie viel der Drucker schon
+    // gesehen hat — ein zweiter Versuch könnte einen zweiten Bon bedeuten.
+    var sent = false;
     try {
       socket.add(bytes);
+      sent = true;
       await socket.flush().timeout(_remaining(timeout, watch));
       await socket.close().timeout(_remaining(timeout, watch));
     } on TimeoutException {
       throw PrinterFailure(
         errorPrintTimeout,
-        'Der Drucker $host:$port hat den Auftrag nicht rechtzeitig '
-        'angenommen.',
+        sent
+            ? unconfirmedPrintMessage
+            : 'Der Drucker $host:$port hat den Auftrag nicht rechtzeitig '
+                  'angenommen.',
+        mayHavePrinted: sent,
       );
     } on SocketException catch (e) {
       throw PrinterFailure(
         errorPrinterOffline,
-        'Die Verbindung zum Drucker $host:$port ist abgebrochen.',
+        sent
+            ? unconfirmedPrintMessage
+            : 'Die Verbindung zum Drucker $host:$port ist abgebrochen.',
         detail: e.message,
+        mayHavePrinted: sent,
       );
     } finally {
       unawaited(drain.cancel());
       socket.destroy();
+      _current = null;
     }
+  }
+
+  @override
+  Future<void> abort() async {
+    _current?.destroy();
+    _current = null;
   }
 
   @override

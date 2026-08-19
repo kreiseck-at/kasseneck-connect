@@ -52,11 +52,24 @@ erlaubte Herkunft; Fachfehler kommen mit HTTP 200 und `{ok: false, error: …}`.
 | POST | `/v1/print` | `{printerId, jobId, bytes}` (base64, bis 4 MB) |
 
 `kind` ist `tcp9100` (roher ESC/POS-Strom) oder `epos` (Epson ePOS-Print über
-HTTP/HTTPS, `devid` je Gerät). Gedruckt wird **seriell je Drucker**, mit 10 s
-Zeitlimit und genau einem Wiederholversuch bei Transportfehlern; derselbe
-`jobId` druckt innerhalb von 60 Sekunden kein zweites Mal. Fehlercodes:
-`printer_unknown`, `printer_offline`, `timeout`, `refused` (das Gerät lehnt ab,
-z. B. kein Papier), `bad_request`.
+HTTP/HTTPS, `devid` je Gerät; HTTPS gilt allein am Port 443). Gedruckt wird
+**seriell je Drucker**, mit 10 s Zeitlimit je Versuch. Wiederholt wird genau
+einmal — und **nur, wenn sicher noch nichts hinausgegangen ist** (Verbindung
+kam nicht zustande). Sobald Bytes abgeschickt sind, gibt es keinen zweiten
+Versuch: ein doppelter Bon wiegt schwerer als ein fehlender, den die Kasse
+nachdrucken kann. Derselbe `jobId` druckt auf demselben Drucker innerhalb von
+60 Sekunden kein zweites Mal (Schlüssel ist `printerId` + `jobId` — derselbe
+Beleg an Kasse und Küche sind zwei Aufträge).
+
+| Code | Bedeutung |
+|---|---|
+| `printer_unknown` | diese Drucker-ID kennt der Agent nicht |
+| `printer_offline` | keine Verbindung zum Gerät |
+| `timeout` | keine Bestätigung in der Zeit; mit `detail.mayHavePrinted = true` ist offen, ob der Bon lief |
+| `refused` | das Gerät lehnt ab (kein Papier, Deckel offen) |
+| `print_in_progress` | derselbe Auftrag läuft gerade noch |
+| `internal_error` | der Agent selbst ist gestolpert (steht im Log) |
+| `bad_request` | Angaben fehlen oder sind unbrauchbar |
 
 ## Konfigurationspfade
 

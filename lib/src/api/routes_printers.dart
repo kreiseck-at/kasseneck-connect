@@ -42,7 +42,7 @@ RouteRegistrar printerRoutes({
       )
       ..delete(
         '/v1/printers/<id>',
-        (Request r, String id) => handleDeletePrinter(registry, r, id),
+        (Request r, String id) => handleDeletePrinter(registry, queue, r, id),
       )
       ..post(
         '/v1/printers/<id>/test',
@@ -99,14 +99,19 @@ Future<Response> handlePutPrinter(
 }
 
 /// `DELETE /v1/printers/{id}`.
+///
+/// Mit dem Drucker verschwinden auch seine Warteschlange und die gemerkten
+/// Auftrags-IDs — sonst wüchsen beide Tabellen mit jedem entfernten Gerät.
 Future<Response> handleDeletePrinter(
   PrinterRegistry registry,
+  PrintQueue queue,
   Request request,
   String id,
 ) async {
   if (!await registry.remove(id)) {
     return failJson(errorPrinterUnknown, 'Diesen Drucker gibt es nicht.');
   }
+  queue.forgetPrinter(id);
   return okJson(<String, Object?>{'id': id});
 }
 

@@ -12,6 +12,9 @@ class ScriptedDriver implements PrinterDriver {
   ScriptedDriver({List<PrinterFailure?>? script, this.hang = false})
     : _script = script ?? <PrinterFailure?>[];
 
+  /// Wie oft die Warteschlange den laufenden Versuch abgebrochen hat.
+  int aborts = 0;
+
   final List<PrinterFailure?> _script;
 
   /// Antwortet nie (prüft das Zeitlimit der Warteschlange).
@@ -47,6 +50,12 @@ class ScriptedDriver implements PrinterDriver {
   @override
   Future<PrinterState> status({Duration timeout = defaultPrintTimeout}) async =>
       PrinterState.online;
+
+  @override
+  Future<void> abort() async {
+    aborts++;
+    trace.add('abort');
+  }
 }
 
 void main() {
@@ -80,14 +89,20 @@ void main() {
   Future<(PrinterRegistry, PrintQueue)> build(
     Map<String, ScriptedDriver> drivers, {
     Duration jobTimeout = const Duration(seconds: 10),
+    Duration attemptGrace = const Duration(milliseconds: 80),
+    PrinterRegistry Function(PrinterDriver Function(PrinterConfig))?
+    makeRegistry,
   }) async {
-    final registry = PrinterRegistry(
-      store: store,
-      log: log,
-      events: bus,
-      random: Random(1),
-      driverFactory: (printer) => drivers[printer.name]!,
-    );
+    PrinterDriver factory(PrinterConfig printer) => drivers[printer.name]!;
+    final registry =
+        makeRegistry?.call(factory) ??
+        PrinterRegistry(
+          store: store,
+          log: log,
+          events: bus,
+          random: Random(1),
+          driverFactory: factory,
+        );
     for (final name in drivers.keys) {
       await registry.upsert(
         PrinterConfig(
@@ -104,6 +119,7 @@ void main() {
       log: log,
       clock: () => now,
       jobTimeout: jobTimeout,
+      attemptGrace: attemptGrace,
     );
     return (registry, queue);
   }
@@ -294,18 +310,147 @@ void main() {
     );
   });
 
+  test('ein Zeitlimit vor dem Senden wird wiederholt', () async {
+    final driver = ScriptedDriver(
+      script: <PrinterFailure?>[
+        const PrinterFailure(errorPrintTimeout, 'Kein Verbindungsaufbau.'),
+        null,
+      ],
+    );
+    final (_, queue) = await build(<String, ScriptedDriver>{'a': driver});
+
+    final result = await queue.enqueue('a', 'job1', bytes);
+
+    expect(result.ok, isTrue);
+    expect(driver.attempts, 2);
+    expect(driver.aborts, 1, reason: 'erst abbrechen, dann neu ansetzen');
+    expect(driver.trace, <String>[
+      'start:0',
+      'end:0',
+      'abort',
+      'start:1',
+      'end:1',
+    ]);
+  });
+
+  test('ein Zeitlimit NACH dem Senden wird nicht wiederholt', () async {
+    final driver = ScriptedDriver(
+      script: <PrinterFailure?>[
+        const PrinterFailure(
+          errorPrintTimeout,
+          unconfirmedPrintMessage,
+          mayHavePrinted: true,
+        ),
+        null,
+      ],
+    );
+    final (_, queue) = await build(<String, ScriptedDriver>{'a': driver});
+
+    final result = await queue.enqueue('a', 'job1', bytes);
+
+    expect(result.code, errorPrintTimeout);
+    expect(driver.attempts, 1, reason: 'der Bon könnte schon gelaufen sein');
+    expect(driver.aborts, 0);
+    expect(result.detail, <String, Object?>{'mayHavePrinted': true});
+    expect(result.message, contains('bitte prüfen'));
+    await pumpEventQueue();
+    final failed = events.firstWhere((e) => e.type == eventPrintFailed);
+    expect(failed.toJson()['mayHavePrinted'], isTrue);
+  });
+
+  test('ein hängender Treiber wird nicht wiederholt', () async {
+    final driver = ScriptedDriver(hang: true);
+    final (_, queue) = await build(
+      <String, ScriptedDriver>{'a': driver},
+      jobTimeout: const Duration(milliseconds: 100),
+      attemptGrace: const Duration(milliseconds: 50),
+    );
+
+    final result = await queue.enqueue('a', 'job1', bytes);
+
+    expect(result.code, errorPrintTimeout);
+    expect(driver.attempts, 1);
+    expect(result.detail, <String, Object?>{'mayHavePrinted': true});
+  });
+
+  test('derselbe jobId an zwei Druckern druckt zweimal', () async {
+    final kasse = ScriptedDriver();
+    final kueche = ScriptedDriver();
+    final (_, queue) = await build(<String, ScriptedDriver>{
+      'a': kasse,
+      'b': kueche,
+    });
+
+    final first = await queue.enqueue('a', 'bon-1', bytes);
+    final second = await queue.enqueue('b', 'bon-1', bytes);
+
+    expect(first.ok, isTrue);
+    expect(second.ok, isTrue);
+    expect(kasse.printed, hasLength(1));
+    expect(kueche.printed, hasLength(1), reason: 'die Küche druckt auch');
+  });
+
   test(
-    'hängender Drucker läuft ins Zeitlimit und wird einmal wiederholt',
+    'ein Fehler in der Kette hängt weder Auftrag noch Drucker auf',
     () async {
-      final driver = ScriptedDriver(hang: true);
-      final (_, queue) = await build(<String, ScriptedDriver>{
-        'a': driver,
-      }, jobTimeout: const Duration(milliseconds: 120));
+      final driver = ScriptedDriver();
+      final (_, queue) = await build(
+        <String, ScriptedDriver>{'a': driver},
+        makeRegistry: (factory) => FlakyRegistry(
+          store: store,
+          log: log,
+          events: bus,
+          random: Random(1),
+          driverFactory: factory,
+        ),
+      );
 
-      final result = await queue.enqueue('a', 'job1', bytes);
+      final broken = await queue
+          .enqueue('a', 'job1', bytes)
+          .timeout(
+            const Duration(seconds: 2),
+            onTimeout: () => throw StateError('Die Antwort blieb aus.'),
+          );
+      expect(broken.ok, isFalse);
+      expect(broken.code, errorPrintInternal);
 
-      expect(result.code, errorPrintTimeout);
-      expect(driver.attempts, 2);
+      // Der nächste Auftrag desselben Druckers läuft normal weiter.
+      final next = await queue.enqueue('a', 'job2', bytes);
+      expect(next.ok, isTrue);
+      expect(driver.printed, hasLength(1));
+
+      // Und derselbe jobId darf es nach dem Fehler noch einmal versuchen.
+      expect((await queue.enqueue('a', 'job1', bytes)).ok, isTrue);
     },
   );
+
+  test('forgetPrinter räumt Kette und Auftragsgedächtnis', () async {
+    final driver = ScriptedDriver();
+    final (_, queue) = await build(<String, ScriptedDriver>{'a': driver});
+
+    await queue.enqueue('a', 'job1', bytes);
+    queue.forgetPrinter('a');
+    await queue.enqueue('a', 'job1', bytes);
+
+    expect(driver.attempts, 2, reason: 'das Gedächtnis ist weg');
+  });
+}
+
+/// Registry, die beim ersten Zugriff stolpert.
+class FlakyRegistry extends PrinterRegistry {
+  FlakyRegistry({
+    required super.store,
+    super.log,
+    super.events,
+    super.random,
+    super.driverFactory,
+  });
+
+  int calls = 0;
+
+  @override
+  Future<PrinterDriver?> driverForId(String id) async {
+    if (calls++ == 0) throw StateError('Konfiguration kaputt');
+    return super.driverForId(id);
+  }
 }

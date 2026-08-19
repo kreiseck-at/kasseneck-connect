@@ -222,4 +222,7 @@ class _StubDriver implements PrinterDriver {
   @override
   Future<PrinterState> status({Duration timeout = defaultPrintTimeout}) async =>
       state;
+
+  @override
+  Future<void> abort() async {}
 }

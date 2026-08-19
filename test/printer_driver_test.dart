@@ -37,11 +37,10 @@ void main() {
       await expectLater(
         printer.print(Uint8List.fromList(<int>[1, 2, 3])),
         throwsA(
-          isA<PrinterFailure>().having(
-            (f) => f.code,
-            'code',
-            errorPrinterOffline,
-          ),
+          isA<PrinterFailure>()
+              .having((f) => f.code, 'code', errorPrinterOffline)
+              .having((f) => f.mayHavePrinted, 'mayHavePrinted', isFalse)
+              .having((f) => f.retryable, 'retryable', isTrue),
         ),
       );
     });
@@ -60,6 +59,13 @@ void main() {
           .onError<PrinterFailure>((e, _) => e);
 
       expect(failure?.code, errorPrintTimeout);
+      expect(
+        failure?.mayHavePrinted,
+        isTrue,
+        reason: 'die Bytes waren schon unterwegs',
+      );
+      expect(failure?.retryable, isFalse);
+      expect(failure?.message, contains('bitte prüfen'));
     });
 
     test('abgebrochene Verbindung ergibt printer_offline', () async {
@@ -73,6 +79,7 @@ void main() {
           .onError<PrinterFailure>((e, _) => e);
 
       expect(failure?.code, errorPrinterOffline);
+      expect(failure?.mayHavePrinted, isTrue, reason: 'nach dem ersten add');
     });
 
     test('status meldet online bzw. offline', () async {
@@ -122,6 +129,13 @@ void main() {
       expect(fake.requests.single.queryParameters['timeout'], '10000');
       expect(fake.headers.single['content-type'], contains('text/xml'));
       expect(fake.headers.single['soapaction'], '""');
+      expect(
+        fake.bodies.single,
+        contains(
+          '<epos-print xmlns="http://www.epson-pos.com/schemas/2011/03/'
+          'epos-print">',
+        ),
+      );
       expect(fake.bodies.single, contains(base64Encode(bytes)));
       expect(fake.lastCommand, bytes);
     });
@@ -137,6 +151,7 @@ void main() {
 
       expect(failure?.code, errorPrintRefused);
       expect('${failure?.detail}', contains('EPTR_REC_EMPTY'));
+      expect(failure?.retryable, isFalse, reason: 'das Gerät hat geantwortet');
     });
 
     test('HTTP 500 ergibt printer_offline', () async {
@@ -167,6 +182,12 @@ void main() {
           .onError<PrinterFailure>((e, _) => e);
 
       expect(failure?.code, errorPrintTimeout);
+      expect(
+        failure?.mayHavePrinted,
+        isTrue,
+        reason: 'die Anfrage war schon raus',
+      );
+      expect(failure?.retryable, isFalse);
     });
 
     test('nicht erreichbarer Dienst ergibt printer_offline', () async {
@@ -178,6 +199,24 @@ void main() {
           .onError<PrinterFailure>((e, _) => e);
 
       expect(failure?.code, errorPrinterOffline);
+      expect(
+        failure?.mayHavePrinted,
+        isFalse,
+        reason: 'ohne Verbindung ging nichts hinaus',
+      );
+      expect(failure?.retryable, isTrue);
+    });
+
+    test('die Attribute werden mit Wortgrenze gelesen', () {
+      final result = parseEposResponse(
+        '<response xmlns="x" errorcode="FALSCH" success="false" '
+        'code="EPTR_COVER_OPEN" status="12" />',
+      );
+
+      expect(result?.success, isFalse);
+      expect(result?.code, 'EPTR_COVER_OPEN');
+      expect(result?.status, '12');
+      expect(parseEposResponse('<kein-response/>'), isNull);
     });
 
     test('status fragt denselben Endpunkt ohne Druckdaten ab', () async {

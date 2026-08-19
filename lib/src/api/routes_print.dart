@@ -75,9 +75,17 @@ Future<Response> handleTestPrint(
 }
 
 /// Übersetzt das Ergebnis der Warteschlange in eine Antwort.
+///
+/// `detail` trägt neben der Auftrags-ID auch `mayHavePrinted: true`, wenn der
+/// Bon vielleicht doch gelaufen ist — die Kasse fragt dann nach, statt blind
+/// nachzudrucken.
 Response printResponse(PrintResult result, String jobId) {
   if (result.ok) return okJson(<String, Object?>{'jobId': jobId});
-  return failJson(result.code!, result.message!, detail: jobId);
+  return failJson(
+    result.code!,
+    result.message!,
+    detail: <String, Object?>{'jobId': jobId, ...?result.detail},
+  );
 }
 
 /// Liest die base64-kodierten Druckdaten; `null`, wenn sie fehlen oder

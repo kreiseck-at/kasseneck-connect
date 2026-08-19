@@ -53,6 +53,9 @@ class EposPrinter implements PrinterDriver {
   /// Obergrenze einer Anfrage; das Auftragslimit kann kürzer sein.
   final Duration requestTimeout;
 
+  /// Klient des laufenden Versuchs — nur damit [abort] ihn wegwerfen kann.
+  HttpClient? _current;
+
   /// Vollständige Adresse des Dienstes samt Geräte-ID und Gerätezeitlimit.
   Uri get endpoint => Uri(
     scheme: https ? 'https' : 'http',
@@ -110,6 +113,10 @@ class EposPrinter implements PrinterDriver {
   }
 
   /// Schickt einen SOAP-Rumpf an den Dienst und liefert Status und Antwort.
+  ///
+  /// [_Sent] merkt sich, ob die Anfrage schon auf der Leitung war: solange nur
+  /// verbunden (oder das Zertifikat geprüft) wird, ist sicher nichts gedruckt
+  /// und ein zweiter Versuch gefahrlos.
   Future<_EposResponse> _post(String envelope, Duration timeout) async {
     final client = HttpClient()
       ..connectionTimeout = _shorter(connectTimeout, timeout)
@@ -117,22 +124,31 @@ class EposPrinter implements PrinterDriver {
       // ist das der Normalfall und kein Angriffsbild.
       ..badCertificateCallback = (X509Certificate _, String __, int ___) =>
           true;
+    _current = client;
+    final sent = _Sent();
 
     try {
       return await _exchange(
         client,
         envelope,
+        sent,
       ).timeout(_shorter(requestTimeout, timeout));
     } on TimeoutException {
       throw PrinterFailure(
         errorPrintTimeout,
-        'Der Drucker $host hat nicht rechtzeitig geantwortet.',
+        sent.value
+            ? unconfirmedPrintMessage
+            : 'Der Drucker $host hat nicht rechtzeitig geantwortet.',
+        mayHavePrinted: sent.value,
       );
     } on SocketException catch (e) {
       throw PrinterFailure(
         errorPrinterOffline,
-        'Der Drucker $host ist nicht erreichbar.',
+        sent.value
+            ? unconfirmedPrintMessage
+            : 'Der Drucker $host ist nicht erreichbar.',
         detail: e.message,
+        mayHavePrinted: sent.value,
       );
     } on HandshakeException catch (e) {
       throw PrinterFailure(
@@ -143,15 +159,23 @@ class EposPrinter implements PrinterDriver {
     } on HttpException catch (e) {
       throw PrinterFailure(
         errorPrinterOffline,
-        'Der Drucker $host hat die Verbindung abgebrochen.',
+        sent.value
+            ? unconfirmedPrintMessage
+            : 'Der Drucker $host hat die Verbindung abgebrochen.',
         detail: e.message,
+        mayHavePrinted: sent.value,
       );
     } finally {
       client.close(force: true);
+      _current = null;
     }
   }
 
-  Future<_EposResponse> _exchange(HttpClient client, String envelope) async {
+  Future<_EposResponse> _exchange(
+    HttpClient client,
+    String envelope,
+    _Sent sent,
+  ) async {
     final request = await client.postUrl(endpoint);
     request.headers.set(
       HttpHeaders.contentTypeHeader,
@@ -159,9 +183,18 @@ class EposPrinter implements PrinterDriver {
     );
     request.headers.set('SOAPAction', '""');
     request.add(utf8.encode(envelope));
+    // `close()` schiebt den gepufferten Rumpf hinaus — ab hier gilt der
+    // Auftrag als abgeschickt.
+    sent.value = true;
     final response = await request.close();
     final body = await utf8.decoder.bind(response).join();
     return _EposResponse(response.statusCode, body);
+  }
+
+  @override
+  Future<void> abort() async {
+    _current?.close(force: true);
+    _current = null;
   }
 
   static String _printEnvelope(Uint8List bytes) => _envelope(
@@ -211,7 +244,9 @@ EposResult? parseEposResponse(String body) {
   final attributes = element.group(1) ?? '';
 
   String attribute(String name) {
-    final match = RegExp('$name="([^"]*)"').firstMatch(attributes);
+    // Wortgrenze wie in der JS-Referenz: sonst läse `code` auch aus
+    // `errorcode="…"`.
+    final match = RegExp('\\b$name="([^"]*)"').firstMatch(attributes);
     return match?.group(1) ?? '';
   }
 
@@ -220,6 +255,11 @@ EposResult? parseEposResponse(String body) {
     code: attribute('code'),
     status: attribute('status'),
   );
+}
+
+/// Veränderliches Merkzeichen „Anfrage ist raus" für [EposPrinter._post].
+class _Sent {
+  bool value = false;
 }
 
 class _EposResponse {

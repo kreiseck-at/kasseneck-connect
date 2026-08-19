@@ -21,13 +21,12 @@ void main() {
 
   tearDown(() => temp.deleteSync(recursive: true));
 
-  PrinterConfig sample({String id = '', String name = 'Kasse vorne'}) =>
-      PrinterConfig(
-        id: id,
-        name: name,
-        kind: PrinterKind.tcp9100,
-        host: '192.168.0.50',
-      );
+  PrinterConfig sample({
+    String id = '',
+    String name = 'Kasse vorne',
+    String host = '192.168.0.50',
+  }) =>
+      PrinterConfig(id: id, name: name, kind: PrinterKind.tcp9100, host: host);
 
   test('neue IDs sind kurz, zufällig und eindeutig', () {
     final ids = List<String>.generate(50, (_) => registry.newId());
@@ -75,9 +74,78 @@ void main() {
     },
   );
 
+  test('ohne ID legt derselbe host:port keinen zweiten Drucker an', () async {
+    final first = await registry.upsert(sample());
+    final again = await registry.upsert(
+      PrinterConfig(
+        id: '',
+        name: 'Kasse vorne (neu eingerichtet)',
+        kind: PrinterKind.tcp9100,
+        host: '192.168.0.50',
+      ),
+    );
+
+    expect(again.id, first.id, reason: 'derselbe Drucker, dieselbe ID');
+    final printers = await registry.list();
+    expect(printers, hasLength(1));
+    expect(printers.single.name, 'Kasse vorne (neu eingerichtet)');
+  });
+
+  test('ohne ID ist eine andere Adresse ein zweiter Drucker', () async {
+    await registry.upsert(sample());
+    await registry.upsert(
+      PrinterConfig(
+        id: '',
+        name: 'Küche',
+        kind: PrinterKind.tcp9100,
+        host: '192.168.0.51',
+      ),
+    );
+
+    final printers = await registry.list();
+    expect(printers, hasLength(2));
+    expect(printers.map((e) => e.id).toSet(), hasLength(2));
+  });
+
+  test(
+    'derselbe Host auf einem anderen Port ist ein eigener Drucker',
+    () async {
+      await registry.upsert(sample());
+      await registry.upsert(
+        PrinterConfig(
+          id: '',
+          name: 'Bonrolle 2',
+          kind: PrinterKind.tcp9100,
+          host: '192.168.0.50',
+          port: 9101,
+        ),
+      );
+
+      expect(await registry.list(), hasLength(2));
+    },
+  );
+
+  test('mit ID bleibt die Adressprüfung außen vor', () async {
+    final first = await registry.upsert(sample());
+    await registry.upsert(
+      PrinterConfig(
+        id: 'p_zzzzzzzz',
+        name: 'Zweitgerät',
+        kind: PrinterKind.tcp9100,
+        host: '192.168.0.50',
+      ),
+    );
+
+    final printers = await registry.list();
+    expect(printers, hasLength(2), reason: 'eine gesetzte ID zählt');
+    expect(printers.first.id, first.id);
+  });
+
   test('remove löscht nur den gemeinten Drucker', () async {
     final first = await registry.upsert(sample());
-    final second = await registry.upsert(sample(name: 'Küche'));
+    final second = await registry.upsert(
+      sample(name: 'Küche', host: '192.168.0.51'),
+    );
 
     expect(await registry.remove('p_gibtsnicht'), isFalse);
     expect(await registry.remove(first.id), isTrue);

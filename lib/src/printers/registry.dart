@@ -66,12 +66,23 @@ class PrinterRegistry {
   /// Legt einen Drucker an oder ersetzt ihn.
   ///
   /// Ist [printer].id leer, vergibt der Agent eine neue ID — die Kasse denkt
-  /// sich keine IDs aus.
+  /// sich keine IDs aus. Zeigt dabei schon ein Drucker auf dieselbe Adresse
+  /// (`host:port`), wird **dieser** aktualisiert statt ein zweiter angelegt:
+  /// die Kasse schickt beim erneuten Einrichten denselben Drucker noch einmal,
+  /// und zwei Einträge auf ein Gerät hießen jeden Bon doppelt. Wer wirklich
+  /// zwei Einträge auf eine Adresse will, gibt eine ID mit — dann greift die
+  /// Adressprüfung nicht.
+  ///
+  /// Die Suche nach dem Zwilling steht mit in [ConfigStore.mutate], damit zwei
+  /// gleichzeitige Anfragen nicht doch zwei Einträge erzeugen.
   Future<PrinterConfig> upsert(PrinterConfig printer) async {
-    final saved = printer.id.isEmpty ? printer.copyWith(id: newId()) : printer;
+    late PrinterConfig saved;
 
     await store.mutate((config) {
       final printers = config.printers.toList();
+      saved = printer.id.isEmpty
+          ? printer.copyWith(id: _idForAddress(printers, printer))
+          : printer;
       final index = printers.indexWhere((e) => e.id == saved.id);
       if (index >= 0) {
         printers[index] = saved;
@@ -83,6 +94,17 @@ class PrinterRegistry {
 
     _log?.info('Drucker ${saved.id} gespeichert (${saved.kind.wireName}).');
     return saved;
+  }
+
+  /// ID des Druckers an derselben Adresse — sonst eine frische.
+  String _idForAddress(List<PrinterConfig> printers, PrinterConfig wanted) {
+    final host = wanted.host.toLowerCase();
+    for (final printer in printers) {
+      if (printer.host.toLowerCase() == host && printer.port == wanted.port) {
+        return printer.id;
+      }
+    }
+    return newId();
   }
 
   /// Entfernt einen Drucker; `false`, wenn es ihn nicht gab.

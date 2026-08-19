@@ -13,6 +13,13 @@ import 'routes_print.dart';
 /// Erlaubte Form einer Drucker-ID im Pfad.
 final RegExp _printerId = RegExp(r'^[A-Za-z0-9_-]{1,64}$');
 
+/// Pfad-ID, mit der die Kasse „leg einen neuen Drucker an" meint.
+///
+/// Ein REST-PUT braucht eine ID im Pfad, die Kasse hat aber noch keine — sie
+/// schickt darum `neu`. Ohne diese Ausnahme landete ein Drucker mit der ID
+/// `neu` in der Konfiguration, und jeder weitere Drucker überschriebe ihn.
+const String newPrinterPathId = 'neu';
+
 /// Meldet die Drucker-Endpunkte am Router an.
 ///
 /// ```dart
@@ -70,13 +77,17 @@ Future<Response> handleListPrinters(
 
 /// `PUT /v1/printers` bzw. `PUT /v1/printers/{id}` — anlegen oder ändern.
 ///
-/// Ohne ID im Pfad vergibt der Agent eine; die Kasse denkt sich keine IDs aus.
+/// Ohne ID im Pfad — und ebenso bei [newPrinterPathId] — vergibt der Agent
+/// eine; die Kasse denkt sich keine IDs aus. Zwei solche Anfragen ergeben zwei
+/// Drucker, es sei denn, beide zeigen auf dieselbe Adresse: dann wird der
+/// vorhandene Eintrag aktualisiert (siehe [PrinterRegistry.upsert]).
 Future<Response> handlePutPrinter(
   PrinterRegistry registry,
   Request request,
   String? id,
 ) async {
-  if (id != null && !_printerId.hasMatch(id)) {
+  final wanted = (id == null || id.isEmpty || id == newPrinterPathId) ? '' : id;
+  if (wanted.isNotEmpty && !_printerId.hasMatch(wanted)) {
     return failJson(errorBadRequest, 'Die Drucker-ID ist unbrauchbar.');
   }
 
@@ -84,7 +95,7 @@ Future<Response> handlePutPrinter(
   final error = body.error;
   if (error != null) return error;
 
-  final parsed = parsePrinterInput(body.data!, id: id ?? '');
+  final parsed = parsePrinterInput(body.data!, id: wanted);
   if (parsed.problem != null) {
     return failJson(errorBadRequest, parsed.problem!);
   }
@@ -125,9 +136,10 @@ Future<Response> handleDiscoverPrinters(
   if (error != null) return error;
 
   final found = await discovery.discover(scan: body.data!['scan'] == true);
-  return okJson(<String, Object?>{
-    'printers': found.map((printer) => printer.toJson()).toList(),
-  });
+  // `scanned` sagt der Kasse, wo gesucht wurde („Suche in 192.168.0.0/24 …")
+  // — und beim Kunden, warum nichts gefunden wurde: steht dort nur das Netz
+  // einer virtuellen Maschine, hängt der Drucker woanders.
+  return okJson(found.toJson());
 }
 
 /// Ergebnis der Eingabeprüfung: entweder ein Drucker oder ein Klartextgrund.

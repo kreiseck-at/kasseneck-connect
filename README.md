@@ -193,12 +193,29 @@ Herkunft), 404 (Pfad unbekannt) und 413 (Rumpf zu groß).
 | DELETE | `/v1/pair` | den mitgeschickten Token zurückziehen |
 | GET | `/v1/printers` | konfigurierte Drucker samt Zustand (`?probe=0` fragt die Geräte nicht an) |
 | PUT | `/v1/printers` | anlegen — `{name, kind, host, port?, devid?}`, die ID vergibt der Agent |
+| PUT | `/v1/printers/neu` | dasselbe für Kassen, die im Pfad eine ID brauchen |
 | PUT | `/v1/printers/{id}` | anlegen oder ändern |
 | DELETE | `/v1/printers/{id}` | entfernen |
-| POST | `/v1/printers/discover` | `{scan?: bool}` → mDNS (3 s) und auf Wunsch Portscan im lokalen /24 |
+| POST | `/v1/printers/discover` | `{scan?: bool}` → mDNS (3 s) und auf Wunsch Portscan aller lokalen /24 |
 | POST | `/v1/printers/{id}/test` | Testseite mit den Bytes aus dem Rumpf |
 | POST | `/v1/print` | `{printerId, jobId, bytes}` (base64, bis 4 MB) |
 | WS | `/v1/events` | Ereignisstrom (siehe unten) |
+
+Beim Anlegen (`PUT /v1/printers` oder `PUT /v1/printers/neu`) vergibt der Agent
+die ID — die Kasse denkt sich keine aus. Zeigt dabei schon ein Drucker auf
+dieselbe Adresse (`host:port`), wird **dieser** aktualisiert statt ein zweiter
+angelegt: sonst hätte ein zweiter Einrichtungsdurchgang jeden Bon verdoppelt.
+Wer wirklich zwei Einträge auf eine Adresse will, gibt eine ID im Pfad an.
+
+`POST /v1/printers/discover` antwortet mit `{ok, printers, scanned}`. In
+`scanned` steht je abgesuchtem Netz `{interface, subnet, hosts}` — damit kann
+die Kasse „Suche in 192.168.0.0/24 …" anzeigen und beim Kunden lässt sich
+sehen, ob überhaupt im richtigen Netz gesucht wurde. Gescannt werden **alle**
+IPv4-Netze des Rechners (höchstens vier, ohne 169.254.x, ein Netz je /24), je
+Adresse 300 ms, insgesamt höchstens 8 s. Nur das erste Netz zu nehmen ging
+schief: auf Rechnern mit Parallels, Docker oder VPN steht das WLAN nicht
+zwingend vorn, und im Netz einer virtuellen Maschine hängt kein Drucker. Zum
+Nachsehen auf einem fremden Rechner: `dart run tool/scan_debug.dart`.
 
 `kind` ist `tcp9100` (roher ESC/POS-Strom) oder `epos` (Epson ePOS-Print über
 HTTP/HTTPS, `devid` je Gerät; HTTPS gilt allein am Port 443). Gedruckt wird

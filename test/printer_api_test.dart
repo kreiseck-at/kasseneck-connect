@@ -178,6 +178,80 @@ void main() {
       expect((await store.load()).printers.single.host, '192.168.0.50');
     });
 
+    test('PUT auf /neu vergibt eine ID statt sie zu übernehmen', () async {
+      final response = await send(
+        'PUT',
+        '/v1/printers/neu',
+        body: <String, Object?>{
+          'name': 'Kasse vorne',
+          'kind': 'tcp9100',
+          'host': '192.168.0.136',
+          'port': 9100,
+        },
+      );
+
+      expect(response.ok, isTrue);
+      final printer = response.json['printer']! as Map<String, Object?>;
+      expect(printer['id'], matches(RegExp(r'^p_[a-z2-7]{8}$')));
+      expect((await store.load()).printers.single.id, printer['id']);
+      expect(
+        (await store.load()).printers.single.id,
+        isNot('neu'),
+        reason: 'die Kasse meint „neu", nicht eine ID namens neu',
+      );
+    });
+
+    test('zwei Mal /neu mit anderer Adresse ergibt zwei Drucker', () async {
+      Future<String> put(String host) async =>
+          ((await send(
+                    'PUT',
+                    '/v1/printers/neu',
+                    body: <String, Object?>{
+                      'name': 'Drucker $host',
+                      'kind': 'tcp9100',
+                      'host': host,
+                      'port': 9100,
+                    },
+                  )).json['printer']!
+                  as Map<String, Object?>)['id']!
+              as String;
+
+      final a = await put('192.168.0.136');
+      final b = await put('192.168.0.137');
+
+      expect(a, isNot(b));
+      expect((await store.load()).printers, hasLength(2));
+    });
+
+    test('/neu mit bekannter Adresse aktualisiert statt zu doppeln', () async {
+      final first = await send(
+        'PUT',
+        '/v1/printers/neu',
+        body: <String, Object?>{
+          'name': 'Kasse vorne',
+          'kind': 'tcp9100',
+          'host': '192.168.0.136',
+          'port': 9100,
+        },
+      );
+      final again = await send(
+        'PUT',
+        '/v1/printers/neu',
+        body: <String, Object?>{
+          'name': 'Kasse vorne, Bonrolle',
+          'kind': 'tcp9100',
+          'host': '192.168.0.136',
+          'port': 9100,
+        },
+      );
+
+      final id = (first.json['printer']! as Map<String, Object?>)['id'];
+      expect((again.json['printer']! as Map<String, Object?>)['id'], id);
+      final printers = (await store.load()).printers;
+      expect(printers, hasLength(1));
+      expect(printers.single.name, 'Kasse vorne, Bonrolle');
+    });
+
     test('PUT mit ID ändert den vorhandenen Eintrag', () async {
       final id = await addPrinter(9100);
 
@@ -456,9 +530,10 @@ void main() {
       expect(discoveryScans, <bool>[false]);
       expect(response.printers.single['host'], '192.168.0.50');
       expect(response.printers.single['kind'], 'tcp9100');
+      expect(response.json['scanned'], isEmpty);
     });
 
-    test('discover reicht scan:true durch', () async {
+    test('discover reicht scan:true durch und nennt die Netze', () async {
       final response = await send(
         'POST',
         '/v1/printers/discover',
@@ -467,6 +542,13 @@ void main() {
 
       expect(response.ok, isTrue);
       expect(discoveryScans, <bool>[true]);
+      expect(response.json['scanned'], <Map<String, Object?>>[
+        <String, Object?>{
+          'interface': 'en0',
+          'subnet': '192.168.0.0/24',
+          'hosts': 253,
+        },
+      ]);
     });
   });
 }
@@ -481,15 +563,38 @@ class _RecordingDiscovery implements PrinterDiscovery {
   Duration get mdnsTimeout => defaultMdnsTimeout;
 
   @override
-  Future<List<DiscoveredPrinter>> discover({bool scan = false}) async {
+  Duration get scanTimeout => defaultScanTimeout;
+
+  @override
+  Duration get scanBudget => defaultScanBudget;
+
+  @override
+  int get scanConcurrency => defaultScanConcurrency;
+
+  @override
+  int get scanPort => rawPrintPort;
+
+  @override
+  Future<DiscoveryResult> discover({bool scan = false}) async {
     scans.add(scan);
-    return <DiscoveredPrinter>[
-      const DiscoveredPrinter(
-        host: '192.168.0.50',
-        port: 9100,
-        kind: PrinterKind.tcp9100,
-        name: 'TM-T20',
-      ),
-    ];
+    return DiscoveryResult(
+      printers: const <DiscoveredPrinter>[
+        DiscoveredPrinter(
+          host: '192.168.0.50',
+          port: 9100,
+          kind: PrinterKind.tcp9100,
+          name: 'TM-T20',
+        ),
+      ],
+      scanned: scan
+          ? const <ScannedSubnet>[
+              ScannedSubnet(
+                interface: 'en0',
+                subnet: '192.168.0.0/24',
+                hosts: 253,
+              ),
+            ]
+          : const <ScannedSubnet>[],
+    );
   }
 }

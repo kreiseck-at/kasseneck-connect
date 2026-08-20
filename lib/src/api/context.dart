@@ -34,6 +34,7 @@ class AgentContext {
     Pairing? pairing,
     PrinterSummaries? printers,
     EventBus? events,
+    this.environment,
   }) : clock = clock ?? DateTime.now,
        events = events ?? EventBus(),
        printers = printers ?? _noPrinters {
@@ -66,6 +67,20 @@ class AgentContext {
   /// Die Melder schreiben hier hinein; `/v1/events` (Etappe A4) hängt sich als
   /// Zuhörer daran.
   final EventBus events;
+
+  /// Umgebungsvariablen für die Endpunkte (`null` = die des Prozesses).
+  ///
+  /// Gebraucht wird das bisher nur für `KASSENECK_CONNECT_NO_BROWSER`: so
+  /// entscheidet im Test der Test darüber, ob ein Browser aufginge — und nicht
+  /// die Umgebung des Rechners, auf dem er läuft.
+  final Map<String, String>? environment;
+
+  /// Zeitpunkt der letzten Kopplungsanforderung über `POST /v1/pair/request`.
+  ///
+  /// Bewusst nur im Speicher und nicht in der `config.json`: die Bremse soll
+  /// verhindern, dass eine Kasse dem Benutzer Browserfenster ins Gesicht
+  /// wirft — sie muss keinen Neustart überdauern.
+  DateTime? lastPairRequestAt;
 
   Future<AgentConfig> config() => store.load();
 

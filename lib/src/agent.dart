@@ -126,6 +126,7 @@ class Agent {
       pairing: _pairing,
       events: bus,
       printers: registry.summaries,
+      environment: _environment,
     );
     _context = ctx;
     _routes = <RouteRegistrar>[

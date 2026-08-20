@@ -29,6 +29,10 @@ Handler buildHandler(
 
   router.get('/v1/status', (Request request) => handleStatus(ctx, request));
   router.post('/v1/pair', (Request request) => handlePair(ctx, request));
+  router.post(
+    '/v1/pair/request',
+    (Request request) => handlePairRequest(ctx, request),
+  );
   router.delete('/v1/pair', (Request request) => handleUnpair(ctx, request));
 
   for (final register in extraRoutes) {

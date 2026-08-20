@@ -47,10 +47,15 @@ const Map<String, Object> _varyOrigin = <String, Object>{'vary': 'Origin'};
 /// Ohne Origin ruft kein Browser an, sondern ein Werkzeug (curl, `doctor`).
 /// Dort ist nur die Diagnose plus die Kopplung sinnvoll — alles andere wäre
 /// eine Hintertür an der Allowlist vorbei.
+///
+/// `POST /v1/pair/request` gehört dazu, weil es genau dann gebraucht wird,
+/// wenn noch kein Token existiert; es gibt nichts preis, sondern öffnet nur
+/// lokal ein Browserfenster (siehe `handlePairRequest`).
 bool isPublicRoute(String method, String path) {
   final normalized = normalizeRoutePath(path);
   return (method == 'GET' && normalized == '/v1/status') ||
-      (method == 'POST' && normalized == '/v1/pair');
+      (method == 'POST' && normalized == '/v1/pair') ||
+      (method == 'POST' && normalized == '/v1/pair/request');
 }
 
 /// Schneidet einen abschließenden Schrägstrich ab, damit `/v1/status` und

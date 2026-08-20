@@ -7,6 +7,8 @@ import 'package:path/path.dart' as p;
 import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'package:test/test.dart';
 
+import 'support/fake_process_runner.dart';
+
 /// Antwort des Testklienten in bequemer Form.
 class TestResponse {
   TestResponse(this.status, this.headers, this.body);
@@ -32,6 +34,7 @@ void main() {
   late AgentContext ctx;
   late HttpServer server;
   late DateTime now;
+  late FakeProcessRunner browser;
 
   const kasse = 'https://kasse.kasseneck.at';
 
@@ -40,16 +43,21 @@ void main() {
     store = ConfigStore.forDirectory(temp);
     log = AgentLog(Directory(p.join(temp.path, 'logs')));
     now = DateTime(2026, 8, 19, 10);
+    browser = FakeProcessRunner();
     ctx = AgentContext(
       store: store,
       log: log,
       startedAt: now,
       clock: () => now,
+      // Leere Umgebung: der Test entscheidet über
+      // KASSENECK_CONNECT_NO_BROWSER, nicht der Rechner, auf dem er läuft.
+      environment: const <String, String>{},
       pairing: Pairing(
         store: store,
         log: log,
         clock: () => now,
         random: Random(11),
+        runProcess: browser.runner,
       ),
     );
     server = await shelf_io.serve(
@@ -384,6 +392,154 @@ void main() {
         errorBadRequest,
       );
     });
+  });
+
+  group('Kopplung aus der Kasse anstoßen', () {
+    const path = '/v1/pair/request';
+
+    test('ist eine öffentliche Route (auch mit abschließendem /)', () {
+      expect(isPublicRoute('POST', path), isTrue);
+      expect(isPublicRoute('POST', '$path/'), isTrue);
+      expect(isPublicRoute('GET', path), isFalse);
+    });
+
+    test('erzeugt einen frischen Code und öffnet die Kopplungsseite', () async {
+      final response = await send('POST', path, origin: kasse);
+
+      expect(response.status, 200);
+      expect(response.ok, isTrue);
+
+      final pairing = (await store.load()).pairing;
+      expect(pairing.code, matches(RegExp(r'^\d{6}$')));
+      expect(pairing.expiresAt, now.add(pairingCodeLifetime));
+
+      expect(browser.calls, hasLength(1));
+      expect(
+        browser.calls.single.arguments.last,
+        contains('#code=${pairing.code}'),
+      );
+      expect(
+        browser.calls.single.arguments.last,
+        contains('&port=${server.port}'),
+      );
+    });
+
+    test('die Antwort nennt den Code nirgends', () async {
+      final response = await send('POST', path, origin: kasse);
+      final code = (await store.load()).pairing.code!;
+
+      expect(response.body, isNot(contains(code)));
+      expect(response.json.keys, <String>['ok']);
+    });
+
+    test('ohne Token erreichbar — genau dafür ist der Endpunkt da', () async {
+      final response = await send('POST', path, origin: kasse);
+      expect(response.status, 200);
+      expect((await store.load()).tokenHashes, isEmpty);
+    });
+
+    test('ohne Herkunft (curl) erreichbar', () async {
+      final response = await send('POST', path);
+      expect(response.status, 200);
+      expect(response.ok, isTrue);
+      expect(browser.calls, hasLength(1));
+    });
+
+    test('fremde Herkunft bekommt 403 und öffnet nichts', () async {
+      final response = await send(
+        'POST',
+        path,
+        origin: 'https://boese.example.com',
+      );
+      expect(response.status, 403);
+      expect(response.errorCode, errorOriginForbidden);
+      expect(browser.calls, isEmpty);
+    });
+
+    test('zweiter Aufruf binnen zehn Sekunden wird gebremst', () async {
+      expect((await send('POST', path, origin: kasse)).ok, isTrue);
+      now = now.add(const Duration(seconds: 9));
+
+      final second = await send('POST', path, origin: kasse);
+      expect(second.status, 200);
+      expect(second.ok, isFalse);
+      expect(second.errorCode, errorPairRequestThrottled);
+      expect(
+        (second.json['error']! as Map)['message'],
+        'Bitte kurz warten und erneut versuchen.',
+      );
+      // Kein zweites Browserfenster.
+      expect(browser.calls, hasLength(1));
+    });
+
+    test('nach zehn Sekunden geht es wieder', () async {
+      await send('POST', path, origin: kasse);
+      now = now.add(pairRequestMinInterval);
+
+      final second = await send('POST', path, origin: kasse);
+      expect(second.ok, isTrue);
+      expect(browser.calls, hasLength(2));
+      // Frischer Code mit frischer Gültigkeit.
+      expect(
+        (await store.load()).pairing.expiresAt,
+        now.add(pairingCodeLifetime),
+      );
+    });
+
+    test('funktioniert auch, wenn schon gekoppelt ist', () async {
+      await pair();
+      expect((await store.load()).tokenHashes, hasLength(1));
+      now = now.add(pairRequestMinInterval);
+
+      final response = await send('POST', path, origin: kasse);
+      expect(response.ok, isTrue);
+      expect(browser.calls, hasLength(1));
+      // Der vorhandene Token bleibt gültig.
+      expect((await store.load()).tokenHashes, hasLength(1));
+    });
+
+    test(
+      'KASSENECK_CONNECT_NO_BROWSER=1 öffnet nichts, meldet aber ok',
+      () async {
+        final quietServer = await shelf_io.serve(
+          buildHandler(
+            AgentContext(
+              store: store,
+              log: log,
+              startedAt: now,
+              clock: () => now,
+              environment: const <String, String>{noBrowserEnvVar: '1'},
+              pairing: Pairing(
+                store: store,
+                log: log,
+                clock: () => now,
+                random: Random(11),
+                runProcess: browser.runner,
+              ),
+            ),
+          ),
+          InternetAddress.loopbackIPv4,
+          0,
+        );
+        addTearDown(() => quietServer.close(force: true));
+
+        final client = HttpClient();
+        final request = await client.openUrl(
+          'POST',
+          Uri.parse('http://127.0.0.1:${quietServer.port}$path'),
+        );
+        request.headers.set('origin', kasse);
+        final response = await request.close();
+        final body = await response.transform(utf8.decoder).join();
+        client.close(force: true);
+
+        expect(response.statusCode, 200);
+        expect((jsonDecode(body) as Map)['ok'], isTrue);
+        expect(browser.calls, isEmpty);
+        // Der Code liegt trotzdem bereit — die Konsole zeigt ihn.
+        expect((await store.load()).pairing.code, isNotNull);
+      },
+    );
   });
 
   test('zusätzliche Routen lassen sich anmelden (A3/A4)', () async {

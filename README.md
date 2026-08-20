@@ -131,7 +131,10 @@ Code gegen einen Token:
 1. Der Agent zeigt beim ersten Start einen **sechsstelligen Code** an (Konsole
    und Log) und öffnet `https://kasse.kasseneck.at/connect#code=…&port=…` im
    Standardbrowser. Wurde das Fenster geschlossen, liefert
-   `kasseneck-connect pair` jederzeit einen frischen Code samt Adresse.
+   `kasseneck-connect pair` jederzeit einen frischen Code samt Adresse — und
+   die Kasse kann dasselbe selbst anstoßen (`POST /v1/pair/request`, ohne
+   Token, höchstens einmal je 10 Sekunden). Der Code kommt dabei **nicht** über
+   die API zurück; er steht allein in dem lokal geöffneten Fenster.
 2. Den Code in der Kasse eingeben. Die Kasse holt sich dafür einen Token, den
    sie ab dann bei jeder Anfrage mitschickt.
 3. Der Code ist **10 Minuten** gültig. Nach **5** Fehlversuchen ist die Kopplung
@@ -202,8 +205,9 @@ heraus — Handarbeit in der Datei ist nicht nötig.
 Basis: `http://127.0.0.1:27182` (bei belegtem Port bis 27189 hinauf; die Kasse
 probiert die Reihe durch und erkennt den Agenten an `GET /v1/status`).
 
-Alle Pfade außer `GET /v1/status` und `POST /v1/pair` brauchen den
-Kopplungstoken (`Authorization: Bearer …`) **und** eine erlaubte Herkunft.
+Alle Pfade außer `GET /v1/status`, `POST /v1/pair` und `POST /v1/pair/request`
+brauchen den Kopplungstoken (`Authorization: Bearer …`) **und** eine erlaubte
+Herkunft.
 Fachfehler kommen mit **HTTP 200** und `{ok: false, error: {code, message}}`;
 eigene HTTP-Codes gibt es nur für 401 (Token fehlt/falsch), 403 (fremde
 Herkunft), 404 (Pfad unbekannt), 413 (Rumpf zu groß) und 426 (`/v1/events` ohne
@@ -213,6 +217,7 @@ WebSocket-Upgrade).
 |---|---|---|
 | GET | `/v1/status` | Lebenszeichen; ohne Token Kurzform, mit Token zusätzlich Drucker und letzte Fehler |
 | POST | `/v1/pair` | `{code}` → `{token}` |
+| POST | `/v1/pair/request` | Kopplung anstoßen: neuer Code, Kopplungsseite geht lokal im Browser auf → `{ok}` (nie der Code) |
 | DELETE | `/v1/pair` | den mitgeschickten Token zurückziehen |
 | GET | `/v1/printers` | konfigurierte Drucker samt Zustand (`?probe=0` fragt die Geräte nicht an) |
 | PUT | `/v1/printers` | anlegen — `{name, kind, host, port?, devid?}`, die ID vergibt der Agent |
@@ -405,9 +410,11 @@ oder dauerhaft in der `config.json` des Entwicklungsrechners:
 
 Auf Kundenrechnern bleibt beides aus.
 
-Ohne `Origin`-Kopfzeile (curl, Diagnosewerkzeuge) sind nur `GET /v1/status` und
-`POST /v1/pair` erreichbar; alles andere verlangt eine erlaubte Herkunft **und**
-einen Token.
+Ohne `Origin`-Kopfzeile (curl, Diagnosewerkzeuge) sind nur `GET /v1/status`,
+`POST /v1/pair` und `POST /v1/pair/request` erreichbar; alles andere verlangt
+eine erlaubte Herkunft **und** einen Token. `POST /v1/pair/request` gibt dabei
+nichts preis: es lässt lediglich auf demselben Rechner ein Browserfenster
+aufgehen, in dem der Code steht.
 
 ---
 

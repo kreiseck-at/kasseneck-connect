@@ -35,6 +35,9 @@ const String errorPairExpired = 'pair_expired';
 /// Zu viele Fehlversuche — kurz gesperrt.
 const String errorPairLocked = 'pair_locked';
 
+/// Kopplung zu schnell hintereinander angefordert.
+const String errorPairRequestThrottled = 'pair_request_throttled';
+
 /// Erfolgsantwort `{ok: true, ...}`.
 ///
 /// Fachliche Antworten sind immer HTTP 200; nur Transportfehler (Herkunft,

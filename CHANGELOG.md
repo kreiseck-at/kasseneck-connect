@@ -5,6 +5,15 @@ Alle nennenswerten Änderungen an Kasseneck Connect. Die Versionsnummer folgt
 `lib/src/version.dart` und wird über `GET /v1/status` sowie im Update-Feed
 gemeldet.
 
+## 1.0.1 — 2026-08-20
+
+- **Kopplung aus der Kasse anstoßbar.** `POST /v1/pair/request` erzeugt einen
+  frischen Kopplungscode und öffnet die Kopplungsseite im Standardbrowser des
+  Rechners — die Kasse braucht dafür weder einen Token noch den Umweg über
+  `kasseneck-connect pair`. Der Code steht ausschließlich in dem lokal
+  geöffneten Fenster, die Antwort ist bloß `{ok: true}`. Höchstens eine
+  Anforderung je 10 Sekunden (`pair_request_throttled`).
+
 ## 1.0.0 — 2026-08-19
 
 Erste ausgelieferte Fassung: der Agent kann alles, was die Browser-Kasse zum

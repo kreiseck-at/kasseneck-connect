@@ -5,6 +5,16 @@ Alle nennenswerten Änderungen an Kasseneck Connect. Die Versionsnummer folgt
 `lib/src/version.dart` und wird über `GET /v1/status` sowie im Update-Feed
 gemeldet.
 
+## 1.2.5 — 2026-08-20
+
+- **Terminal-Wachhalten:** Android-Terminals legen das WLAN im Ruhezustand
+  schlafen; nach ein paar Minuten Stille antworten sie minutenlang gar nicht
+  mehr. Der Agent merkt sich das Terminal beim ersten erfolgreichen Kontakt
+  (Suche, Test oder Zahlung), schreibt die Adresse in die Konfiguration und
+  berührt sie fortan alle 45 s per kurzem TCP-Verbindungsaufbau — keine Daten,
+  keine Zahlung, nur genug, damit das Funkmodul nicht einschläft. Nach einem
+  Neustart des Agenten läuft das Wachhalten von selbst weiter.
+
 ## 1.2.4 — 2026-08-20
 
 - **Schlafende Terminals werden gefunden:** das Hobex-Terminal verschläft im

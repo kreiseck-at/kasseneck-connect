@@ -16,6 +16,7 @@ import 'pairing/pairing.dart';
 import 'printers/discovery.dart';
 import 'printers/queue.dart';
 import 'printers/registry.dart';
+import 'terminal/warmhalten.dart';
 import 'version.dart';
 
 /// Wie viele Ports der Agent ab dem Wunschport durchprobiert
@@ -72,6 +73,7 @@ class Agent {
 
   HttpServer? _server;
   AgentContext? _context;
+  TerminalWarmhalter? _warmhalter;
   PrinterRegistry? _printers;
   List<RouteRegistrar> _routes = const <RouteRegistrar>[];
 
@@ -130,9 +132,11 @@ class Agent {
       environment: _environment,
     );
     _context = ctx;
+    _warmhalter = TerminalWarmhalter(store: store, log: log);
+    _warmhalter!.startAus(await store.load());
     _routes = <RouteRegistrar>[
       eventRoutes(),
-      terminalRoutes(),
+      terminalRoutes(warmhalter: _warmhalter),
       printerRoutes(
         registry: registry,
         queue: queue,
@@ -165,6 +169,7 @@ class Agent {
   /// Hält den Server an: erst höflich (laufende Anfragen dürfen zu Ende
   /// gehen), nach [gracefulStopTimeout] mit Nachdruck.
   Future<void> stop() async {
+    _warmhalter?.stop();
     final server = _server;
     final ctx = _context;
     _server = null;

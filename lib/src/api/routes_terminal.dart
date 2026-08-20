@@ -6,6 +6,7 @@ import 'package:shelf_router/shelf_router.dart';
 import '../config/model.dart';
 import '../terminal/discovery.dart';
 import '../terminal/hps.dart';
+import '../terminal/warmhalten.dart';
 import 'context.dart';
 import 'responses.dart';
 
@@ -26,6 +27,8 @@ final RegExp _transactionId = RegExp(r'^\d{1,18}$');
 /// Die Brücke reicht die HPS-Antwort unverändert als `hps` durch.
 RouteRegistrar terminalRoutes({
   HpsBridge? bridge,
+  // Haelt das Terminal nach dem ersten erfolgreichen Kontakt wach.
+  TerminalWarmhalter? warmhalter,
   // Nur für Tests: die echte Suche scannt das Netz des Rechners.
   Future<TerminalDiscoveryResult> Function(HpsBridge, AgentContext)? discover,
 }) {
@@ -37,13 +40,22 @@ RouteRegistrar terminalRoutes({
             discoverTerminals(bridge: h, log: c.log);
 
     router
-      ..post('/v1/terminal/test', (Request r) => _handleTest(hps, r))
+      ..post(
+        '/v1/terminal/test',
+        (Request r) => _handleTest(hps, r, warmhalter),
+      )
       ..post(
         '/v1/terminal/discover',
         (Request r) => _handleDiscover(hps, ctx, suche, r),
       )
-      ..post('/v1/terminal/diagnosis', (Request r) => _handleDiagnosis(hps, r))
-      ..post('/v1/terminal/payment', (Request r) => _handlePayment(hps, r))
+      ..post(
+        '/v1/terminal/diagnosis',
+        (Request r) => _handleDiagnosis(hps, r, warmhalter),
+      )
+      ..post(
+        '/v1/terminal/payment',
+        (Request r) => _handlePayment(hps, r, warmhalter),
+      )
       ..post('/v1/terminal/status', (Request r) => _handleStatus(hps, r))
       ..post('/v1/terminal/abort', (Request r) => _handleAbort(hps, r));
   };
@@ -65,9 +77,13 @@ Response _zielFehler() => failJson(
   'Es fehlt die Adresse des Terminals (host, optional port).',
 );
 
-Future<Response> _mitHps(Future<Object?> Function() aufruf) async {
+Future<Response> _mitHps(
+  Future<Object?> Function() aufruf, {
+  void Function()? beiErfolg,
+}) async {
   try {
     final daten = await aufruf();
+    beiErfolg?.call();
     return okJson(<String, Object?>{'hps': daten});
   } on HpsWegFehler catch (e) {
     return failJson(e.code, e.message);
@@ -80,7 +96,11 @@ Future<Response> _mitHps(Future<Object?> Function() aufruf) async {
 /// Antwort „Invalid TID“ beweist das HPS); mit TID die echte Diagnose samt
 /// Gerätestatus. Antwortet die Gegenstelle zwar, aber nicht im HPS-Format,
 /// ist es kein Terminal (`terminal_error`).
-Future<Response> _handleTest(HpsBridge hps, Request request) async {
+Future<Response> _handleTest(
+  HpsBridge hps,
+  Request request, [
+  TerminalWarmhalter? warmhalter,
+]) async {
   final body = await readJsonBody(request);
   if (body.error != null) return body.error!;
   final ziel = _ziel(body.data!);
@@ -98,11 +118,15 @@ Future<Response> _handleTest(HpsBridge hps, Request request) async {
       );
     }
     return antwort;
-  });
+  }, beiErfolg: () => warmhalter?.merken(ziel.$1, ziel.$2));
 }
 
 /// `POST /v1/terminal/diagnosis` `{host, port?, tid}`.
-Future<Response> _handleDiagnosis(HpsBridge hps, Request request) async {
+Future<Response> _handleDiagnosis(
+  HpsBridge hps,
+  Request request, [
+  TerminalWarmhalter? warmhalter,
+]) async {
   final body = await readJsonBody(request);
   if (body.error != null) return body.error!;
   final ziel = _ziel(body.data!);
@@ -111,7 +135,10 @@ Future<Response> _handleDiagnosis(HpsBridge hps, Request request) async {
   if (!_tid.hasMatch(tid)) {
     return failJson(errorBadRequest, 'Es fehlt die Terminal-ID (tid).');
   }
-  return _mitHps(() => hps.diagnosis(host: ziel.$1, port: ziel.$2, tid: tid));
+  return _mitHps(
+    () => hps.diagnosis(host: ziel.$1, port: ziel.$2, tid: tid),
+    beiErfolg: () => warmhalter?.merken(ziel.$1, ziel.$2),
+  );
 }
 
 /// `POST /v1/terminal/payment`
@@ -122,7 +149,11 @@ Future<Response> _handleDiagnosis(HpsBridge hps, Request request) async {
 /// einzige Schlüssel für Status-Abfrage und Storno, wenn der lange Aufruf
 /// reißt. Eine Ablehnung kommt als `ok:true` mit `responseCode != "0"` im
 /// `hps`-Rumpf zurück — abgelehnt ist eine Antwort, kein Transportfehler.
-Future<Response> _handlePayment(HpsBridge hps, Request request) async {
+Future<Response> _handlePayment(
+  HpsBridge hps,
+  Request request, [
+  TerminalWarmhalter? warmhalter,
+]) async {
   final body = await readJsonBody(request);
   if (body.error != null) return body.error!;
   final daten = body.data!;
@@ -169,6 +200,7 @@ Future<Response> _handlePayment(HpsBridge hps, Request request) async {
       currency: currency ?? 'EUR',
       language: language,
     ),
+    beiErfolg: () => warmhalter?.merken(ziel.$1, ziel.$2),
   );
 }
 

@@ -473,6 +473,85 @@ void main() {
       );
     });
 
+    test(
+      'Wachhalten: erster Terminal-Erfolg merkt das Ziel und beruehrt es fortan',
+      () async {
+        hps.antworten.add((
+          status: 200,
+          rumpf:
+              '{"responseCode":"100108","responseText":"Invalid TID","tid":"0"}',
+        ));
+        var beruehrt = 0;
+        final warmhalter = TerminalWarmhalter(
+          store: store,
+          log: log,
+          intervall: const Duration(milliseconds: 30),
+          probe: (host, port, timeout) async {
+            beruehrt += 1;
+            return true;
+          },
+        );
+        addTearDown(warmhalter.stop);
+        final eigenerServer = await shelf_io.serve(
+          buildHandler(
+            ctx,
+            extraRoutes: <RouteRegistrar>[
+              terminalRoutes(warmhalter: warmhalter),
+            ],
+          ),
+          InternetAddress.loopbackIPv4,
+          0,
+        );
+        addTearDown(() => eigenerServer.close(force: true));
+
+        final client = HttpClient();
+        final request = await client.openUrl(
+          'POST',
+          Uri.parse('http://127.0.0.1:${eigenerServer.port}/v1/terminal/test'),
+        );
+        request.headers.set('origin', kasse);
+        request.headers.set('authorization', 'Bearer $token');
+        request.headers.contentType = ContentType.json;
+        request.write('{"host":"127.0.0.1","port":${hps.port}}');
+        final response = await request.close();
+        await response.drain<void>();
+        client.close(force: true);
+
+        // Ziel persistiert (ueberlebt einen Agenten-Neustart) …
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+        final config = await store.load();
+        expect(config.terminal?.host, '127.0.0.1');
+        expect(config.terminal?.port, hps.port);
+        // … und die Beruehrungen laufen.
+        expect(beruehrt, greaterThanOrEqualTo(2));
+      },
+    );
+
+    test(
+      'Wachhalten startet aus der Konfiguration (Agenten-Neustart)',
+      () async {
+        var beruehrt = 0;
+        final warmhalter = TerminalWarmhalter(
+          store: store,
+          log: log,
+          intervall: const Duration(milliseconds: 20),
+          probe: (host, port, timeout) async {
+            beruehrt += 1;
+            return true;
+          },
+        );
+        addTearDown(warmhalter.stop);
+        warmhalter.startAus(
+          (await store.load()).copyWith(
+            terminal: TerminalConfig(host: '192.168.0.187', port: 8080),
+          ),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 90));
+        expect(beruehrt, greaterThanOrEqualTo(2));
+        // Fehlschlag der Probe stoppt nichts (Terminal darf mal weg sein).
+      },
+    );
+
     test('ohne Token 401 — das Terminal ist kein öffentlicher Pfad', () async {
       final antwort = await senden('/v1/terminal/test', {
         'host': '127.0.0.1',

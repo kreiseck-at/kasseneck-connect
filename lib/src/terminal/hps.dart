@@ -144,7 +144,15 @@ class HpsBridge {
       final request = await client.openUrl(method, uri).timeout(timeout);
       request.headers.contentType = ContentType.json;
       request.headers.set(HttpHeaders.acceptHeader, 'application/json');
-      if (body != null) request.write(jsonEncode(body));
+      if (body != null) {
+        // Content-Length ausdruecklich setzen: ohne ihn schickt Dart den
+        // Rumpf chunked, und der eingebettete HPS-Server antwortet darauf
+        // mit Klartext statt JSON (Zahlung kam nie an — belegt am Geraet,
+        // hps 1.10.0). curl/package:http setzen die Laenge immer.
+        final bytes = utf8.encode(jsonEncode(body));
+        request.contentLength = bytes.length;
+        request.add(bytes);
+      }
       final response = await request.close().timeout(timeout);
       final text = await response
           .transform(utf8.decoder)

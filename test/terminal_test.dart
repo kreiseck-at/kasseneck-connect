@@ -23,6 +23,7 @@ class FakeHps {
         methode: request.method,
         pfad: request.uri.path,
         rumpf: body,
+        contentLength: request.headers.contentLength,
       ));
       final antwortJetzt = antworten.isEmpty
           ? (status: 200, rumpf: '{}')
@@ -35,7 +36,8 @@ class FakeHps {
   }
 
   final HttpServer server;
-  final List<({String methode, String pfad, String rumpf})> aufrufe = [];
+  final List<({String methode, String pfad, String rumpf, int contentLength})>
+  aufrufe = [];
   final List<({int status, String rumpf})> antworten = [];
 
   int get port => server.port;
@@ -221,6 +223,14 @@ void main() {
         expect(tx['transactionId'], '17556661');
         expect(tx['currency'], 'EUR');
         expect(tx['reference'], 'Beleg 42');
+        // Content-Length MUSS gesetzt sein: chunked versteht der eingebettete
+        // HPS-Server nicht und antwortet mit Klartext statt JSON (belegt am
+        // echten Geraet — die Zahlung kam dadurch nie an).
+        expect(
+          hps.aufrufe.single.contentLength,
+          utf8.encode(hps.aufrufe.single.rumpf).length,
+        );
+        expect(hps.aufrufe.single.contentLength, greaterThan(0));
       },
     );
 

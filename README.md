@@ -52,15 +52,15 @@ freigeschaltet werden müsste.
 
 1. `KasseneckConnect-macos-arm64.pkg` (Apple Silicon) bzw.
    `KasseneckConnect-macos-x64.pkg` (Intel) herunterladen.
-2. Das Paket ist in dieser Fassung **nicht signiert**. Ein Doppelklick bringt
-   deshalb „… kann nicht geöffnet werden, da es von einem nicht verifizierten
-   Entwickler stammt." So geht es trotzdem:
-   - **Rechtsklick** (bzw. Ctrl-Klick) auf die `.pkg`-Datei → **Öffnen** →
-     im Hinweisfenster noch einmal **Öffnen**.
-   - Führt das nicht zum Ziel:
+2. Das Paket ist in dieser Fassung **nicht signiert**. Beim Öffnen blockt
+   macOS mit „Apple could not verify …“. Seit macOS 15 (Sequoia) hilft auch
+   Rechtsklick → Öffnen nicht mehr — so geht es:
+   - Dialog mit **Fertig** schließen (nicht „In den Papierkorb legen“), dann
      **Systemeinstellungen → Datenschutz & Sicherheit** → ganz unten steht
-     „„KasseneckConnect…" wurde blockiert" → **Trotzdem öffnen**, danach mit
+     „„KasseneckConnect…“ wurde blockiert“ → **Dennoch öffnen**, danach mit
      Fingerabdruck oder Kennwort bestätigen.
+   - Alternative im Terminal (entfernt die Quarantäne-Markierung des
+     Downloads): `xattr -d com.apple.quarantine ~/Downloads/KasseneckConnect-macos-arm64.pkg`
 3. Durch den Installationsassistenten klicken. Das Paket legt die Binary unter
    `/usr/local/kasseneck-connect/` ab, verlinkt sie nach
    `/usr/local/bin/kasseneck-connect` (damit `kasseneck-connect doctor` und

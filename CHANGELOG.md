@@ -5,6 +5,14 @@ Alle nennenswerten Änderungen an Kasseneck Connect. Die Versionsnummer folgt
 `lib/src/version.dart` und wird über `GET /v1/status` sowie im Update-Feed
 gemeldet.
 
+## 1.2.2 — 2026-08-20
+
+- **Terminal-Zahlung repariert:** HPS-Aufrufe gehen jetzt mit ausdrücklichem
+  `Content-Length` hinaus. Ohne ihn schickte Dart den Rumpf chunked, und der
+  eingebettete HPS-Server antwortete mit Klartext statt JSON — die Zahlung
+  kam nie am Terminal an (belegt an hps 1.10.0). Der Fix ist end-to-end am
+  Gerät verifiziert (Zahlung → Kartenflow → saubere JSON-Antwort).
+
 ## 1.2.1 — 2026-08-20
 
 - **Terminal-Suche und -Test repariert:** das echte HPS kennt

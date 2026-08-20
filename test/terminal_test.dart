@@ -266,6 +266,97 @@ void main() {
       expect(hps.aufrufe[1].pfad, '/api/transaction/abort/3710016/9');
     });
 
+    test('Terminal-Suche findet das HPS im Netz samt TID', () async {
+      hps.antworten.add((status: 200, rumpf: '[{"terminalID":"3710016"}]'));
+
+      final ergebnis = await discoverTerminals(
+        bridge: HpsBridge(log: log),
+        log: log,
+        port: hps.port,
+        interfaces: () async => <LocalInterface>[
+          // .2 als eigene Adresse: dann wird .1 (der Fake-HPS) gescannt.
+          LocalInterface(name: 'lo-test', address: '127.0.0.2'),
+        ],
+      );
+
+      expect(ergebnis.scanned.single.subnet, '127.0.0.0/24');
+      expect(ergebnis.found, hasLength(1));
+      expect(ergebnis.found.single.host, '127.0.0.1');
+      expect(ergebnis.found.single.tids, <String>['3710016']);
+    });
+
+    test('ein fremder Dienst auf dem HPS-Port ist kein Treffer', () async {
+      // Der Port ist offen, aber /api/terminals antwortet nicht mit einer
+      // Terminal-Liste — Router-UIs und Kameras lauschen auch auf 8080.
+      hps.antworten.add((status: 200, rumpf: '{"ich":"bin kein Terminal"}'));
+
+      final ergebnis = await discoverTerminals(
+        bridge: HpsBridge(log: log),
+        log: log,
+        port: hps.port,
+        interfaces: () async => <LocalInterface>[
+          LocalInterface(name: 'lo-test', address: '127.0.0.2'),
+        ],
+      );
+
+      expect(ergebnis.found, isEmpty);
+      expect(ergebnis.scanned, hasLength(1));
+    });
+
+    test('Suche über die API: Route liefert found/scanned durch', () async {
+      final eigenerServer = await shelf_io.serve(
+        buildHandler(
+          ctx,
+          extraRoutes: <RouteRegistrar>[
+            terminalRoutes(
+              discover: (h, c) async => TerminalDiscoveryResult(
+                found: <DiscoveredTerminal>[
+                  DiscoveredTerminal(
+                    host: '192.168.0.99',
+                    port: 8080,
+                    tids: <String>['3710016'],
+                  ),
+                ],
+                scanned: <ScannedSubnet>[
+                  ScannedSubnet(
+                    interface: 'en0',
+                    subnet: '192.168.0.0/24',
+                    hosts: 253,
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+        InternetAddress.loopbackIPv4,
+        0,
+      );
+      addTearDown(() => eigenerServer.close(force: true));
+
+      final client = HttpClient();
+      final request = await client.openUrl(
+        'POST',
+        Uri.parse(
+          'http://127.0.0.1:${eigenerServer.port}/v1/terminal/discover',
+        ),
+      );
+      request.headers.set('origin', kasse);
+      request.headers.set('authorization', 'Bearer $token');
+      final response = await request.close();
+      final text = await response.transform(utf8.decoder).join();
+      client.close(force: true);
+
+      final daten = jsonDecode(text) as Map;
+      expect(daten['ok'], isTrue);
+      final fund = (daten['found'] as List).single as Map;
+      expect(fund['host'], '192.168.0.99');
+      expect(fund['tids'], <Object?>['3710016']);
+      expect(
+        (daten['scanned'] as List).single,
+        containsPair('subnet', '192.168.0.0/24'),
+      );
+    });
+
     test('ohne Token 401 — das Terminal ist kein öffentlicher Pfad', () async {
       final antwort = await senden('/v1/terminal/test', {
         'host': '127.0.0.1',

@@ -4,6 +4,7 @@ import 'package:shelf/shelf.dart';
 import 'package:shelf_router/shelf_router.dart';
 
 import '../config/model.dart';
+import '../terminal/discovery.dart';
 import '../terminal/hps.dart';
 import 'context.dart';
 import 'responses.dart';
@@ -23,12 +24,24 @@ final RegExp _transactionId = RegExp(r'^\d{1,18}$');
 /// Alle Pfade sind token- und herkunftsgeschützt — wer drucken darf, darf
 /// auch das Terminal ansprechen; einen eigenen Vertrauenskreis gibt es nicht.
 /// Die Brücke reicht die HPS-Antwort unverändert als `hps` durch.
-RouteRegistrar terminalRoutes({HpsBridge? bridge}) {
+RouteRegistrar terminalRoutes({
+  HpsBridge? bridge,
+  // Nur für Tests: die echte Suche scannt das Netz des Rechners.
+  Future<TerminalDiscoveryResult> Function(HpsBridge, AgentContext)? discover,
+}) {
   return (Router router, AgentContext ctx) {
     final hps = bridge ?? HpsBridge(log: ctx.log);
+    final suche =
+        discover ??
+        (HpsBridge h, AgentContext c) =>
+            discoverTerminals(bridge: h, log: c.log);
 
     router
       ..post('/v1/terminal/test', (Request r) => _handleTest(hps, r))
+      ..post(
+        '/v1/terminal/discover',
+        (Request r) => _handleDiscover(hps, ctx, suche, r),
+      )
       ..post('/v1/terminal/diagnosis', (Request r) => _handleDiagnosis(hps, r))
       ..post('/v1/terminal/payment', (Request r) => _handlePayment(hps, r))
       ..post('/v1/terminal/status', (Request r) => _handleStatus(hps, r))
@@ -182,4 +195,19 @@ Future<Response> _mitTransaktion(
     return failJson(errorBadRequest, 'Es fehlt die Transaktions-ID.');
   }
   return _mitHps(() => aufruf(hps, ziel, tid, txId));
+}
+
+/// `POST /v1/terminal/discover` `{}` — sucht Hobex-Terminals im Kassen-Netz
+/// (Port-8080-Scan wie bei den Druckern, danach fragt `GET /api/terminals`
+/// nach). Liefert Treffer samt TIDs und die abgesuchten Netze.
+Future<Response> _handleDiscover(
+  HpsBridge hps,
+  AgentContext ctx,
+  Future<TerminalDiscoveryResult> Function(HpsBridge, AgentContext) suche,
+  Request request,
+) async {
+  final body = await readJsonBody(request, allowEmpty: true);
+  if (body.error != null) return body.error!;
+  final ergebnis = await suche(hps, ctx);
+  return okJson(ergebnis.toJson());
 }

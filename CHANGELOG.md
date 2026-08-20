@@ -5,6 +5,15 @@ Alle nennenswerten Änderungen an Kasseneck Connect. Die Versionsnummer folgt
 `lib/src/version.dart` und wird über `GET /v1/status` sowie im Update-Feed
 gemeldet.
 
+## 1.2.0 — 2026-08-20
+
+- **Terminal-Suche:** `POST /v1/terminal/discover` scannt das Kassen-Netz auf
+  Port 8080 (gleiches Verfahren wie die Druckersuche) und fragt jeden offenen
+  Kandidaten mit `GET /api/terminals` nach — nur wer mit einer Terminal-Liste
+  antwortet, ist ein Treffer (Router-UIs und Kameras lauschen auch auf 8080).
+  Liefert Host, Port und TIDs; die Kasse muss die IP nicht mehr am Gerät
+  ablesen.
+
 ## 1.1.0 — 2026-08-20
 
 - **Kartenterminal (Hobex HPS):** der Agent reicht Terminal-Aufrufe der Kasse

@@ -48,10 +48,15 @@ class HpsBridge {
 
   final AgentLog log;
 
-  /// `GET /api/terminals` — der leichteste Erreichbarkeitstest: braucht keine
-  /// TID und liefert die Terminal-Stammdaten (inklusive TID) zurück.
-  Future<Object?> terminals({required String host, required int port}) {
-    return _call('GET', host, port, '/api/terminals');
+  /// Erkennungs-Probe ohne TID: `GET /api/terminals/0/diagnosis`.
+  ///
+  /// Das echte HPS (belegt an hps 1.10.0) antwortet darauf mit HTTP 200 und
+  /// `{"responseCode":"100108","responseText":"Invalid TID","tid":"0"}` —
+  /// keine Zahlung, keine Nebenwirkung, und die Form der Antwort verrät das
+  /// Terminal. Ein `GET /api/terminals` gibt es am Terminal NICHT ("Endpoint
+  /// not implemented", 404) — den Endpunkt kennt nur die Hobex-Cloud-API.
+  Future<Object?> probe({required String host, required int port}) {
+    return _call('GET', host, port, '/api/terminals/0/diagnosis');
   }
 
   /// `GET /api/terminals/{tid}/diagnosis` — Diagnose ohne Zahlung; das
@@ -192,3 +197,8 @@ class HpsBridge {
     }
   }
 }
+
+/// Sieht [antwort] nach einem Hobex-HPS aus? (JSON-Objekt mit `responseCode` —
+/// so antwortet das Terminal auch auf die TID-lose Probe.)
+bool siehtNachHpsAus(Object? antwort) =>
+    antwort is Map && antwort['responseCode'] != null;

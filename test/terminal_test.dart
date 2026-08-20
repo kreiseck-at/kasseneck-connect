@@ -120,11 +120,14 @@ void main() {
 
   group('Terminal-Brücke (Hobex HPS)', () {
     test(
-      'Erreichbarkeitstest fragt /api/terminals und reicht die Antwort durch',
+      'Erreichbarkeitstest: TID-lose Probe, Invalid-TID-Antwort = Terminal da',
       () async {
+        // Antwort 1:1 vom echten Gerät (hps 1.10.0, 2026-08-20): das HPS kennt
+        // GET /api/terminals nicht — nur /api/terminals/{tid}/diagnosis.
         hps.antworten.add((
           status: 200,
-          rumpf: '[{"terminalID":"3710016","serialNumber":"SN1"}]',
+          rumpf:
+              '{"responseCode":"100108","responseText":"Invalid TID","tid":"0","transactionId":null}',
         ));
         final antwort = await senden('/v1/terminal/test', {
           'host': '127.0.0.1',
@@ -133,9 +136,41 @@ void main() {
 
         expect(antwort['ok'], isTrue);
         expect(hps.aufrufe.single.methode, 'GET');
-        expect(hps.aufrufe.single.pfad, '/api/terminals');
-        final liste = antwort['hps'] as List<Object?>;
-        expect((liste.single as Map)['terminalID'], '3710016');
+        expect(hps.aufrufe.single.pfad, '/api/terminals/0/diagnosis');
+        expect((antwort['hps'] as Map)['responseText'], 'Invalid TID');
+      },
+    );
+
+    test(
+      'Erreichbarkeitstest mit TID: echte Diagnose samt Gerätestatus',
+      () async {
+        hps.antworten.add((
+          status: 200,
+          rumpf:
+              '{"deviceStatus":"IN_OPERATION","hps":"1.10.0","responseCode":"0","responseText":"Authorized"}',
+        ));
+        final antwort = await senden('/v1/terminal/test', {
+          'host': '127.0.0.1',
+          'port': hps.port,
+          'tid': '3600335',
+        });
+        expect(antwort['ok'], isTrue);
+        expect(hps.aufrufe.single.pfad, '/api/terminals/3600335/diagnosis');
+        expect((antwort['hps'] as Map)['deviceStatus'], 'IN_OPERATION');
+      },
+    );
+
+    test(
+      'etwas anderes auf dem Port (JSON ohne responseCode) ist kein Terminal',
+      () async {
+        hps.antworten.add((status: 200, rumpf: '{"ich":"bin kein Terminal"}'));
+        final antwort = await senden('/v1/terminal/test', {
+          'host': '127.0.0.1',
+          'port': hps.port,
+        });
+        expect(antwort['ok'], isFalse);
+        expect((antwort['error'] as Map)['code'], 'terminal_error');
+        expect((antwort['error'] as Map)['message'], contains('kein'));
       },
     );
 
@@ -266,8 +301,12 @@ void main() {
       expect(hps.aufrufe[1].pfad, '/api/transaction/abort/3710016/9');
     });
 
-    test('Terminal-Suche findet das HPS im Netz samt TID', () async {
-      hps.antworten.add((status: 200, rumpf: '[{"terminalID":"3710016"}]'));
+    test('Terminal-Suche findet das HPS im Netz (Invalid-TID-Probe)', () async {
+      hps.antworten.add((
+        status: 200,
+        rumpf:
+            '{"responseCode":"100108","responseText":"Invalid TID","tid":"0","transactionId":null}',
+      ));
 
       final ergebnis = await discoverTerminals(
         bridge: HpsBridge(log: log),
@@ -282,12 +321,13 @@ void main() {
       expect(ergebnis.scanned.single.subnet, '127.0.0.0/24');
       expect(ergebnis.found, hasLength(1));
       expect(ergebnis.found.single.host, '127.0.0.1');
-      expect(ergebnis.found.single.tids, <String>['3710016']);
+      // Die Probe kennt die TID nicht — sie steht im Vertrag/Panel.
+      expect(ergebnis.found.single.tids, isEmpty);
     });
 
     test('ein fremder Dienst auf dem HPS-Port ist kein Treffer', () async {
-      // Der Port ist offen, aber /api/terminals antwortet nicht mit einer
-      // Terminal-Liste — Router-UIs und Kameras lauschen auch auf 8080.
+      // Der Port ist offen, aber die Probe antwortet nicht im HPS-Format —
+      // Router-UIs und Kameras lauschen auch auf 8080.
       hps.antworten.add((status: 200, rumpf: '{"ich":"bin kein Terminal"}'));
 
       final ergebnis = await discoverTerminals(

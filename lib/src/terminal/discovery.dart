@@ -98,10 +98,15 @@ Future<TerminalDiscoveryResult> discoverTerminals({
       budget: left,
     );
     for (final kandidat in offen) {
-      final tids = await _hpsTids(bridge, kandidat.host, port);
-      if (tids != null) {
+      if (await _istHps(bridge, kandidat.host, port)) {
         treffer.add(
-          DiscoveredTerminal(host: kandidat.host, port: port, tids: tids),
+          DiscoveredTerminal(
+            host: kandidat.host,
+            port: port,
+            // Die TID kennt nur der Vertrag (bzw. eine Diagnose MIT TID) —
+            // die TID-lose Probe liefert sie nicht.
+            tids: const <String>[],
+          ),
         );
       }
     }
@@ -113,23 +118,18 @@ Future<TerminalDiscoveryResult> discoverTerminals({
   return TerminalDiscoveryResult(found: treffer, scanned: report);
 }
 
-/// Fragt einen Kandidaten nach seinen Terminals; `null` = kein HPS.
-Future<List<String>?> _hpsTids(HpsBridge bridge, String host, int port) async {
+/// Ist der Kandidat ein HPS? Die TID-lose Probe entscheidet: das echte
+/// Terminal antwortet mit HTTP 200 und `responseCode` („Invalid TID“) —
+/// fremde 8080-Dienste antworten anders oder gar nicht.
+Future<bool> _istHps(HpsBridge bridge, String host, int port) async {
   try {
     final antwort = await bridge
-        .terminals(host: host, port: port)
+        .probe(host: host, port: port)
         .timeout(terminalVerifyTimeout);
-    if (antwort is! List) return null;
-    final tids = <String>[];
-    for (final eintrag in antwort) {
-      if (eintrag is! Map) return null;
-      final tid = eintrag['terminalID'];
-      if (tid != null) tids.add('$tid');
-    }
-    return tids;
+    return siehtNachHpsAus(antwort);
   } on HpsWegFehler {
-    return null;
+    return false;
   } on TimeoutException {
-    return null;
+    return false;
   }
 }

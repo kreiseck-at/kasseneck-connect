@@ -74,14 +74,31 @@ Future<Response> _mitHps(Future<Object?> Function() aufruf) async {
   }
 }
 
-/// `POST /v1/terminal/test` `{host, port?}` — Erreichbarkeit ohne TID:
-/// `GET /api/terminals` liefert die Stammdaten samt TID zurück.
+/// `POST /v1/terminal/test` `{host, port?, tid?}` — Erreichbarkeit.
+///
+/// Ohne TID die nebenwirkungsfreie Probe (`/api/terminals/0/diagnosis`,
+/// Antwort „Invalid TID“ beweist das HPS); mit TID die echte Diagnose samt
+/// Gerätestatus. Antwortet die Gegenstelle zwar, aber nicht im HPS-Format,
+/// ist es kein Terminal (`terminal_error`).
 Future<Response> _handleTest(HpsBridge hps, Request request) async {
   final body = await readJsonBody(request);
   if (body.error != null) return body.error!;
   final ziel = _ziel(body.data!);
   if (ziel == null) return _zielFehler();
-  return _mitHps(() => hps.terminals(host: ziel.$1, port: ziel.$2));
+  final tid = readString(body.data!['tid'])?.trim() ?? '';
+  return _mitHps(() async {
+    final antwort = tid.isEmpty
+        ? await hps.probe(host: ziel.$1, port: ziel.$2)
+        : await hps.diagnosis(host: ziel.$1, port: ziel.$2, tid: tid);
+    if (!siehtNachHpsAus(antwort)) {
+      throw HpsWegFehler(
+        errorTerminalError,
+        'Unter ${ziel.$1}:${ziel.$2} antwortet etwas — aber kein '
+        'Hobex-Terminal.',
+      );
+    }
+    return antwort;
+  });
 }
 
 /// `POST /v1/terminal/diagnosis` `{host, port?, tid}`.

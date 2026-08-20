@@ -5,6 +5,17 @@ Alle nennenswerten Änderungen an Kasseneck Connect. Die Versionsnummer folgt
 `lib/src/version.dart` und wird über `GET /v1/status` sowie im Update-Feed
 gemeldet.
 
+## 1.2.1 — 2026-08-20
+
+- **Terminal-Suche und -Test repariert:** das echte HPS kennt
+  `GET /api/terminals` gar nicht („Endpoint not implemented“) — den Endpunkt
+  gibt es nur in der Hobex-Cloud-API. Erkennungs-Probe ist jetzt die TID-lose
+  Diagnose `GET /api/terminals/0/diagnosis`: das Terminal antwortet darauf mit
+  HTTP 200 und `responseCode 100108 „Invalid TID“` (belegt an hps 1.10.0),
+  ohne Zahlung und ohne Nebenwirkung. `POST /v1/terminal/test` nimmt optional
+  eine `tid` und liefert dann die echte Diagnose samt Gerätestatus; die TID
+  selbst kann die Suche nicht liefern (sie steht im Vertrag/Panel).
+
 ## 1.2.0 — 2026-08-20
 
 - **Terminal-Suche:** `POST /v1/terminal/discover` scannt das Kassen-Netz auf

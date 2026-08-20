@@ -42,10 +42,10 @@ if ! command -v xcrun >/dev/null 2>&1; then
   exit 69
 fi
 
-# Das Profil liegt als generisches Kennwort im Anmeldeschlüsselbund. Die
-# Abfrage ist eine reine Vorprüfung ohne Netz; sie sagt bloß, ob es sich
-# überhaupt lohnt, `notarytool` zu starten.
-if ! security find-generic-password -s 'com.apple.gke.notary.tool' -a "$PROFILE" >/dev/null 2>&1; then
+# Vorprüfung über notarytool selbst: `security find-generic-password` sieht
+# den Eintrag NICHT (notarytool nutzt einen eigenen Ablageort) — die einzige
+# verlässliche Probe ist ein kurzer `history`-Aufruf mit dem Profil.
+if ! xcrun notarytool history --keychain-profile "$PROFILE" >/dev/null 2>&1; then
   # Klammern um den Namen: das schließende Anführungszeichen ist mehrbytig und
   # zöge sonst in den Variablennamen hinein.
   echo "Kein notarytool-Profil „${PROFILE}“ im Schlüsselbund." >&2

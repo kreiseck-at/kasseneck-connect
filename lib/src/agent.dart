@@ -6,6 +6,7 @@ import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'api/context.dart';
 import 'api/routes_events.dart';
 import 'api/routes_printers.dart';
+import 'api/routes_terminal.dart';
 import 'api/server.dart';
 import 'config/model.dart';
 import 'config/store.dart';
@@ -131,6 +132,7 @@ class Agent {
     _context = ctx;
     _routes = <RouteRegistrar>[
       eventRoutes(),
+      terminalRoutes(),
       printerRoutes(
         registry: registry,
         queue: queue,

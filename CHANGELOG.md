@@ -5,6 +5,19 @@ Alle nennenswerten Änderungen an Kasseneck Connect. Die Versionsnummer folgt
 `lib/src/version.dart` und wird über `GET /v1/status` sowie im Update-Feed
 gemeldet.
 
+## 1.1.0 — 2026-08-20
+
+- **Kartenterminal (Hobex HPS):** der Agent reicht Terminal-Aufrufe der Kasse
+  an das HPS im Kassen-Netz weiter (JSON-REST auf Port 8080; der Browser kann
+  das von einer https-Seite aus nicht selbst). Neue, token-geschützte
+  Endpunkte: `POST /v1/terminal/test` (Erreichbarkeit, liefert die
+  Terminal-Stammdaten samt TID), `…/diagnosis`, `…/payment` (blockiert bis
+  zum Ende des Kartenflows, bis zu 4 Minuten; Beträge in Cent, die Brücke
+  übersetzt in Euro), `…/status` (Rettungsweg nach Verbindungsabriss) und
+  `…/abort`. Eine **Ablehnung** ist keine Störung: sie kommt als `ok:true`
+  mit dem HPS-`responseCode` durch — nur Transportfehler werden übersetzt
+  (`terminal_offline`, `timeout`, `terminal_error`).
+
 ## 1.0.3 — 2026-08-20
 
 - **Kopplung in einem Schritt:** neuer Endpunkt `POST /v1/pair/direct` gibt der

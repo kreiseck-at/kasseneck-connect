@@ -104,8 +104,12 @@ fi
 STALE=()
 for candidate in build/KasseneckConnect-*; do
   [ -f "$candidate" ] || continue
-  case "$(basename "$candidate")" in
+  base="$(basename "$candidate")"
+  case "$base" in
     *-"$VERSION"-*) ;;
+    # Die unversionierten Kopien erzeugt dieses Skript selbst (auch im
+    # Trockenlauf) — sie sind kein Fremdbestand und werden gleich überschrieben.
+    KasseneckConnect-macos-*.pkg|KasseneckConnect-windows-*.exe|KasseneckConnect-linux-*.deb) ;;
     *) STALE+=("$candidate") ;;
   esac
 done

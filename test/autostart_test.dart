@@ -29,6 +29,8 @@ void main() {
         paths: paths,
         executable: executable,
         runProcess: runner.runner,
+        // Tests warten nicht: die Wiederholungs-Pause faellt weg.
+        retryPause: Duration.zero,
       );
 
   WindowsAutostart windows({
@@ -134,6 +136,34 @@ void main() {
       expect(order.first, 'launchctl bootout gui/501/at.kasseneck.connect');
       expect(order.elementAt(1), startsWith('launchctl bootstrap gui/501 '));
     });
+
+    test(
+      'Update über laufendem Agenten: bootstrap wird wiederholt, bis launchd den alten Job abgeräumt hat',
+      () async {
+        // Belegt beim Update 1.2.1 → 1.2.2: `bootout` beendet asynchron, die
+        // ersten `bootstrap`-Versuche scheitern — der Agent blieb stehen.
+        runner.exitCodeFolge['bootstrap'] = <int>[5, 5];
+
+        final result = await macos().install();
+
+        expect(result.ok, isTrue);
+        final bootstraps = runner.calls
+            .where(
+              (c) => c.arguments.isNotEmpty && c.arguments.first == 'bootstrap',
+            )
+            .length;
+        expect(bootstraps, 3);
+        // Zwischen den Versuchen wird erneut abgemeldet (halber Abbau).
+        final bootouts = runner.calls
+            .where(
+              (c) => c.arguments.isNotEmpty && c.arguments.first == 'bootout',
+            )
+            .length;
+        expect(bootouts, greaterThanOrEqualTo(2));
+        // Kein Rueckfall auf das alte `load` noetig.
+        expect(runner.lines.any((l) => l.contains(' load ')), isFalse);
+      },
+    );
 
     test('fällt auf launchctl load zurück, wenn bootstrap scheitert', () async {
       runner.exitCodes['bootstrap'] = 5;

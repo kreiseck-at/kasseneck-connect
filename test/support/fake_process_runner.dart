@@ -32,6 +32,11 @@ class FakeProcessRunner {
   /// Exitcode je erstem Argument (z. B. `bootstrap` → 1).
   final Map<String, int> exitCodes = <String, int>{};
 
+  /// Exitcodes je erstem Argument als FOLGE: je Aufruf wird einer verbraucht,
+  /// danach gelten wieder [exitCodes]/[defaultExitCode]. Für Abläufe wie
+  /// „bootstrap scheitert zweimal, dann klappt es".
+  final Map<String, List<int>> exitCodeFolge = <String, List<int>>{};
+
   /// Standardausgabe je erstem Argument.
   final Map<String, String> stdoutOf = <String, String>{};
 
@@ -70,11 +75,10 @@ class FakeProcessRunner {
       throw ProcessException(executable, arguments, 'Programm nicht gefunden');
     }
     final key = arguments.isEmpty ? '' : arguments.first;
-    return ProcessResult(
-      42,
-      exitCodes[key] ?? defaultExitCode,
-      stdoutOf[key] ?? '',
-      '',
-    );
+    final folge = exitCodeFolge[key];
+    final code = folge != null && folge.isNotEmpty
+        ? folge.removeAt(0)
+        : (exitCodes[key] ?? defaultExitCode);
+    return ProcessResult(42, code, stdoutOf[key] ?? '', '');
   }
 }

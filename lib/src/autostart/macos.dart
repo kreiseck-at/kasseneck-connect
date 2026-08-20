@@ -68,13 +68,18 @@ class MacosAutostart implements Autostart {
     required this.paths,
     required this.executable,
     required ProcessRunner runProcess,
+    Duration retryPause = const Duration(milliseconds: 500),
   }) : _environment = environment,
-       _runProcess = runProcess;
+       _runProcess = runProcess,
+       _retryPause = retryPause;
 
   final ConfigPaths paths;
   final String executable;
   final Map<String, String> _environment;
   final ProcessRunner _runProcess;
+
+  /// Pause zwischen den `bootstrap`-Versuchen (Tests: `Duration.zero`).
+  final Duration _retryPause;
 
   /// `~/Library/LaunchAgents/at.kasseneck.connect.plist`.
   File get plistFile => File(
@@ -121,15 +126,27 @@ class MacosAutostart implements Autostart {
     // geladen ab.
     await _launchctl(<String>['bootout', 'gui/$uid/$autostartLabel']);
 
-    final bootstrap = await _launchctl(<String>[
-      'bootstrap',
-      'gui/$uid',
-      plistFile.path,
-    ]);
-    if (bootstrap?.exitCode == 0) {
-      return AutostartResult.success(
-        'Autostart eingerichtet: ${plistFile.path}',
-      );
+    // `bootout` beendet den alten Dienst ASYNCHRON: ein sofortiges
+    // `bootstrap` scheitert, solange launchd noch abräumt — beim Update
+    // 1.2.1 → 1.2.2 blieb der Agent deshalb einfach stehen (Erst-Install
+    // traf das nie, da war nichts abzuräumen). Also mit kurzen Pausen
+    // wiederholen, bis launchd den Platz freigegeben hat.
+    ProcessResult? bootstrap;
+    for (var versuch = 0; versuch < 10; versuch++) {
+      bootstrap = await _launchctl(<String>[
+        'bootstrap',
+        'gui/$uid',
+        plistFile.path,
+      ]);
+      if (bootstrap?.exitCode == 0) {
+        return AutostartResult.success(
+          'Autostart eingerichtet: ${plistFile.path}',
+        );
+      }
+      await Future<void>.delayed(_retryPause);
+      // Falls der alte Job inzwischen wieder als geladen gilt (KeepAlive,
+      // halber Abbau): vor dem nächsten Versuch erneut abmelden.
+      await _launchctl(<String>['bootout', 'gui/$uid/$autostartLabel']);
     }
 
     // Ältere macOS-Fassungen kennen `bootstrap` noch nicht.

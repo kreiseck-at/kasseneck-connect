@@ -5,6 +5,15 @@ Alle nennenswerten Änderungen an Kasseneck Connect. Die Versionsnummer folgt
 `lib/src/version.dart` und wird über `GET /v1/status` sowie im Update-Feed
 gemeldet.
 
+## 1.2.3 — 2026-08-20
+
+- **Update startet den Agenten zuverlässig neu:** beim Aktualisieren über
+  einen laufenden Agenten beendet `bootout` den alten Dienst asynchron — das
+  sofortige `bootstrap` scheiterte, und der Agent blieb stehen (belegt beim
+  Update auf 1.2.2; die Kasse meldete „nicht gefunden“). `install-autostart`
+  wiederholt das Laden jetzt mit kurzen Pausen, bis launchd den Platz
+  freigegeben hat.
+
 ## 1.2.2 — 2026-08-20
 
 - **Terminal-Zahlung repariert:** HPS-Aufrufe gehen jetzt mit ausdrücklichem

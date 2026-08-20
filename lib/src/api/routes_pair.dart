@@ -48,6 +48,47 @@ Future<Response> handlePairRequest(AgentContext ctx, Request request) async {
   return okJson(const <String, Object?>{});
 }
 
+/// `POST /v1/pair/direct` — Kopplung in einem Schritt, direkt aus der Kasse.
+///
+/// Gibt den Token unmittelbar in der Antwort zurück; die Kasse bleibt dabei
+/// auf ihrer Einstellungsseite, ohne Browsersprung und ohne Code-Eingabe.
+///
+/// Das ist gleichwertig zum Code-Weg: lesen kann die Antwort nur eine Seite,
+/// deren Herkunft die **serverseitige** Allowlist passiert hat (fremde Seiten
+/// bekommen dort 403), und den Agenten erreicht ohnehin nur, wer an diesem
+/// Rechner sitzt (127.0.0.1). Ein lokaler Prozess wiederum kann sich heute
+/// schon koppeln (`/v1/pair/request` anstoßen und den Code aus der
+/// Konfigurationsdatei lesen) — der Endpunkt öffnet also keine neue Tür.
+/// Aufrufe **ohne** Origin-Kopfzeile weisen wir trotzdem ab: Werkzeuge haben
+/// mit `kasseneck-connect pair` ihren eigenen, nachvollziehbaren Weg.
+///
+/// Die Drossel teilt sich der Endpunkt mit `POST /v1/pair/request`, damit
+/// niemand die beiden im Wechsel hämmert.
+Future<Response> handlePairDirect(AgentContext ctx, Request request) async {
+  if (request.headers['origin'] == null) {
+    return failJson(
+      errorOriginForbidden,
+      'Direkte Kopplung geht nur aus dem Browser — am Rechner bitte '
+      '`kasseneck-connect pair` verwenden.',
+      status: 403,
+    );
+  }
+
+  final now = ctx.clock();
+  final last = ctx.lastPairRequestAt;
+  if (last != null && now.difference(last) < pairRequestMinInterval) {
+    return failJson(
+      errorPairRequestThrottled,
+      'Bitte kurz warten und erneut versuchen.',
+    );
+  }
+  ctx.lastPairRequestAt = now;
+
+  final token = await ctx.pairing.issueToken();
+  ctx.log.info('Kasse direkt gekoppelt (Ein-Klick aus der Kasse).');
+  return okJson(<String, Object?>{'token': token});
+}
+
 /// `POST /v1/pair` `{code}` — Code gegen Token tauschen.
 ///
 /// Diese Route ist absichtlich ohne Token erreichbar; geschützt ist sie durch

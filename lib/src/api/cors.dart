@@ -51,11 +51,15 @@ const Map<String, Object> _varyOrigin = <String, Object>{'vary': 'Origin'};
 /// `POST /v1/pair/request` gehört dazu, weil es genau dann gebraucht wird,
 /// wenn noch kein Token existiert; es gibt nichts preis, sondern öffnet nur
 /// lokal ein Browserfenster (siehe `handlePairRequest`).
+/// `POST /v1/pair/direct` ist wie `POST /v1/pair` ein Kopplungsweg und muss
+/// deshalb vor der Kopplung erreichbar sein; er verlangt zusätzlich eine
+/// erlaubte Origin-Kopfzeile (siehe `handlePairDirect`).
 bool isPublicRoute(String method, String path) {
   final normalized = normalizeRoutePath(path);
   return (method == 'GET' && normalized == '/v1/status') ||
       (method == 'POST' && normalized == '/v1/pair') ||
-      (method == 'POST' && normalized == '/v1/pair/request');
+      (method == 'POST' && normalized == '/v1/pair/request') ||
+      (method == 'POST' && normalized == '/v1/pair/direct');
 }
 
 /// Schneidet einen abschließenden Schrägstrich ab, damit `/v1/status` und

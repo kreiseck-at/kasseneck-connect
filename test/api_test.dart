@@ -542,6 +542,93 @@ void main() {
     );
   });
 
+  group('Direkte Kopplung aus der Kasse', () {
+    const path = '/v1/pair/direct';
+
+    test('ist eine öffentliche Route (auch mit abschließendem /)', () {
+      expect(isPublicRoute('POST', path), isTrue);
+      expect(isPublicRoute('POST', '$path/'), isTrue);
+      expect(isPublicRoute('GET', path), isFalse);
+    });
+
+    test('erlaubte Herkunft bekommt sofort einen gültigen Token', () async {
+      final response = await send('POST', path, origin: kasse);
+
+      expect(response.status, 200);
+      expect(response.ok, isTrue);
+
+      final token = response.json['token'] as String;
+      expect((await store.load()).tokenHashes, <String>[hashToken(token)]);
+      // Kein Browserfenster, kein Code — die Kasse bleibt auf ihrer Seite.
+      expect(browser.calls, isEmpty);
+      expect((await store.load()).pairing.code, isNull);
+
+      // Der Token trägt sofort: eine geschützte Route nimmt ihn an.
+      final unpair = await send(
+        'DELETE',
+        '/v1/pair',
+        origin: kasse,
+        token: token,
+      );
+      expect(unpair.ok, isTrue);
+    });
+
+    test(
+      'ohne Herkunft (curl) abgewiesen — Werkzeuge koppeln per CLI',
+      () async {
+        final response = await send('POST', path);
+        expect(response.status, 403);
+        expect(response.errorCode, errorOriginForbidden);
+        expect((await store.load()).tokenHashes, isEmpty);
+      },
+    );
+
+    test('fremde Herkunft bekommt 403 und keinen Token', () async {
+      final response = await send(
+        'POST',
+        path,
+        origin: 'https://boese.example.com',
+      );
+      expect(response.status, 403);
+      expect(response.errorCode, errorOriginForbidden);
+      expect((await store.load()).tokenHashes, isEmpty);
+    });
+
+    test('teilt sich die Drossel mit /v1/pair/request', () async {
+      expect(
+        (await send('POST', '/v1/pair/request', origin: kasse)).ok,
+        isTrue,
+      );
+      now = now.add(const Duration(seconds: 9));
+
+      final second = await send('POST', path, origin: kasse);
+      expect(second.status, 200);
+      expect(second.ok, isFalse);
+      expect(second.errorCode, errorPairRequestThrottled);
+      expect((await store.load()).tokenHashes, isEmpty);
+
+      now = now.add(const Duration(seconds: 1));
+      final third = await send('POST', path, origin: kasse);
+      expect(third.ok, isTrue);
+      expect((await store.load()).tokenHashes, hasLength(1));
+    });
+
+    test('funktioniert auch, wenn schon gekoppelt ist', () async {
+      final erster = await pair();
+      now = now.add(pairRequestMinInterval);
+
+      final response = await send('POST', path, origin: kasse);
+      expect(response.ok, isTrue);
+      final zweiter = response.json['token'] as String;
+      expect(zweiter, isNot(erster));
+      // Beide Tokens gelten nebeneinander (zwei Browserprofile).
+      expect(
+        (await store.load()).tokenHashes,
+        containsAll(<String>[hashToken(erster), hashToken(zweiter)]),
+      );
+    });
+  });
+
   test('zusätzliche Routen lassen sich anmelden (A3/A4)', () async {
     final extraServer = await shelf_io.serve(
       buildHandler(

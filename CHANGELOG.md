@@ -5,6 +5,20 @@ Alle nennenswerten Änderungen an Kasseneck Connect. Die Versionsnummer folgt
 `lib/src/version.dart` und wird über `GET /v1/status` sowie im Update-Feed
 gemeldet.
 
+## 1.0.3 — 2026-08-20
+
+- **Kopplung in einem Schritt:** neuer Endpunkt `POST /v1/pair/direct` gibt der
+  Kasse den Token direkt in der Antwort zurück — kein Browsersprung auf die
+  Kopplungsseite, kein Code. Erreichbar nur für Seiten, deren Herkunft die
+  serverseitige Allowlist passiert; Aufrufe ohne Origin-Kopfzeile werden
+  abgewiesen (Werkzeuge koppeln weiter über `kasseneck-connect pair`). Teilt
+  sich die 10-Sekunden-Drossel mit `POST /v1/pair/request`. Der bisherige
+  Code-Weg bleibt vollständig bestehen.
+- `tool/notarize_macos.sh`: die Profil-Vorprüfung läuft jetzt über
+  `notarytool` selbst — `security find-generic-password` sieht den
+  Profileintrag nicht, wodurch 1.0.2 zunächst unnotarisiert veröffentlicht
+  wurde (die Assets wurden nachträglich ersetzt).
+
 ## 1.0.2 — 2026-08-20
 
 - **Signiert und notarisiert (macOS).** Binary und Installationspaket tragen

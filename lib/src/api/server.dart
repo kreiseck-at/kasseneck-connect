@@ -33,6 +33,10 @@ Handler buildHandler(
     '/v1/pair/request',
     (Request request) => handlePairRequest(ctx, request),
   );
+  router.post(
+    '/v1/pair/direct',
+    (Request request) => handlePairDirect(ctx, request),
+  );
   router.delete('/v1/pair', (Request request) => handleUnpair(ctx, request));
 
   for (final register in extraRoutes) {

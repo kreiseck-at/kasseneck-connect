@@ -45,10 +45,10 @@ jobs:
             label: macOS arm64
             script: macos
             artifact: kasseneck-connect-macos-arm64
-          - os: macos-13
-            label: macOS x64
-            script: macos
-            artifact: kasseneck-connect-macos-x64
+          # macOS x64: GitHub hat die Intel-Runner (macos-13) ausgemustert —
+          # der Job fand nie einen Runner und hing als "queued". Bis es einen
+          # Ersatzweg gibt (Rosetta-Build auf arm64), liefern wir nur arm64;
+          # Intel-Macs bekommen die Binary auf Anfrage lokal gebaut.
           - os: windows-latest
             label: Windows x64
             script: windows

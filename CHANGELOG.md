@@ -5,6 +5,16 @@ Alle nennenswerten Änderungen an Kasseneck Connect. Die Versionsnummer folgt
 `lib/src/version.dart` und wird über `GET /v1/status` sowie im Update-Feed
 gemeldet.
 
+## 1.2.4 — 2026-08-20
+
+- **Schlafende Terminals werden gefunden:** das Hobex-Terminal verschläft im
+  WLAN-Stromsparmodus die erste Anfrage (sie weckt nur das Funkmodul) und
+  antwortet auf die zweite in Millisekunden — belegt am Gerät. Die
+  Terminal-Suche klopft jetzt 2 s je Adresse an (statt 300 ms; Budget 18 s),
+  und Probe/Diagnose/Status machen bei Timeout oder „nicht erreichbar“ genau
+  EINEN Weckversuch. Zahlungen bekommen den Automatismus bewusst nicht — die
+  dürfen nie doppelt hinausgehen.
+
 ## 1.2.3 — 2026-08-20
 
 - **Update startet den Agenten zuverlässig neu:** beim Aktualisieren über

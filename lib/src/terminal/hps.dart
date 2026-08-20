@@ -44,9 +44,28 @@ class HpsWegFehler implements Exception {
 /// dann mit HTTP 200 und `responseCode != "0"`, und genau so kommt es bei der
 /// Kasse an (nur sie weiß, wie sie dem Kassier eine Ablehnung zeigt).
 class HpsBridge {
-  HpsBridge({required this.log});
+  HpsBridge({required this.log, this.kurzTimeout = hpsKurzTimeout});
 
   final AgentLog log;
+
+  /// Zeitlimit der kurzen Aufrufe (Tests setzen es herab).
+  final Duration kurzTimeout;
+
+  /// Kurzer Aufruf mit EINEM Weckversuch: ein Terminal im WLAN-Stromsparmodus
+  /// verschlaeft gern die erste Anfrage (sie weckt nur das Funkmodul) und
+  /// antwortet auf die zweite in Millisekunden — belegt am Geraet. Zahlungen
+  /// bekommen diesen Automatismus bewusst NICHT (nie doppelt ausloesen).
+  Future<Object?> _kurzMitWeckversuch(Future<Object?> Function() aufruf) async {
+    try {
+      return await aufruf();
+    } on HpsWegFehler catch (e) {
+      if (e.code != errorTerminalTimeout && e.code != errorTerminalOffline) {
+        rethrow;
+      }
+      log.info('Terminal verschlafen? Zweiter Versuch nach ${e.code}.');
+      return await aufruf();
+    }
+  }
 
   /// Erkennungs-Probe ohne TID: `GET /api/terminals/0/diagnosis`.
   ///
@@ -56,7 +75,9 @@ class HpsBridge {
   /// Terminal. Ein `GET /api/terminals` gibt es am Terminal NICHT ("Endpoint
   /// not implemented", 404) — den Endpunkt kennt nur die Hobex-Cloud-API.
   Future<Object?> probe({required String host, required int port}) {
-    return _call('GET', host, port, '/api/terminals/0/diagnosis');
+    return _kurzMitWeckversuch(
+      () => _call('GET', host, port, '/api/terminals/0/diagnosis'),
+    );
   }
 
   /// `GET /api/terminals/{tid}/diagnosis` — Diagnose ohne Zahlung; das
@@ -136,12 +157,13 @@ class HpsBridge {
     int port,
     String path, {
     Map<String, Object?>? body,
-    Duration timeout = hpsKurzTimeout,
+    Duration? timeout,
   }) async {
-    final client = HttpClient()..connectionTimeout = hpsKurzTimeout;
+    final zeitlimit = timeout ?? kurzTimeout;
+    final client = HttpClient()..connectionTimeout = zeitlimit;
     try {
       final uri = Uri(scheme: 'http', host: host, port: port, path: path);
-      final request = await client.openUrl(method, uri).timeout(timeout);
+      final request = await client.openUrl(method, uri).timeout(zeitlimit);
       request.headers.contentType = ContentType.json;
       request.headers.set(HttpHeaders.acceptHeader, 'application/json');
       if (body != null) {
@@ -153,11 +175,11 @@ class HpsBridge {
         request.contentLength = bytes.length;
         request.add(bytes);
       }
-      final response = await request.close().timeout(timeout);
+      final response = await request.close().timeout(zeitlimit);
       final text = await response
           .transform(utf8.decoder)
           .join()
-          .timeout(timeout);
+          .timeout(zeitlimit);
 
       Object? daten;
       try {

@@ -13,10 +13,15 @@ import '../printers/discovery.dart'
 import 'hps.dart';
 
 /// Zeitbudget der ganzen Terminal-Suche (alle Netze zusammen).
-const Duration terminalScanBudget = Duration(seconds: 12);
+const Duration terminalScanBudget = Duration(seconds: 18);
 
 /// Zeitlimit je Adresse beim Abklopfen von Port 8080.
-const Duration terminalScanTimeout = Duration(milliseconds: 300);
+///
+/// Bewusst weit ueber den 300 ms der Druckersuche: das Terminal haengt im
+/// WLAN-Stromsparmodus und beantwortet das ERSTE Paket erst nach dem
+/// Aufwachen (belegt: ~1-2 s SYN-Wiederholung, danach reagiert es in
+/// Millisekunden). Mit 300 ms war ein schlafendes Terminal unauffindbar.
+const Duration terminalScanTimeout = Duration(seconds: 2);
 
 /// Zeitlimit für die Nachfrage `GET /api/terminals` je Kandidat.
 ///

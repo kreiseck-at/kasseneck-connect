@@ -273,6 +273,72 @@ void main() {
       },
     );
 
+    test(
+      'WLAN-Schlaf: die erste Anfrage weckt nur, die zweite zaehlt',
+      () async {
+        // Belegt am Geraet: das Terminal verschlaeft die erste Anfrage im
+        // Stromsparmodus. Der Fake antwortet erst beim zweiten Mal rechtzeitig.
+        var anfragen = 0;
+        final langsamErstmal = await HttpServer.bind(
+          InternetAddress.loopbackIPv4,
+          0,
+        );
+        addTearDown(() => langsamErstmal.close(force: true));
+        langsamErstmal.listen((HttpRequest r) async {
+          anfragen += 1;
+          if (anfragen == 1) {
+            await Future<void>.delayed(const Duration(milliseconds: 400));
+          }
+          r.response.headers.contentType = ContentType.json;
+          r.response.write(
+            '{"responseCode":"100108","responseText":"Invalid TID","tid":"0"}',
+          );
+          await r.response.close();
+        });
+
+        final bridge = HpsBridge(
+          log: log,
+          kurzTimeout: const Duration(milliseconds: 150),
+        );
+        final antwort = await bridge.probe(
+          host: '127.0.0.1',
+          port: langsamErstmal.port,
+        );
+        expect((antwort as Map)['responseText'], 'Invalid TID');
+        expect(anfragen, 2);
+      },
+    );
+
+    test(
+      'Weckversuch gilt NICHT fuer Zahlungen — die dürfen nie doppelt raus',
+      () async {
+        final stumm = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+        addTearDown(() => stumm.close(force: true));
+        var zahlungen = 0;
+        stumm.listen((HttpRequest r) async {
+          zahlungen += 1;
+          await Future<void>.delayed(const Duration(milliseconds: 400));
+          r.response.statusCode = 200;
+          await r.response.close();
+        });
+        final bridge = HpsBridge(
+          log: log,
+          kurzTimeout: const Duration(milliseconds: 150),
+        );
+        // Das kurze Test-Timeout gilt nur fuer kurze Aufrufe — die Zahlung
+        // laeuft mit ihrem eigenen langen Limit und kommt hier durch.
+        // Entscheidend: sie ging genau EINMAL hinaus.
+        await bridge.payment(
+          host: '127.0.0.1',
+          port: stumm.port,
+          tid: '1',
+          amountCents: 100,
+          transactionId: '1',
+        );
+        expect(zahlungen, 1);
+      },
+    );
+
     test('geschlossener Port: terminal_offline mit deutschem Satz', () async {
       final zu = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
       final toterPort = zu.port;

@@ -40,9 +40,13 @@ if (-not $iscc) {
 }
 
 # `ArchitecturesInstallIn64BitMode=x64` braucht mindestens Inno Setup 6.0.
+# Manche ISCC.exe tragen keine Dateiversion (GitHub-Runner meldet 0.0.0.0) —
+# dann entscheidet der Fundort ("Inno Setup 6"-Ordner), nicht die Zahl.
 $isccVersion = (Get-Item $iscc).VersionInfo.FileVersion
 Write-Host "Inno Setup gefunden: $iscc ($isccVersion)"
-if ($isccVersion -and [version]($isccVersion -replace '[^0-9.].*$','') -lt [version]'6.0') {
+$parsed = $null
+if ($isccVersion) { [void][version]::TryParse(($isccVersion -replace '[^0-9.].*$',''), [ref]$parsed) }
+if ($parsed -and $parsed -ge [version]'1.0' -and $parsed -lt [version]'6.0') {
   throw "Inno Setup 6.0 oder neuer wird gebraucht, gefunden: $isccVersion"
 }
 

@@ -52,15 +52,22 @@ freigeschaltet werden müsste.
 
 1. `KasseneckConnect-macos-arm64.pkg` (Apple Silicon) bzw.
    `KasseneckConnect-macos-x64.pkg` (Intel) herunterladen.
-2. Das Paket ist in dieser Fassung **nicht signiert**. Beim Öffnen blockt
-   macOS mit „Apple could not verify …“. Seit macOS 15 (Sequoia) hilft auch
-   Rechtsklick → Öffnen nicht mehr — so geht es:
+2. Doppelklicken. **Ab 1.0.2 ist das Paket signiert und notarisiert**
+   (Herausgeber „POST NOW e.U.“) — der Umweg über die Systemeinstellungen
+   entfällt, macOS öffnet es ohne Nachfrage.
+
+   <details><summary>Ältere Fassungen (bis 1.0.1) waren unsigniert</summary>
+
+   Dort blockt macOS mit „Apple could not verify …“; seit macOS 15 (Sequoia)
+   hilft auch Rechtsklick → Öffnen nicht mehr:
    - Dialog mit **Fertig** schließen (nicht „In den Papierkorb legen“), dann
      **Systemeinstellungen → Datenschutz & Sicherheit** → ganz unten steht
      „„KasseneckConnect…“ wurde blockiert“ → **Dennoch öffnen**, danach mit
      Fingerabdruck oder Kennwort bestätigen.
    - Alternative im Terminal (entfernt die Quarantäne-Markierung des
      Downloads): `xattr -d com.apple.quarantine ~/Downloads/KasseneckConnect-macos-arm64.pkg`
+
+   </details>
 3. Durch den Installationsassistenten klicken. Das Paket legt die Binary unter
    `/usr/local/kasseneck-connect/` ab, verlinkt sie nach
    `/usr/local/bin/kasseneck-connect` (damit `kasseneck-connect doctor` und
@@ -387,6 +394,76 @@ Die CI (`.github/workflows/ci.yml`) fährt bei jedem Push und jedem Pull Request
 `dart test`, danach die Build-Matrix (macOS arm64/x64, Windows, Linux) und legt
 die Ergebnisse als Artefakte ab. Ein GitHub Release legt die CI **nicht** an
 — das bleibt `tool/release.sh` von Hand vorbehalten.
+
+### Signierung & Notarisierung
+
+Ausgeliefert wird für macOS ab 1.0.2 nur noch signiert und notarisiert. Nötig
+sind zwei Zertifikate im Schlüsselbund des Entwicklungsrechners (Apple
+Developer Program, Team-ID `6KMT4H4CNE`):
+
+| Zweck | Identität |
+|---|---|
+| Binary (`codesign`) | `Developer ID Application: POST NOW e.U. (6KMT4H4CNE)` |
+| Paket (`productsign`) | `Developer ID Installer: POST NOW e.U. (6KMT4H4CNE)` |
+
+Nachsehen, was vorhanden ist: `security find-identity -v`. Die Build-Skripte
+suchen sich die passende Identität selbst; `KASSENECK_SIGN_APP` bzw.
+`KASSENECK_SIGN_PKG` stechen die Suche, falls einmal mehrere Zertifikate im
+Schlüsselbund liegen.
+
+Signiert wird mit **Hardened Runtime** (Pflicht für die Notarisierung) und mit
+`tool/entitlements-macos.plist`. Die Berechtigungsdatei ist keine Zierde: eine
+mit `dart compile exe` gebaute Binary startet unter Hardened Runtime **nicht**
+— der Kernel schießt sie beim Start wortlos ab (SIGKILL, Rückgabewert 137),
+weil die Dart-Laufzeit den angehängten AOT-Schnappschuss ausführbar abbildet.
+Erst `com.apple.security.cs.allow-unsigned-executable-memory` macht sie wieder
+startfähig; `allow-jit` allein genügt nicht. Beide Build-Skripte machen nach
+dem Signieren deshalb eine Startprobe.
+
+Für die Notarisierung braucht `notarytool` einmalig ein Schlüsselbund-Profil
+(Vorgabename `kasseneck-connect`, anders über `KASSENECK_NOTARY_PROFILE`).
+Das Kennwort ist ein **app-spezifisches Kennwort** der Apple-ID
+(appleid.apple.com → Anmeldung & Sicherheit), nicht das Apple-ID-Kennwort:
+
+```bash
+xcrun notarytool store-credentials kasseneck-connect \
+  --apple-id "<apple-id>" --team-id 6KMT4H4CNE --password "<app-kennwort>"
+```
+
+Der Ablauf für ein Release:
+
+```bash
+rm -rf build
+tool/build_macos.sh              # signiert die Binary (Hardened Runtime + Zeitstempel)
+tool/pkg/macos/build_pkg.sh      # signiert die Nutzlast und das Paket
+tool/notarize_macos.sh build/KasseneckConnect-<version>-macos-<arch>.pkg
+tool/release.sh                  # holt eine fehlende Notarisierung selbst nach
+```
+
+`tool/release.sh` prüft jedes macOS-Paket vor dem Hochladen: unsigniert →
+laute Warnung, signiert und schon gestapelt → übersprungen, signiert ohne
+Ticket → `tool/notarize_macos.sh`. Das muss vor den unversionierten Kopien
+passieren, weil `stapler` die Datei verändert und die Prüfsumme in
+`latest.json` das fertige Paket meinen muss. Fehlt das Schlüsselbund-Profil,
+warnt der Lauf deutlich und veröffentlicht trotzdem — brauchbar ist so ein
+Paket dann nur zum Testen, beim Kunden blockt Gatekeeper es.
+
+Prüfen lässt sich das Ergebnis von Hand:
+
+```bash
+codesign -dv --verbose=4 build/kasseneck-connect-macos-arm64   # Authority-Zeilen
+pkgutil --check-signature build/KasseneckConnect-*.pkg
+xcrun stapler validate build/KasseneckConnect-*.pkg
+spctl -a -vv -t install build/KasseneckConnect-*.pkg           # Urteil von Gatekeeper
+```
+
+Auf den CI-Runnern liegt kein Zertifikat. Die Build-Skripte warnen dort und
+bauen unsigniert weiter — die CI-Artefakte sind Bauprobe, kein
+Auslieferungsstand. Ausgeliefert wird ausschließlich, was auf dem
+Entwicklungsrechner signiert und notarisiert entstanden ist.
+
+Windows- und Linux-Artefakte bleiben vorerst unsigniert (siehe die Hinweise
+bei der Installation).
 
 ### Kasse lokal gegen den Agenten entwickeln
 

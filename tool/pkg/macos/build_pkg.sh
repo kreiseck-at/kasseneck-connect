@@ -4,9 +4,21 @@
 #   tool/build_macos.sh && tool/pkg/macos/build_pkg.sh
 #   -> build/KasseneckConnect-<version>-macos-<arch>.pkg
 #
-# Das Paket ist **unsigniert** (v1.0): kein Developer-ID-Zertifikat, keine
-# Notarisierung. Beim ersten Öffnen meldet sich Gatekeeper; die Anleitung dazu
-# steht in der README. `pkgbuild` selbst braucht weder sudo noch Zertifikat.
+# Signiert wird zweistufig, sobald der Schlüsselbund die Zertifikate hergibt
+# (ab v1.0.2 der Regelfall, `KASSENECK_SIGN_APP`/`KASSENECK_SIGN_PKG` stechen
+# die Suche):
+#
+#   1. die Binary in der Nutzlast mit der **Developer-ID-Application**-Identität
+#      (Hardened Runtime + Zeitstempel) — `pkgbuild` signiert den Inhalt nicht
+#      mit, das Paket ist nur die Hülle;
+#   2. das fertige Paket mit der **Developer-ID-Installer**-Identität über
+#      `productsign` — `pkgbuild --sign` könnte das auch, aber der Umweg über
+#      eine unsignierte Zwischendatei hält den Auslieferungsnamen frei von
+#      halbfertigen Ständen.
+#
+# Ohne Zertifikat (CI-Runner) entsteht ein unsigniertes Paket samt Warnung;
+# notarisiert wird danach mit `tool/notarize_macos.sh`. `pkgbuild` selbst
+# braucht weder sudo noch Zertifikat.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -28,7 +40,8 @@ fi
 
 STAGE="$(mktemp -d)"
 SCRIPTS="$(mktemp -d)"
-trap 'rm -rf "$STAGE" "$SCRIPTS"' EXIT
+WORK="$(mktemp -d)"
+trap 'rm -rf "$STAGE" "$SCRIPTS" "$WORK"' EXIT
 
 # 1. Nutzlast: die Binary landet unter /usr/local/kasseneck-connect/.
 mkdir -p "$STAGE$INSTALL_DIR"
@@ -41,6 +54,25 @@ chmod 755 "$STAGE$INSTALL_DIR/kasseneck-connect"
 # Nutzlast. Die sind harmlos: der Installer wertet sie aus und legt sie nicht
 # auf die Platte.
 xattr -cr "$STAGE"
+
+# 1a. Signatur der Nutzlast. `tool/build_macos.sh` signiert die Binary schon;
+# hier wird nachgezogen, falls das Paket aus einer fremd gebauten Binary
+# entsteht. `--force` macht den Lauf wiederholbar.
+SIGN_APP="${KASSENECK_SIGN_APP:-$(find_signing_identity 'Developer ID Application' codesigning || true)}"
+if [ -n "$SIGN_APP" ]; then
+  codesign --force --options runtime --timestamp \
+    --entitlements tool/entitlements-macos.plist \
+    --sign "$SIGN_APP" "$STAGE$INSTALL_DIR/kasseneck-connect"
+  codesign --verify --strict "$STAGE$INSTALL_DIR/kasseneck-connect"
+  # Startprobe aus der Nutzlast heraus: ins Paket darf nur eine Binary, die
+  # auch wirklich startet (Hardened Runtime ohne Berechtigungen = SIGKILL).
+  "$STAGE$INSTALL_DIR/kasseneck-connect" version >/dev/null
+  echo "Nutzlast signiert: $SIGN_APP"
+elif codesign --verify --strict "$STAGE$INSTALL_DIR/kasseneck-connect" 2>/dev/null; then
+  echo "Nutzlast ist bereits signiert."
+else
+  echo "Warnung: keine Developer-ID-Application-Identität — die Binary im Paket bleibt unsigniert." >&2
+fi
 
 # 2. Postinstall: Symlink in den PATH und Autostart als **angemeldeter
 #    Benutzer**.
@@ -95,13 +127,30 @@ POSTINSTALL
 chmod 755 "$SCRIPTS/postinstall"
 
 mkdir -p build
+
+# 3. Paket bauen — erst in eine Zwischendatei, damit unter dem
+#    Auslieferungsnamen nie ein unsigniertes Paket steht.
+UNSIGNED="$WORK/unsigned.pkg"
 pkgbuild \
   --root "$STAGE" \
   --scripts "$SCRIPTS" \
   --identifier "$IDENTIFIER" \
   --version "$VERSION" \
   --install-location / \
-  "$PKG"
+  "$UNSIGNED"
+
+# 4. Paketsignatur.
+SIGN_PKG="${KASSENECK_SIGN_PKG:-$(find_signing_identity 'Developer ID Installer' || true)}"
+rm -f "$PKG"
+if [ -n "$SIGN_PKG" ]; then
+  productsign --sign "$SIGN_PKG" "$UNSIGNED" "$PKG"
+  echo "Paket signiert: $SIGN_PKG"
+  pkgutil --check-signature "$PKG"
+else
+  cp "$UNSIGNED" "$PKG"
+  echo "Warnung: keine Developer-ID-Installer-Identität — das Paket bleibt unsigniert." >&2
+  echo "Warnung: Gatekeeper blockt ein unsigniertes Paket beim Kunden." >&2
+fi
 
 echo "Fertig: $PKG"
 ls -lh "$PKG"

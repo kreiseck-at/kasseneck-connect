@@ -5,6 +5,19 @@ Alle nennenswerten Änderungen an Kasseneck Connect. Die Versionsnummer folgt
 `lib/src/version.dart` und wird über `GET /v1/status` sowie im Update-Feed
 gemeldet.
 
+## 1.0.2 — 2026-08-20
+
+- **Signiert und notarisiert (macOS).** Binary und Installationspaket tragen
+  eine Developer-ID-Signatur — Herausgeber **POST NOW e.U.** (Team-ID
+  6KMT4H4CNE) — und sind bei Apple notarisiert; das Ticket ist ins Paket
+  geheftet. Der Umweg über „Systemeinstellungen → Datenschutz & Sicherheit →
+  Dennoch öffnen“ entfällt, das Paket öffnet sich wie jede gekaufte Software.
+  Die Binary läuft mit Hardened Runtime.
+- `tool/build_macos.sh` und `tool/pkg/macos/build_pkg.sh` signieren, sobald der
+  Schlüsselbund die Zertifikate hergibt, und warnen sonst (die CI baut
+  weiterhin unsigniert). Neu dazu `tool/notarize_macos.sh`; `tool/release.sh`
+  holt die Notarisierung vor dem Veröffentlichen selbst nach.
+
 ## 1.0.1 — 2026-08-20
 
 - **Kopplung aus der Kasse anstoßbar.** `POST /v1/pair/request` erzeugt einen

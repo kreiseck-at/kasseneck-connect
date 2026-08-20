@@ -56,6 +56,30 @@ strip_version() {
   echo "${name/-$version-/-}"
 }
 
+# Sucht eine Signaturidentität im Schlüsselbund und gibt ihren vollständigen
+# Namen aus — genau so, wie ihn `codesign --sign` bzw. `productsign --sign`
+# erwartet:
+#
+#   find_signing_identity "Developer ID Application" codesigning
+#   find_signing_identity "Developer ID Installer"
+#
+# Ohne Treffer bleibt die Ausgabe leer und der Rückgabewert 1; die
+# Build-Skripte bauen dann unsigniert weiter (CI-Runner haben kein
+# Zertifikat). Die Installer-Identität taucht in der Richtlinie `codesigning`
+# nicht auf — deshalb ist die Richtlinie ein eigener, optionaler Parameter.
+find_signing_identity() {
+  local prefix="$1" policy="${2:-}" line=""
+  command -v security >/dev/null 2>&1 || return 1
+  if [ -n "$policy" ]; then
+    line="$(security find-identity -v -p "$policy" 2>/dev/null | grep "\"$prefix" | head -1)" || true
+  else
+    line="$(security find-identity -v 2>/dev/null | grep "\"$prefix" | head -1)" || true
+  fi
+  [ -n "$line" ] || return 1
+  # Zeilenform: `  4) <SHA1> "Developer ID Application: Firma (TEAMID)"`
+  printf '%s\n' "$line" | sed -e 's/^[^"]*"//' -e 's/"[^"]*$//'
+}
+
 sha256_of() {
   if command -v shasum >/dev/null 2>&1; then
     shasum -a 256 "$1" | awk '{print $1}'

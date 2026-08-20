@@ -31,6 +31,13 @@
 # Die vier Namen stehen zusätzlich in `lib/src/downloads.dart` und in der
 # README-Tabelle; `test/downloads_test.dart` prüft, dass alle drei Stellen
 # dasselbe sagen.
+#
+# macOS-Pakete werden vor dem Hochladen notarisiert (`tool/notarize_macos.sh`),
+# sofern sie signiert sind und noch kein Ticket tragen — das muss vor den
+# unversionierten Kopien passieren, weil der Stapler die Datei verändert. Fehlt
+# das Schlüsselbund-Profil, läuft die Veröffentlichung mit einer deutlichen
+# Warnung weiter; das Paket kommt dann aber auf keinem Kundenrechner an
+# Gatekeeper vorbei.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -49,6 +56,14 @@ for arg in "$@"; do
     *) echo "Unbekannte Option: $arg" >&2; exit 64 ;;
   esac
 done
+
+run() {
+  if [ "$DRY_RUN" -eq 1 ]; then
+    echo "[dry-run] $*"
+  else
+    "$@"
+  fi
+}
 
 if ! command -v gh >/dev/null 2>&1; then
   echo "gh (GitHub CLI) wurde nicht gefunden — https://cli.github.com" >&2
@@ -121,6 +136,45 @@ if [ "${#STALE[@]}" -gt 0 ]; then
   exit 70
 fi
 
+# macOS-Pakete notarisieren — und zwar **vor** den unversionierten Kopien: der
+# Stapler schreibt das Ticket in die Datei, also müssen Kopie und Prüfsumme im
+# Feed das fertig notarisierte Paket meinen. Was schon ein Ticket trägt, wird
+# übersprungen (ein zweiter Lauf ist damit unschädlich).
+for key in "${PRESENT[@]}"; do
+  case "$key" in darwin-*) ;; *) continue ;; esac
+  pkg="build/$(file_for_key "$key")"
+
+  if ! command -v xcrun >/dev/null 2>&1; then
+    echo "Warnung: kein xcrun — $pkg wird ungeprüft und ohne Notarisierung veröffentlicht." >&2
+    continue
+  fi
+
+  if ! pkgutil --check-signature "$pkg" >/dev/null 2>&1; then
+    echo "WARNUNG: $pkg ist NICHT signiert — Gatekeeper wird es beim Kunden blockieren." >&2
+    echo "         Signieren braucht das Developer-ID-Zertifikat; siehe README, „Signierung & Notarisierung“." >&2
+    continue
+  fi
+
+  if xcrun stapler validate "$pkg" >/dev/null 2>&1; then
+    echo "Bereits notarisiert: $pkg"
+    continue
+  fi
+
+  echo "Notarisierung nachholen: $pkg"
+  NOTARY_STATUS=0
+  run tool/notarize_macos.sh "$pkg" || NOTARY_STATUS=$?
+  if [ "$NOTARY_STATUS" -eq 69 ]; then
+    echo >&2
+    echo "WARNUNG: $pkg wird OHNE Notarisierung veröffentlicht." >&2
+    echo "         Gatekeeper blockt das Paket auf jedem Kundenrechner — das Release taugt nur zum Testen." >&2
+    echo "         Abhilfe: notarytool-Profil anlegen (README, „Signierung & Notarisierung“) und neu veröffentlichen." >&2
+    echo >&2
+  elif [ "$NOTARY_STATUS" -ne 0 ]; then
+    echo "Notarisierung von $pkg fehlgeschlagen — Abbruch." >&2
+    exit 70
+  fi
+done
+
 # Unversionierte Kopien anlegen — das sind die eigentlichen Release-Assets.
 ASSET_FILES=()
 for key in "${PRESENT[@]}"; do
@@ -173,14 +227,6 @@ if [ ! -s "$NOTES_FILE" ]; then
   echo "Warnung: kein Changelog-Abschnitt für $VERSION gefunden — Release-Notes bleiben leer." >&2
   echo "Kasseneck Connect $VERSION." > "$NOTES_FILE"
 fi
-
-run() {
-  if [ "$DRY_RUN" -eq 1 ]; then
-    echo "[dry-run] $*"
-  else
-    "$@"
-  fi
-}
 
 run gh release create "$TAG" --repo "$REPO" --title "$TAG" --notes-file "$NOTES_FILE" "${ASSET_FILES[@]}"
 

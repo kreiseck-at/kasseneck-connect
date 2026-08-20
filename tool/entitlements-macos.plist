@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!--
+    Berechtigungen der macOS-Binary.
+
+    Notarisieren lässt Apple nur mit Hardened Runtime (codesign, Option
+    „runtime") und darunter startet eine mit `dart compile exe` gebaute Binary
+    nicht mehr: die Dart-Laufzeit bildet den angehängten AOT-Schnappschuss
+    ausführbar ab, der Kernel bricht den Start wortlos ab (SIGKILL,
+    Rückgabewert 137).
+
+    Der Schlüssel unten hebt genau das auf und ist die einzige Berechtigung,
+    die es dafür braucht. `com.apple.security.cs.allow-jit` allein genügt
+    nicht (nachgemessen: der Start scheitert weiterhin mit 137), denn die
+    Dart-Laufzeit belegt den Speicher ohne MAP_JIT.
+
+    Wer die Berechtigung herausnimmt, liefert eine Binary aus, die auf keinem
+    Kundenrechner startet. Deshalb machen beide Build-Skripte nach dem
+    Signieren eine Startprobe.
+
+    Zwei Fallen beim Bearbeiten dieser Datei: Kommentare gehören in das
+    dict-Element (davor weist der Parser von codesign die Datei ab), und ein
+    doppelter Bindestrich darf in einem XML-Kommentar nicht vorkommen — auch
+    nicht als Teil einer Kommandozeilenoption.
+  -->
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
+</dict>
+</plist>

@@ -57,7 +57,12 @@ RouteRegistrar terminalRoutes({
         (Request r) => _handlePayment(hps, r, warmhalter),
       )
       ..post('/v1/terminal/status', (Request r) => _handleStatus(hps, r))
-      ..post('/v1/terminal/abort', (Request r) => _handleAbort(hps, r));
+      ..post('/v1/terminal/abort', (Request r) => _handleAbort(hps, r))
+      ..post(
+        '/v1/terminal/refund',
+        (Request r) => _handleRefund(hps, r, warmhalter),
+      )
+      ..post('/v1/terminal/cancel', (Request r) => _handleCancel(hps, r));
   };
 }
 
@@ -86,7 +91,17 @@ Future<Response> _mitHps(
     beiErfolg?.call();
     return okJson(<String, Object?>{'hps': daten});
   } on HpsWegFehler catch (e) {
-    return failJson(e.code, e.message);
+    // Den rohen Terminal-Status mitgeben, wo es einen gab: die Kasse
+    // unterscheidet daran `409` ("Terminal is busy", nachweislich nichts
+    // belastet) von jedem anderen Fehler, der den Ausgang offen laesst.
+    // Siehe HpsWegFehler.terminalHttpStatus.
+    return failJson(
+      e.code,
+      e.message,
+      detail: e.terminalHttpStatus == null
+          ? null
+          : <String, Object?>{'terminalHttpStatus': e.terminalHttpStatus},
+    );
   }
 }
 
@@ -204,6 +219,75 @@ Future<Response> _handlePayment(
   );
 }
 
+/// `POST /v1/terminal/refund`
+/// `{host, port?, tid, amountCents, transactionId, originalTransactionId,
+///   reference?, currency?, language?}` — Gutschrift, ein Kartenfluss wie
+/// die Zahlung und deshalb mit derselben langen Frist unterwegs.
+///
+/// `transactionId` ist die NEUE Kennung der Gutschrift, die die Kasse
+/// vergibt und sich merkt; `originalTransactionId` verweist auf die
+/// erstattete Zahlung — beide müssen die Kasse mitbringen, keine wird hier
+/// erzeugt.
+Future<Response> _handleRefund(
+  HpsBridge hps,
+  Request request, [
+  TerminalWarmhalter? warmhalter,
+]) async {
+  final body = await readJsonBody(request);
+  if (body.error != null) return body.error!;
+  final daten = body.data!;
+  final ziel = _ziel(daten);
+  if (ziel == null) return _zielFehler();
+
+  final tid = readString(daten['tid'])?.trim() ?? '';
+  final transactionId = readString(daten['transactionId'])?.trim() ?? '';
+  final originalTransactionId =
+      readString(daten['originalTransactionId'])?.trim() ?? '';
+  final amountCents = daten['amountCents'];
+  final currency = readString(daten['currency'])?.trim();
+  final language = readString(daten['language'])?.trim();
+  if (!_tid.hasMatch(tid)) {
+    return failJson(errorBadRequest, 'Es fehlt die Terminal-ID (tid).');
+  }
+  if (!_transactionId.hasMatch(transactionId)) {
+    return failJson(
+      errorBadRequest,
+      'Es fehlt die Transaktions-ID (transactionId, Ziffern, höchstens 18).',
+    );
+  }
+  if (!_transactionId.hasMatch(originalTransactionId)) {
+    return failJson(
+      errorBadRequest,
+      'Es fehlt die Kennung der Original-Zahlung (originalTransactionId, '
+      'Ziffern, höchstens 18).',
+    );
+  }
+  if (amountCents is! int || amountCents <= 0 || amountCents > 100000000) {
+    return failJson(errorBadRequest, 'Es fehlt der Betrag (amountCents > 0).');
+  }
+  if (currency != null && !RegExp(r'^[A-Z]{3}$').hasMatch(currency)) {
+    return failJson(errorBadRequest, 'Währung bitte als ISO-Code (EUR).');
+  }
+  if (language != null && !RegExp(r'^(DE|IT|SI)$').hasMatch(language)) {
+    return failJson(errorBadRequest, 'Sprache: DE, IT oder SI.');
+  }
+
+  return _mitHps(
+    () => hps.refund(
+      host: ziel.$1,
+      port: ziel.$2,
+      tid: tid,
+      amountCents: amountCents,
+      transactionId: transactionId,
+      originalTransactionId: originalTransactionId,
+      reference: readString(daten['reference'])?.trim(),
+      currency: currency ?? 'EUR',
+      language: language,
+    ),
+    beiErfolg: () => warmhalter?.merken(ziel.$1, ziel.$2),
+  );
+}
+
 /// `POST /v1/terminal/status` `{host, port?, tid, transactionId}`.
 Future<Response> _handleStatus(HpsBridge hps, Request request) =>
     _mitTransaktion(hps, request, (hps, ziel, tid, txId) {
@@ -225,6 +309,55 @@ Future<Response> _handleAbort(HpsBridge hps, Request request) =>
         transactionId: txId,
       );
     });
+
+/// `POST /v1/terminal/cancel`
+/// `{host, port?, tid, transactionId, amountCents, currency?, language?}`
+/// — Aufhebung (Storno/Void), ein kurzer Aufruf ohne Karteninteraktion.
+///
+/// `transactionId` ist hier die Kennung der URSPRUENGLICHEN Zahlung, keine
+/// neue. `amountCents` ist PFLICHT: das Terminal weist einen Void ohne
+/// Betrag mit `400 Missing amount` ab (gemessen 27.08.2026); wird deshalb
+/// hier verlangt, bevor irgendetwas das Netz berührt.
+Future<Response> _handleCancel(HpsBridge hps, Request request) async {
+  final body = await readJsonBody(request);
+  if (body.error != null) return body.error!;
+  final daten = body.data!;
+  final ziel = _ziel(daten);
+  if (ziel == null) return _zielFehler();
+
+  final tid = readString(daten['tid'])?.trim() ?? '';
+  final transactionId = readString(daten['transactionId'])?.trim() ?? '';
+  final amountCents = daten['amountCents'];
+  final currency = readString(daten['currency'])?.trim();
+  final language = readString(daten['language'])?.trim();
+  if (!_tid.hasMatch(tid)) {
+    return failJson(errorBadRequest, 'Es fehlt die Terminal-ID (tid).');
+  }
+  if (!_transactionId.hasMatch(transactionId)) {
+    return failJson(errorBadRequest, 'Es fehlt die Transaktions-ID.');
+  }
+  if (amountCents is! int || amountCents <= 0 || amountCents > 100000000) {
+    return failJson(errorBadRequest, 'Es fehlt der Betrag (amountCents > 0).');
+  }
+  if (currency != null && !RegExp(r'^[A-Z]{3}$').hasMatch(currency)) {
+    return failJson(errorBadRequest, 'Währung bitte als ISO-Code (EUR).');
+  }
+  if (language != null && !RegExp(r'^(DE|IT|SI)$').hasMatch(language)) {
+    return failJson(errorBadRequest, 'Sprache: DE, IT oder SI.');
+  }
+
+  return _mitHps(
+    () => hps.cancel(
+      host: ziel.$1,
+      port: ziel.$2,
+      tid: tid,
+      transactionId: transactionId,
+      amountCents: amountCents,
+      currency: currency ?? 'EUR',
+      language: language,
+    ),
+  );
+}
 
 Future<Response> _mitTransaktion(
   HpsBridge hps,

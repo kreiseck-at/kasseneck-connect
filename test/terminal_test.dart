@@ -562,6 +562,43 @@ void main() {
     });
 
     test(
+      'der rohe Terminal-Status reist mit — 409 muss unterscheidbar bleiben',
+      () async {
+        // Gemessen am hobex-HPS (27.08.2026): waehrend ein Vorgang laeuft,
+        // wird ein zweiter nach rund 87 ms mit HTTP 409 abgewiesen und
+        // hinterlaesst KEINE Spur -- es ist also nachweislich nichts
+        // belastet. Die Kasse darf das nicht am deutschen Meldungstext
+        // erkennen muessen: aendert sich der Wortlaut hier, fiele sie
+        // lautlos auf "ungeklaert" zurueck.
+        hps.antworten.add((status: 409, rumpf: '{"message":"Terminal is busy"}'));
+        final antwort = await senden('/v1/terminal/payment', <String, Object?>{
+          'host': '127.0.0.1', 'port': hps.port,
+          'tid': '3600335', 'transactionId': '178786910603700000',
+          'amountCents': 1,
+        });
+        expect(antwort['ok'], isFalse);
+        final fehler = antwort['error'] as Map;
+        expect(fehler['code'], 'terminal_error');
+        expect((fehler['detail'] as Map)['terminalHttpStatus'], 409);
+      },
+    );
+
+    test(
+      'ohne Terminal-Status bleibt detail weg — kein leeres Feld erfinden',
+      () async {
+        // Ein Transportfehler (Terminal antwortet gar nicht) traegt keinen
+        // Status. Dann darf auch keiner behauptet werden.
+        final antwort = await senden('/v1/terminal/payment', <String, Object?>{
+          'host': '127.0.0.1', 'port': 1, // nichts hoert dort
+          'tid': '3600335', 'transactionId': '178786910603700000',
+          'amountCents': 1,
+        });
+        expect(antwort['ok'], isFalse);
+        expect((antwort['error'] as Map).containsKey('detail'), isFalse);
+      },
+    );
+
+    test(
       'Unsinn wird abgewiesen, bevor irgendetwas das Netz berührt',
       () async {
         final faelle = <Map<String, Object?>>[

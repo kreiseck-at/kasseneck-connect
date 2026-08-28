@@ -26,10 +26,25 @@ const Duration hpsZahlungTimeout = Duration(minutes: 4);
 
 /// Fehler auf dem Weg zum Terminal — `code` für die Kasse, `message` deutsch.
 class HpsWegFehler implements Exception {
-  HpsWegFehler(this.code, this.message);
+  HpsWegFehler(this.code, this.message, {this.terminalHttpStatus});
 
   final String code;
   final String message;
+
+  /// Der rohe HTTP-Status des Terminals, wenn es einen genannt hat.
+  ///
+  /// Warum als eigenes Feld und nicht nur im Meldungstext: Die Kasse muss
+  /// `409` ("Terminal is busy") von jedem anderen Fehler unterscheiden können,
+  /// weil `409` gemessen eine ECHTE Aussage ist — die Anfrage wurde nach rund
+  /// 87 ms abgewiesen und hinterlässt keine Spur, es ist also nachweislich
+  /// nichts belastet. Jeder andere Fehler lässt den Ausgang offen.
+  ///
+  /// Diesen Unterschied aus dem deutschen Meldungstext zu lesen, wäre eine
+  /// Kopplung an eine Formulierung: ändert sie sich hier, fiele die Kasse
+  /// lautlos auf "ungeklärt" zurück — sicher, aber unbemerkt. Ein
+  /// Weiterleiter, der den Status verschluckt und nur Prosa übrig lässt,
+  /// leitet nicht treu weiter.
+  final int? terminalHttpStatus;
 
   @override
   String toString() => 'HpsWegFehler($code): $message';
@@ -200,6 +215,7 @@ class HpsBridge {
           message is String && message.trim().isNotEmpty
               ? 'Terminal meldet (HTTP ${response.statusCode}): ${message.trim()}'
               : 'Terminal meldet HTTP ${response.statusCode}.',
+          terminalHttpStatus: response.statusCode,
         );
       }
       return daten;

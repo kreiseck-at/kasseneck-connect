@@ -86,7 +86,17 @@ Future<Response> _mitHps(
     beiErfolg?.call();
     return okJson(<String, Object?>{'hps': daten});
   } on HpsWegFehler catch (e) {
-    return failJson(e.code, e.message);
+    // Den rohen Terminal-Status mitgeben, wo es einen gab: die Kasse
+    // unterscheidet daran `409` ("Terminal is busy", nachweislich nichts
+    // belastet) von jedem anderen Fehler, der den Ausgang offen laesst.
+    // Siehe HpsWegFehler.terminalHttpStatus.
+    return failJson(
+      e.code,
+      e.message,
+      detail: e.terminalHttpStatus == null
+          ? null
+          : <String, Object?>{'terminalHttpStatus': e.terminalHttpStatus},
+    );
   }
 }
 

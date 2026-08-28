@@ -166,18 +166,104 @@ class HpsBridge {
     );
   }
 
+  /// `POST /api/transaction/refund` — Gutschrift. Ein KARTENFLUSS wie
+  /// [payment] (das Terminal spielt Geld an die Karte zurück), deshalb
+  /// dieselbe lange Frist. Beträge kommen als Cent herein und gehen als
+  /// Euro-Zahl hinaus, wie bei [payment].
+  ///
+  /// Die Kennung der Gutschrift ([transactionId]) ist eine EIGENE, neue —
+  /// [originalTransactionId] verweist auf die erstattete Zahlung. Auf eine
+  /// unbekannte Original-Kennung antwortet das Terminal `9002` "Invalid
+  /// Transaction": kein Kartenfluss, keine Auszahlung (gemessen 27.08.2026,
+  /// TID 3600335, HPS 1.10.0, FW 7.3.6, Antwort nach 1,2 s).
+  Future<Object?> refund({
+    required String host,
+    required int port,
+    required String tid,
+    required int amountCents,
+    required String transactionId,
+    required String originalTransactionId,
+    String? reference,
+    String currency = 'EUR',
+    String? language,
+  }) {
+    final transaction = <String, Object?>{
+      'transactionId': transactionId,
+      'tid': tid,
+      'currency': currency,
+      'amount': amountCents / 100,
+      'originalTransactionId': originalTransactionId,
+      if (reference != null && reference.isNotEmpty) 'reference': reference,
+      if (language != null) 'language': language,
+    };
+    return _call(
+      'POST',
+      host,
+      port,
+      '/api/transaction/refund',
+      body: <String, Object?>{'transaction': transaction},
+      timeout: hpsZahlungTimeout,
+    );
+  }
+
+  /// `DELETE /api/transaction/payment/{tid}/{transactionId}` — Aufhebung
+  /// (Storno/Void) einer bestehenden Zahlung. Kurzer Aufruf, keine
+  /// Karteninteraktion.
+  ///
+  /// [transactionId] ist hier die Kennung der URSPRUENGLICHEN Zahlung, nicht
+  /// die eines neuen Vorgangs. `amount`, `currency` und optional `language`
+  /// gehen als QUERY-Parameter mit — anders als bei [payment]/[refund], die
+  /// einen JSON-Rumpf schicken.
+  ///
+  /// [amountCents] ist PFLICHT: ein Void ohne Betrag weist das Terminal mit
+  /// `400 Missing amount` ab (gemessen 27.08.2026, TID 3600335, HPS 1.10.0,
+  /// FW 7.3.6). Einen falschen Betrag prueft es dabei NICHT gegen das
+  /// Original — ein Void mit abweichendem Betrag wurde ebenso mit `0`
+  /// beantwortet. Ein zweiter Void auf eine bereits aufgehobene Zahlung ist
+  /// KEIN Fehler (`0` "Tx Canceled"), ein Void auf eine unbekannte Kennung
+  /// antwortet `9002` "Invalid Transaction".
+  Future<Object?> cancel({
+    required String host,
+    required int port,
+    required String tid,
+    required String transactionId,
+    required int amountCents,
+    String currency = 'EUR',
+    String? language,
+  }) {
+    final query = <String, String>{
+      'amount': (amountCents / 100).toString(),
+      'currency': currency,
+      if (language != null) 'language': language,
+    };
+    return _call(
+      'DELETE',
+      host,
+      port,
+      '/api/transaction/payment/$tid/$transactionId',
+      query: query,
+    );
+  }
+
   Future<Object?> _call(
     String method,
     String host,
     int port,
     String path, {
     Map<String, Object?>? body,
+    Map<String, String>? query,
     Duration? timeout,
   }) async {
     final zeitlimit = timeout ?? kurzTimeout;
     final client = HttpClient()..connectionTimeout = zeitlimit;
     try {
-      final uri = Uri(scheme: 'http', host: host, port: port, path: path);
+      final uri = Uri(
+        scheme: 'http',
+        host: host,
+        port: port,
+        path: path,
+        queryParameters: query,
+      );
       final request = await client.openUrl(method, uri).timeout(zeitlimit);
       request.headers.contentType = ContentType.json;
       request.headers.set(HttpHeaders.acceptHeader, 'application/json');

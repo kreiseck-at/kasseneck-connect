@@ -38,7 +38,13 @@ class FakeHps {
 
   final HttpServer server;
   final List<
-    ({String methode, String pfad, String query, String rumpf, int contentLength})
+    ({
+      String methode,
+      String pfad,
+      String query,
+      String rumpf,
+      int contentLength,
+    })
   >
   aufrufe = [];
   final List<({int status, String rumpf})> antworten = [];
@@ -573,10 +579,15 @@ void main() {
         // belastet. Die Kasse darf das nicht am deutschen Meldungstext
         // erkennen muessen: aendert sich der Wortlaut hier, fiele sie
         // lautlos auf "ungeklaert" zurueck.
-        hps.antworten.add((status: 409, rumpf: '{"message":"Terminal is busy"}'));
+        hps.antworten.add((
+          status: 409,
+          rumpf: '{"message":"Terminal is busy"}',
+        ));
         final antwort = await senden('/v1/terminal/payment', <String, Object?>{
-          'host': '127.0.0.1', 'port': hps.port,
-          'tid': '3600335', 'transactionId': '178786910603700000',
+          'host': '127.0.0.1',
+          'port': hps.port,
+          'tid': '3600335',
+          'transactionId': '178786910603700000',
           'amountCents': 1,
         });
         expect(antwort['ok'], isFalse);
@@ -625,61 +636,55 @@ void main() {
       },
     );
 
-    test(
-      'Gutschrift: Cent werden zu Euro, originalTransactionId geht mit, '
-      'Antwort unveraendert',
-      () async {
-        hps.antworten.add((
-          status: 200,
-          rumpf:
-              '{"transactionId":"17556700","responseCode":"0","responseText":"Approved","amount":12.34}',
-        ));
-        final antwort = await senden('/v1/terminal/refund', {
-          'host': '127.0.0.1',
-          'port': hps.port,
-          'tid': '3710016',
-          'amountCents': 1234,
-          'transactionId': '17556700',
-          'originalTransactionId': '17556661',
-          'reference': 'Erstattung 42',
-        });
+    test('Gutschrift: Cent werden zu Euro, originalTransactionId geht mit, '
+        'Antwort unveraendert', () async {
+      hps.antworten.add((
+        status: 200,
+        rumpf:
+            '{"transactionId":"17556700","responseCode":"0","responseText":"Approved","amount":12.34}',
+      ));
+      final antwort = await senden('/v1/terminal/refund', {
+        'host': '127.0.0.1',
+        'port': hps.port,
+        'tid': '3710016',
+        'amountCents': 1234,
+        'transactionId': '17556700',
+        'originalTransactionId': '17556661',
+        'reference': 'Erstattung 42',
+      });
 
-        expect(antwort['ok'], isTrue);
-        expect((antwort['hps'] as Map)['responseCode'], '0');
-        expect(hps.aufrufe.single.methode, 'POST');
-        expect(hps.aufrufe.single.pfad, '/api/transaction/refund');
+      expect(antwort['ok'], isTrue);
+      expect((antwort['hps'] as Map)['responseCode'], '0');
+      expect(hps.aufrufe.single.methode, 'POST');
+      expect(hps.aufrufe.single.pfad, '/api/transaction/refund');
 
-        final anHps = jsonDecode(hps.aufrufe.single.rumpf) as Map;
-        final tx = anHps['transaction'] as Map;
-        // Das HPS rechnet in Euro (12.34), die Kasse in Cent (1234).
-        expect(tx['amount'], 12.34);
-        expect(tx['transactionId'], '17556700');
-        expect(tx['originalTransactionId'], '17556661');
-        expect(tx['tid'], '3710016');
-        expect(tx['currency'], 'EUR');
-        expect(tx['reference'], 'Erstattung 42');
-        // Die Gutschrift traegt KEINEN transactionType — anders als die
-        // Zahlung (1): das HPS kennt hier keinen eigenen Code.
-        expect(tx.containsKey('transactionType'), isFalse);
-      },
-    );
+      final anHps = jsonDecode(hps.aufrufe.single.rumpf) as Map;
+      final tx = anHps['transaction'] as Map;
+      // Das HPS rechnet in Euro (12.34), die Kasse in Cent (1234).
+      expect(tx['amount'], 12.34);
+      expect(tx['transactionId'], '17556700');
+      expect(tx['originalTransactionId'], '17556661');
+      expect(tx['tid'], '3710016');
+      expect(tx['currency'], 'EUR');
+      expect(tx['reference'], 'Erstattung 42');
+      // Die Gutschrift traegt KEINEN transactionType — anders als die
+      // Zahlung (1): das HPS kennt hier keinen eigenen Code.
+      expect(tx.containsKey('transactionType'), isFalse);
+    });
 
-    test(
-      'Gutschrift ohne originalTransactionId wird abgewiesen, bevor das '
-      'Netz beruehrt wird',
-      () async {
-        final antwort = await senden('/v1/terminal/refund', {
-          'host': '127.0.0.1',
-          'port': hps.port,
-          'tid': '3710016',
-          'amountCents': 1234,
-          'transactionId': '17556700',
-        });
-        expect(antwort['ok'], isFalse);
-        expect((antwort['error'] as Map)['code'], 'bad_request');
-        expect(hps.aufrufe, isEmpty);
-      },
-    );
+    test('Gutschrift ohne originalTransactionId wird abgewiesen, bevor das '
+        'Netz beruehrt wird', () async {
+      final antwort = await senden('/v1/terminal/refund', {
+        'host': '127.0.0.1',
+        'port': hps.port,
+        'tid': '3710016',
+        'amountCents': 1234,
+        'transactionId': '17556700',
+      });
+      expect(antwort['ok'], isFalse);
+      expect((antwort['error'] as Map)['code'], 'bad_request');
+      expect(hps.aufrufe, isEmpty);
+    });
 
     test(
       'Gutschrift ohne Betrag wird abgewiesen, bevor das Netz beruehrt wird',
@@ -697,120 +702,102 @@ void main() {
       },
     );
 
-    test(
-      'Gutschrift auf unbekannte Original-Kennung: 9002 kommt unveraendert '
-      'durch — Einordnung ist nicht Sache der Brücke',
-      () async {
-        hps.antworten.add((
-          status: 200,
-          rumpf:
-              '{"transactionId":"17556700","responseCode":"9002","responseText":"Invalid Transaction"}',
-        ));
-        final antwort = await senden('/v1/terminal/refund', {
-          'host': '127.0.0.1',
-          'port': hps.port,
-          'tid': '3710016',
-          'amountCents': 1234,
-          'transactionId': '17556700',
-          'originalTransactionId': '99999999',
-        });
-        expect(antwort['ok'], isTrue);
-        expect((antwort['hps'] as Map)['responseCode'], '9002');
-      },
-    );
+    test('Gutschrift auf unbekannte Original-Kennung: 9002 kommt unveraendert '
+        'durch — Einordnung ist nicht Sache der Brücke', () async {
+      hps.antworten.add((
+        status: 200,
+        rumpf:
+            '{"transactionId":"17556700","responseCode":"9002","responseText":"Invalid Transaction"}',
+      ));
+      final antwort = await senden('/v1/terminal/refund', {
+        'host': '127.0.0.1',
+        'port': hps.port,
+        'tid': '3710016',
+        'amountCents': 1234,
+        'transactionId': '17556700',
+        'originalTransactionId': '99999999',
+      });
+      expect(antwort['ok'], isTrue);
+      expect((antwort['hps'] as Map)['responseCode'], '9002');
+    });
 
-    test(
-      'Gutschrift: der rohe Terminal-Status reist mit (409)',
-      () async {
-        hps.antworten.add((
-          status: 409,
-          rumpf: '{"message":"Terminal is busy"}',
-        ));
-        final antwort = await senden('/v1/terminal/refund', {
-          'host': '127.0.0.1',
-          'port': hps.port,
-          'tid': '3710016',
-          'amountCents': 1234,
-          'transactionId': '17556700',
-          'originalTransactionId': '17556661',
-        });
-        expect(antwort['ok'], isFalse);
-        final fehler = antwort['error'] as Map;
-        expect(fehler['code'], 'terminal_error');
-        expect((fehler['detail'] as Map)['terminalHttpStatus'], 409);
-      },
-    );
+    test('Gutschrift: der rohe Terminal-Status reist mit (409)', () async {
+      hps.antworten.add((status: 409, rumpf: '{"message":"Terminal is busy"}'));
+      final antwort = await senden('/v1/terminal/refund', {
+        'host': '127.0.0.1',
+        'port': hps.port,
+        'tid': '3710016',
+        'amountCents': 1234,
+        'transactionId': '17556700',
+        'originalTransactionId': '17556661',
+      });
+      expect(antwort['ok'], isFalse);
+      final fehler = antwort['error'] as Map;
+      expect(fehler['code'], 'terminal_error');
+      expect((fehler['detail'] as Map)['terminalHttpStatus'], 409);
+    });
 
-    test(
-      'Aufhebung: Betrag/Waehrung/Sprache gehen als Query, Pfad traegt die '
-      'Original-Kennung',
-      () async {
-        hps.antworten.add((
-          status: 200,
-          rumpf:
-              '{"transactionId":"9812345","responseCode":"0","responseText":"Tx Canceled","transactionType":"VOID","originalTransactionId":"17556661"}',
-        ));
-        final antwort = await senden('/v1/terminal/cancel', {
-          'host': '127.0.0.1',
-          'port': hps.port,
-          'tid': '3710016',
-          'transactionId': '17556661',
-          'amountCents': 1234,
-          'language': 'DE',
-        });
+    test('Aufhebung: Betrag/Waehrung/Sprache gehen als Query, Pfad traegt die '
+        'Original-Kennung', () async {
+      hps.antworten.add((
+        status: 200,
+        rumpf:
+            '{"transactionId":"9812345","responseCode":"0","responseText":"Tx Canceled","transactionType":"VOID","originalTransactionId":"17556661"}',
+      ));
+      final antwort = await senden('/v1/terminal/cancel', {
+        'host': '127.0.0.1',
+        'port': hps.port,
+        'tid': '3710016',
+        'transactionId': '17556661',
+        'amountCents': 1234,
+        'language': 'DE',
+      });
 
-        expect(antwort['ok'], isTrue);
-        expect((antwort['hps'] as Map)['responseCode'], '0');
-        expect(hps.aufrufe.single.methode, 'DELETE');
-        // Die uebergebene Kennung ist die der Originalzahlung, nicht neu.
-        expect(
-          hps.aufrufe.single.pfad,
-          '/api/transaction/payment/3710016/17556661',
-        );
-        final query = Uri(query: hps.aufrufe.single.query).queryParameters;
-        expect(query['amount'], '12.34');
-        expect(query['currency'], 'EUR');
-        expect(query['language'], 'DE');
-        // Die Aufhebung schickt keinen JSON-Rumpf.
-        expect(hps.aufrufe.single.rumpf, isEmpty);
-      },
-    );
+      expect(antwort['ok'], isTrue);
+      expect((antwort['hps'] as Map)['responseCode'], '0');
+      expect(hps.aufrufe.single.methode, 'DELETE');
+      // Die uebergebene Kennung ist die der Originalzahlung, nicht neu.
+      expect(
+        hps.aufrufe.single.pfad,
+        '/api/transaction/payment/3710016/17556661',
+      );
+      final query = Uri(query: hps.aufrufe.single.query).queryParameters;
+      expect(query['amount'], '12.34');
+      expect(query['currency'], 'EUR');
+      expect(query['language'], 'DE');
+      // Die Aufhebung schickt keinen JSON-Rumpf.
+      expect(hps.aufrufe.single.rumpf, isEmpty);
+    });
 
-    test(
-      'Aufhebung ohne Betrag wird abgewiesen, bevor das Netz beruehrt wird '
-      '— das Terminal weist das sonst mit 400 Missing amount ab',
-      () async {
-        final antwort = await senden('/v1/terminal/cancel', {
-          'host': '127.0.0.1',
-          'port': hps.port,
-          'tid': '3710016',
-          'transactionId': '17556661',
-        });
-        expect(antwort['ok'], isFalse);
-        expect((antwort['error'] as Map)['code'], 'bad_request');
-        expect(hps.aufrufe, isEmpty);
-      },
-    );
+    test('Aufhebung ohne Betrag wird abgewiesen, bevor das Netz beruehrt wird '
+        '— das Terminal weist das sonst mit 400 Missing amount ab', () async {
+      final antwort = await senden('/v1/terminal/cancel', {
+        'host': '127.0.0.1',
+        'port': hps.port,
+        'tid': '3710016',
+        'transactionId': '17556661',
+      });
+      expect(antwort['ok'], isFalse);
+      expect((antwort['error'] as Map)['code'], 'bad_request');
+      expect(hps.aufrufe, isEmpty);
+    });
 
-    test(
-      'Aufhebung auf bereits aufgehobene Zahlung: 0 "Tx Canceled" ist KEIN '
-      'Fehler und kommt unveraendert durch',
-      () async {
-        hps.antworten.add((
-          status: 200,
-          rumpf: '{"responseCode":"0","responseText":"Tx Canceled"}',
-        ));
-        final antwort = await senden('/v1/terminal/cancel', {
-          'host': '127.0.0.1',
-          'port': hps.port,
-          'tid': '3710016',
-          'transactionId': '17556661',
-          'amountCents': 1234,
-        });
-        expect(antwort['ok'], isTrue);
-        expect((antwort['hps'] as Map)['responseText'], 'Tx Canceled');
-      },
-    );
+    test('Aufhebung auf bereits aufgehobene Zahlung: 0 "Tx Canceled" ist KEIN '
+        'Fehler und kommt unveraendert durch', () async {
+      hps.antworten.add((
+        status: 200,
+        rumpf: '{"responseCode":"0","responseText":"Tx Canceled"}',
+      ));
+      final antwort = await senden('/v1/terminal/cancel', {
+        'host': '127.0.0.1',
+        'port': hps.port,
+        'tid': '3710016',
+        'transactionId': '17556661',
+        'amountCents': 1234,
+      });
+      expect(antwort['ok'], isTrue);
+      expect((antwort['hps'] as Map)['responseText'], 'Tx Canceled');
+    });
 
     test(
       'Aufhebung auf unbekannte Kennung: 9002 kommt unveraendert durch',
@@ -831,26 +818,20 @@ void main() {
       },
     );
 
-    test(
-      'Aufhebung: der rohe Terminal-Status reist mit (409)',
-      () async {
-        hps.antworten.add((
-          status: 409,
-          rumpf: '{"message":"Terminal is busy"}',
-        ));
-        final antwort = await senden('/v1/terminal/cancel', {
-          'host': '127.0.0.1',
-          'port': hps.port,
-          'tid': '3710016',
-          'transactionId': '17556661',
-          'amountCents': 1234,
-        });
-        expect(antwort['ok'], isFalse);
-        final fehler = antwort['error'] as Map;
-        expect(fehler['code'], 'terminal_error');
-        expect((fehler['detail'] as Map)['terminalHttpStatus'], 409);
-      },
-    );
+    test('Aufhebung: der rohe Terminal-Status reist mit (409)', () async {
+      hps.antworten.add((status: 409, rumpf: '{"message":"Terminal is busy"}'));
+      final antwort = await senden('/v1/terminal/cancel', {
+        'host': '127.0.0.1',
+        'port': hps.port,
+        'tid': '3710016',
+        'transactionId': '17556661',
+        'amountCents': 1234,
+      });
+      expect(antwort['ok'], isFalse);
+      final fehler = antwort['error'] as Map;
+      expect(fehler['code'], 'terminal_error');
+      expect((fehler['detail'] as Map)['terminalHttpStatus'], 409);
+    });
 
     test(
       'Aufhebung: Nicht-JSON-Antwort ist kein Terminal-Format, kein Absturz',
@@ -868,64 +849,58 @@ void main() {
       },
     );
 
-    test(
-      'Aufhebung: Terminal antwortet nicht (geschlossener Port)',
-      () async {
-        final zu = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
-        final toterPort = zu.port;
-        await zu.close(force: true);
+    test('Aufhebung: Terminal antwortet nicht (geschlossener Port)', () async {
+      final zu = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final toterPort = zu.port;
+      await zu.close(force: true);
 
-        final antwort = await senden('/v1/terminal/cancel', {
-          'host': '127.0.0.1',
-          'port': toterPort,
-          'tid': '3710016',
-          'transactionId': '17556661',
-          'amountCents': 1234,
-        });
-        expect(antwort['ok'], isFalse);
-        expect((antwort['error'] as Map)['code'], 'terminal_offline');
-      },
-    );
+      final antwort = await senden('/v1/terminal/cancel', {
+        'host': '127.0.0.1',
+        'port': toterPort,
+        'tid': '3710016',
+        'transactionId': '17556661',
+        'amountCents': 1234,
+      });
+      expect(antwort['ok'], isFalse);
+      expect((antwort['error'] as Map)['code'], 'terminal_offline');
+    });
 
-    test(
-      'Gutschrift und Aufhebung: Unsinn wird abgewiesen, bevor das Netz '
-      'beruehrt wird',
-      () async {
-        final refundOhneOriginal = await senden('/v1/terminal/refund', {
-          'host': '127.0.0.1',
-          'port': hps.port,
-          'tid': '1',
-          'amountCents': 100,
-          'transactionId': '1',
-        });
-        final refundOhneZiel = await senden('/v1/terminal/refund', {
-          'port': hps.port,
-          'amountCents': 100,
-          'transactionId': '1',
-          'originalTransactionId': '2',
-        });
-        final cancelOhneBetrag = await senden('/v1/terminal/cancel', {
-          'host': '127.0.0.1',
-          'port': hps.port,
-          'tid': '1',
-          'transactionId': '1',
-        });
-        final cancelOhneTid = await senden('/v1/terminal/cancel', {
-          'host': '127.0.0.1',
-          'port': hps.port,
-          'transactionId': '1',
-          'amountCents': 100,
-        });
-        for (final antwort in [
-          refundOhneOriginal,
-          refundOhneZiel,
-          cancelOhneBetrag,
-          cancelOhneTid,
-        ]) {
-          expect((antwort['error'] as Map)['code'], 'bad_request');
-        }
-        expect(hps.aufrufe, isEmpty);
-      },
-    );
+    test('Gutschrift und Aufhebung: Unsinn wird abgewiesen, bevor das Netz '
+        'beruehrt wird', () async {
+      final refundOhneOriginal = await senden('/v1/terminal/refund', {
+        'host': '127.0.0.1',
+        'port': hps.port,
+        'tid': '1',
+        'amountCents': 100,
+        'transactionId': '1',
+      });
+      final refundOhneZiel = await senden('/v1/terminal/refund', {
+        'port': hps.port,
+        'amountCents': 100,
+        'transactionId': '1',
+        'originalTransactionId': '2',
+      });
+      final cancelOhneBetrag = await senden('/v1/terminal/cancel', {
+        'host': '127.0.0.1',
+        'port': hps.port,
+        'tid': '1',
+        'transactionId': '1',
+      });
+      final cancelOhneTid = await senden('/v1/terminal/cancel', {
+        'host': '127.0.0.1',
+        'port': hps.port,
+        'transactionId': '1',
+        'amountCents': 100,
+      });
+      for (final antwort in [
+        refundOhneOriginal,
+        refundOhneZiel,
+        cancelOhneBetrag,
+        cancelOhneTid,
+      ]) {
+        expect((antwort['error'] as Map)['code'], 'bad_request');
+      }
+      expect(hps.aufrufe, isEmpty);
+    });
   });
 }

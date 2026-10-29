@@ -368,7 +368,7 @@ class Agent {
         if (current != null) {
           await current.close();
           log.info(
-            'HTTPS-Zugang mit neuem Serverzertifikat neu gebunden '
+            'HTTPS-Zugang mit neuen Zertifikaten neu gebunden '
             '(Port $httpsPort).',
           );
         }

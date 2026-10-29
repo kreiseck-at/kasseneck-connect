@@ -21,7 +21,9 @@
 #
 # Die Konfiguration (~/Library/Application Support/KasseneckConnect) bleibt
 # absichtlich liegen: dort stehen die gekoppelten Kassen, die Drucker und die
-# Zertifikate (`tls/`). Mit `--purge` fliegt auch sie weg.
+# Zertifikate (`tls/`). Mit `--purge` fliegt auch sie weg – bis auf
+# `tls/ca-cert.pem`, solange nicht belegt ist, dass der Stelle nicht mehr
+# vertraut wird.
 set -u
 
 INSTALL_DIR="/usr/local/kasseneck-connect"
@@ -107,9 +109,43 @@ remove_cert_dir() {
   CERT_DIR=""
 }
 
-# Kopiert die Datei $1 nach $2, lesbar für jeden.
-readable_copy() {
-  /bin/cp "$1" "$2" && /bin/chmod 644 "$2"
+# Schreibt das Zertifikat aus $1 nach $2, lesbar für jeden. Über openssl,
+# nicht cp: $1 liegt im Ordner des Benutzers, und root folgte dort mit cp
+# jedem Symlink – auch auf eine Datei, die nur root lesen darf. So landet nur,
+# was sich als Zertifikat lesen lässt. Scheitert das, bleibt keine Datei.
+cert_copy() {
+  if /usr/bin/openssl x509 -in "$1" -out "$2" >/dev/null 2>&1; then
+    /bin/chmod 644 "$2"
+  else
+    /bin/rm -f "$2"
+    return 1
+  fi
+}
+
+# Ob der Benutzerbereich nachweislich keine Vertrauenseinstellung für den
+# SHA-1 $1 enthält. `security trust-settings-export` (als Benutzer, in den
+# Ordner $2, der ihm gehört) läuft durch und $1 fehlt in der Liste – oder es
+# meldet, dass es gar keine Einstellungen gibt. Die Meldung ist die von
+# errSecNoTrustSettings (-25263) aus SecErrorMessages.loctable, englisch wie
+# am Gerät gesehen oder deutsch. Alles andere ist kein Beleg.
+trust_settings_lack() {
+  local export="$2/vertrauen.plist" output code
+  [ -n "$1" ] || return 1
+  output="$(as_console_user /usr/bin/security trust-settings-export "$export" 2>&1)"
+  code=$?
+  if [ "$code" -eq 0 ]; then
+    [ -f "$export" ] && [ ! -L "$export" ] || return 1
+    /usr/bin/grep -q '<key>trustList</key>' "$export" || return 1
+    if /usr/bin/grep -qi "<key>$1</key>" "$export"; then
+      return 1
+    fi
+    return 0
+  fi
+  case "$output" in
+    *"No Trust Settings were found."*) return 0 ;;
+    *"Es wurden keine Vertrauenseinstellungen gefunden."*) return 0 ;;
+  esac
+  return 1
 }
 
 # Nennt den Befehl, mit dem der Benutzer der Stelle $1 selbst das Vertrauen
@@ -121,23 +157,28 @@ manual_untrust_hint() {
 }
 
 # Entzieht den Stellen von Connect das Vertrauen und nimmt die aktuelle
-# Stelle aus dem Anmelde-Schlüsselbund $1 – aber nur, wenn ihr danach
-# nachweislich nicht mehr vertraut wird. $2 ist der Ordner tls/ der
-# Konfiguration (ca-cert.pem, server-cert.pem), $3 der Ort für den
-# Arbeitsordner. Setzt CA_TRUST_LEFT=1, wenn das Vertrauen in die aktuelle
-# Stelle nicht nachweislich weg ist.
+# Stelle aus dem Anmelde-Schlüsselbund $1 – aber nur mit Beleg, dass ihr
+# nicht mehr vertraut wird. $2 ist der Ordner tls/ der Konfiguration
+# (ca-cert.pem, server-cert.pem), $3 der Ort für den Arbeitsordner, $4 der
+# angemeldete Benutzer. Setzt CA_TRUST_LEFT=1, wenn das Vertrauen in die
+# aktuelle Stelle nicht nachweislich weg ist.
 #
 # Die aktuelle Stelle verliert ihr Vertrauen immer über ihre eigene Datei
 # ca-cert.pem, nie über das Zertifikat aus dem Schlüsselbund – so auch dann,
-# wenn es dort schon fehlt und nur der Vertrauenseintrag übrig ist. Geprüft
-# wird danach wie im Agenten (isLocalCaTrusted). Beide Aufrufe bekommen
-# lesbare Kopien im Arbeitsordner: eine Datei, die der Benutzer nicht lesen
-# kann, ergäbe sonst „nicht vertraut“ und damit ein Löschen. Ein Zertifikat zu
-# löschen, dem noch vertraut wird, hinterließe genau so einen verwaisten
-# Eintrag: macOS wendet ihn weiter an, zeigt ihn aber nirgends mehr.
+# wenn es dort schon fehlt und nur der Vertrauenseintrag übrig ist. `security`
+# bekommt lesbare Kopien im Arbeitsordner (cert_copy).
+#
+# Gelöscht wird nur, wenn alles drei gilt: das Serverzertifikat ist gerade
+# gültig, `verify-cert` wie im Agenten (isLocalCaTrusted) scheitert, und die
+# Vertrauenseinstellungen des Benutzers kennen die Stelle nachweislich nicht
+# (trust_settings_lack). `verify-cert` allein scheitert auch an einem
+# abgelaufenen Blatt oder einem gescheiterten Aufruf – nach abgebrochener
+# Frage hinterließe das Löschen genau den verwaisten Eintrag, den macOS weiter
+# anwendet, aber nirgends mehr zeigt. Fehlt ein Beleg, bleibt das Zertifikat.
 untrust_local_ca() {
   local keychain="$1" ca="$2/ca-cert.pem" server="$2/server-cert.pem"
-  local ca_sha1="" wanted older pem found=0 removed=0 state=ungeprueft
+  local ca_copy="" ca_sha1="" wanted older pem found=0 removed=0
+  local state=ungeprueft reason=""
   CA_TRUST_LEFT=0
 
   if ! make_cert_dir "$3"; then
@@ -149,8 +190,9 @@ untrust_local_ca() {
     fi
     return 0
   fi
-  if [ -f "$ca" ]; then
-    ca_sha1="$(sha1_of "$ca")"
+  if [ -f "$ca" ] && cert_copy "$ca" "$CERT_DIR/ca-cert.pem"; then
+    ca_copy="$CERT_DIR/ca-cert.pem"
+    ca_sha1="$(sha1_of "$ca_copy")"
   fi
 
   # Ältere Stellen: Bezeichnung genau der Name, aber nicht die aktuelle.
@@ -181,17 +223,27 @@ untrust_local_ca() {
     return 0
   fi
 
-  if readable_copy "$ca" "$CERT_DIR/ca-cert.pem"; then
-    as_console_user /usr/bin/security remove-trusted-cert "$CERT_DIR/ca-cert.pem" \
+  if [ -z "$ca_copy" ] || [ -z "$ca_sha1" ]; then
+    reason="ca-cert.pem ist kein lesbares Zertifikat"
+  else
+    as_console_user /usr/bin/security remove-trusted-cert "$ca_copy" \
       >/dev/null 2>&1 || true
-    if [ -f "$server" ] && readable_copy "$server" "$CERT_DIR/server-cert.pem"; then
-      if as_console_user /usr/bin/security verify-cert \
-           -c "$CERT_DIR/server-cert.pem" -c "$CERT_DIR/ca-cert.pem" \
+    if [ ! -f "$server" ] \
+       || ! cert_copy "$server" "$CERT_DIR/server-cert.pem"; then
+      reason="server-cert.pem fehlt oder ist kein Zertifikat"
+    elif ! /usr/bin/openssl x509 -checkend 0 -noout \
+           -in "$CERT_DIR/server-cert.pem" >/dev/null 2>&1; then
+      reason="das Serverzertifikat ist abgelaufen"
+    elif as_console_user /usr/bin/security verify-cert \
+           -c "$CERT_DIR/server-cert.pem" -c "$ca_copy" \
            -p ssl -L -q >/dev/null 2>&1; then
-        state=vertraut
-      else
-        state=entzogen
-      fi
+      state=vertraut
+    elif ! /usr/bin/install -d -o "$4" -m 700 "$CERT_DIR/export" >/dev/null 2>&1; then
+      reason="kein Ordner für die Vertrauenseinstellungen"
+    elif ! trust_settings_lack "$ca_sha1" "$CERT_DIR/export"; then
+      reason="die Vertrauenseinstellungen kennen sie noch oder ließen sich nicht lesen"
+    else
+      state=entzogen
     fi
   fi
   remove_cert_dir
@@ -201,9 +253,8 @@ untrust_local_ca() {
       echo "Vertrauen in die lokale Zertifizierungsstelle entzogen (nachgeprüft)."
       # Gelöscht wird nur die eigene Stelle: das Zertifikat mit genau dem
       # Fingerabdruck von ca-cert.pem.
-      if [ -n "$ca_sha1" ] \
-         && as_console_user /usr/bin/security delete-certificate -Z "$ca_sha1" \
-              "$keychain" >/dev/null 2>&1; then
+      if as_console_user /usr/bin/security delete-certificate -Z "$ca_sha1" \
+           "$keychain" >/dev/null 2>&1; then
         echo "Zertifikat der Stelle aus dem Anmelde-Schlüsselbund entfernt."
       fi
       ;;
@@ -215,12 +266,34 @@ untrust_local_ca() {
       ;;
     *)
       CA_TRUST_LEFT=1
-      echo "WARNUNG: Ob der lokalen Zertifizierungsstelle noch vertraut wird, ließ"
-      echo "         sich nicht prüfen (server-cert.pem fehlt, oder eine der Dateien in"
-      echo "         tls/ ist nicht lesbar)."
+      echo "WARNUNG: Dass der lokalen Zertifizierungsstelle nicht mehr vertraut wird,"
+      echo "         ließ sich nicht belegen ($reason)."
       manual_untrust_hint "$ca"
       ;;
   esac
+}
+
+# Löscht die Konfiguration $1. Mit $2 = 1 bleibt tls/ca-cert.pem stehen: der
+# Befehl für Handarbeit zeigt darauf. find folgt dabei keinem Symlink, rm -rf
+# nimmt einen Symlink nur selbst weg – was im Ordner des Benutzers liegt,
+# lenkt root nicht woandershin.
+purge_config() {
+  local dir="$1"
+  if [ "$2" -ne 1 ] || [ -L "$dir" ] || [ ! -d "$dir" ]; then
+    /bin/rm -rf "$dir"
+    echo "Konfiguration, Zertifikate und Log entfernt."
+    return 0
+  fi
+  /usr/bin/find "$dir" -mindepth 1 -maxdepth 1 ! -name tls \
+    -exec /bin/rm -rf {} +
+  if [ -L "$dir/tls" ] || [ ! -d "$dir/tls" ]; then
+    /bin/rm -rf "$dir/tls"
+  else
+    /usr/bin/find "$dir/tls" -mindepth 1 -maxdepth 1 ! -name ca-cert.pem \
+      -exec /bin/rm -rf {} +
+  fi
+  echo "Konfiguration entfernt bis auf tls/ca-cert.pem – der Befehl oben braucht sie."
+  echo "Danach den Ordner selbst löschen: \"$dir\""
 }
 
 # Setzt die Bluetooth-Freigabe des App-Pakets mit der Kennung $1 zurück; sie
@@ -281,7 +354,7 @@ if [ -n "$CONSOLE_USER" ] && [ "$CONSOLE_USER" != "root" ]; then
     }
     untrust_local_ca "$CONSOLE_HOME/Library/Keychains/login.keychain-db" \
       "$CONSOLE_HOME/Library/Application Support/KasseneckConnect/tls" \
-      /private/tmp
+      /private/tmp "$CONSOLE_USER"
     reset_bluetooth "$BUNDLE_ID"
   fi
 fi
@@ -297,14 +370,8 @@ echo "Programmdateien entfernt."
 echo "Paketvermerk ($LABEL) entfernt."
 
 if [ "$PURGE" -eq 1 ] && [ -n "${CONSOLE_HOME:-}" ]; then
-  if [ "$CA_TRUST_LEFT" -eq 1 ]; then
-    # Der Befehl oben braucht tls/ca-cert.pem.
-    echo "WARNUNG: Konfiguration und Zertifikate bleiben trotz --purge liegen, bis der"
-    echo "         Stelle nicht mehr vertraut wird; danach das Skript erneut mit --purge starten."
-  else
-    /bin/rm -rf "$CONSOLE_HOME/Library/Application Support/KasseneckConnect"
-    echo "Konfiguration, Zertifikate und Log entfernt."
-  fi
+  purge_config "$CONSOLE_HOME/Library/Application Support/KasseneckConnect" \
+    "$CA_TRUST_LEFT"
 else
   echo "Konfiguration und Zertifikate bleiben liegen (--purge entfernt sie mit)."
 fi

@@ -622,7 +622,10 @@ void main() {
                 as Map<String, Object?>;
         expect(status['ok'], isTrue);
         expect(status['httpsPort'], httpsPort);
-        expect(log.file.readAsStringSync(), contains('neu gebunden'));
+        expect(
+          log.file.readAsStringSync(),
+          contains('HTTPS-Zugang mit neuen Zertifikaten neu gebunden'),
+        );
       },
       skip: ohneOpenssl,
     );

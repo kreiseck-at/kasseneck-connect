@@ -14,6 +14,18 @@ const String eventPrinterState = 'printer.state';
 /// erwarten).
 const String eventAgentRestarting = 'agent.restarting';
 
+/// Ereignis: der Bluetooth-Zustand hat sich geändert (`{state}`, auch
+/// `starting` und `helper_restarting`).
+const String eventBluetoothState = 'bluetooth.state';
+
+/// Ereignis: ein Bluetooth-Gerät ist verbunden bzw. getrennt
+/// (`{id, connected, generation, reason?}`).
+const String eventBluetoothDevice = 'bluetooth.device';
+
+/// Ereignis: Meldung eines abonnierten Merkmals
+/// (`{id, service, characteristic, data, generation, seq}`, `data` Base64).
+const String eventBluetoothNotification = 'bluetooth.notification';
+
 /// Ein Ereignis des Agenten, so wie es über `/v1/events` hinausgeht.
 ///
 /// Die Daten werden beim Serialisieren **flach** neben `type` gelegt — genau

@@ -612,6 +612,28 @@ Entwicklungsrechner signiert und notarisiert entstanden ist.
 Windows- und Linux-Artefakte bleiben vorerst unsigniert (siehe die Hinweise
 bei der Installation).
 
+### Entwicklerwerkzeuge
+
+`tool/scan_debug.dart` zeigt, welche Netze die Druckersuche abklopft.
+`tool/bluetooth_probe.dart` spricht die lokale Bluetooth-API wie die Kasse und
+zeigt Bytes nur als Hex (Gerätetest am Drucker, nicht gegen echte Geräte in
+Tests):
+
+```bash
+dart run tool/bluetooth_probe.dart koppeln <code> --token-datei ~/.connect-token
+dart run tool/bluetooth_probe.dart --token-datei ~/.connect-token scan
+dart run tool/bluetooth_probe.dart --token-datei ~/.connect-token approve <id>
+dart run tool/bluetooth_probe.dart --token-datei ~/.connect-token print <id> beleg.bytes.hex [--paket 180] [--ohne-antwort] [--warten 5]
+dart run tool/bluetooth_probe.dart --token-datei ~/.connect-token watch <id>
+```
+
+Standard ist HTTPS über den Port aus `GET /v1/status`; `--http` bleibt bei
+reinem HTTP, `--port` legt den HTTP-Port fest. `print` belegt das Gerät, hält
+die Belegung, abonniert `ff00`/`ff03`, sendet die Pakete und gibt alle Meldungen
+mit Zeit seit dem Start aus. `--abbrechen-nach <n>` (und Strg-C) beenden den
+Prozess ohne Freigabe – so lässt sich das Zurücksetzen der Belegung nach 5 s
+prüfen. Der Token steht nie auf der Ausgabe.
+
 ### Kasse lokal gegen den Agenten entwickeln
 
 Ansprechen darf den Agenten nur die Kasse selbst:

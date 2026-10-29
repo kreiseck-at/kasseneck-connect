@@ -138,10 +138,10 @@ class Agent {
   HttpServer? _server;
   Handler? _handler;
 
-  /// HTTPS-Zugang samt dem Zertifikat, mit dem er gebunden ist — daran
-  /// erkennt [checkTls] ein erneuertes Zertifikat.
+  /// HTTPS-Zugang samt der Kette, mit der er gebunden ist — daran erkennt
+  /// [checkTls] ein erneuertes Serverzertifikat oder eine neue Stelle.
   HttpServer? _httpsServer;
-  List<int>? _httpsCertificate;
+  List<int>? _httpsChain;
   TlsFiles? _tlsFiles;
   Timer? _tlsTimer;
   Future<void>? _tlsCheck;
@@ -293,7 +293,7 @@ class Agent {
     final bluetooth = _bluetooth;
     _server = null;
     _httpsServer = null;
-    _httpsCertificate = null;
+    _httpsChain = null;
     _tlsFiles = null;
     _context = null;
     _bluetooth = null;
@@ -329,11 +329,12 @@ class Agent {
     log.info('Agent angehalten.');
   }
 
-  /// Prüft die Zertifikate und bindet den HTTPS-Zugang neu, wenn das
-  /// Serverzertifikat inzwischen ein anderes ist — erneuert 30 Tage vor
-  /// Ablauf, oder neu ausgestellt, weil eine Datei fehlte. Der Agent startet
-  /// dafür nicht neu, und der HTTP-Zugang bleibt unberührt. Ein beim Start
-  /// gescheiterter HTTPS-Zugang wird hier nachgeholt.
+  /// Prüft die Zertifikate und bindet den HTTPS-Zugang neu, wenn die Kette
+  /// inzwischen eine andere ist — Serverzertifikat erneuert 30 Tage vor
+  /// Ablauf, oder neu ausgestellt samt neuer Stelle, weil eine Datei fehlte.
+  /// Der Agent startet dafür nicht neu, und der HTTP-Zugang bleibt
+  /// unberührt. Ein beim Start gescheiterter HTTPS-Zugang wird hier
+  /// nachgeholt.
   ///
   /// Läuft im Takt [tlsCheckInterval]; mehrere Aufrufe teilen sich einen
   /// Lauf. Wirft nie — Fehler landen im Log.
@@ -346,9 +347,9 @@ class Agent {
     try {
       final files = await _certificates.ensure();
       if (_server == null) return;
-      final certificate = await File(files.serverCertPath).readAsBytes();
+      final chain = await _chain(files);
       final current = _httpsServer;
-      if (current != null && _sameBytes(certificate, _httpsCertificate)) {
+      if (current != null && _sameBytes(chain, _httpsChain)) {
         _tlsFiles = files;
       } else {
         // Kontext zuerst: passen Zertifikat und Schlüssel nicht zusammen,
@@ -357,10 +358,10 @@ class Agent {
         // [_bind]), und erst danach schließt der alte: keine Lücke, kein
         // Portwechsel. Offene Verbindungen (auch WebSockets) laufen auf dem
         // alten Server zu Ende.
-        final context = await _securityContext(files, certificate);
+        final context = await _securityContext(files, chain);
         await _serveHttps(
           files,
-          certificate,
+          chain,
           context,
           preferred: current?.port ?? preferredHttpsPort,
         );
@@ -385,11 +386,11 @@ class Agent {
   Future<void> _startHttps() async {
     try {
       final files = await _certificates.ensure();
-      final certificate = await File(files.serverCertPath).readAsBytes();
+      final chain = await _chain(files);
       await _serveHttps(
         files,
-        certificate,
-        await _securityContext(files, certificate),
+        chain,
+        await _securityContext(files, chain),
         preferred: preferredHttpsPort,
       );
       await _rememberHttpsPort();
@@ -400,25 +401,33 @@ class Agent {
     await _warnIfUntrusted();
   }
 
-  /// Kontext aus [certificate] (die Bytes, die gerade gelesen wurden) und dem
-  /// Schlüssel daneben; wirft, wenn beide nicht zusammenpassen.
+  /// Die Kette aus [files], wie sie gerade auf der Platte liegt: Blatt, dann
+  /// Stelle ([serverCertificateChain]).
+  Future<List<int>> _chain(TlsFiles files) async => serverCertificateChain(
+    await File(files.serverCertPath).readAsBytes(),
+    await File(files.caCertPath).readAsBytes(),
+  );
+
+  /// Kontext aus [chain] (die Bytes, die gerade gelesen wurden) und dem
+  /// Schlüssel daneben; wirft, wenn Serverzertifikat und Schlüssel nicht
+  /// zusammenpassen.
   Future<SecurityContext> _securityContext(
     TlsFiles files,
-    List<int> certificate,
+    List<int> chain,
   ) async => SecurityContext()
-    ..useCertificateChainBytes(certificate)
+    ..useCertificateChainBytes(chain)
     ..usePrivateKeyBytes(await File(files.serverKeyPath).readAsBytes());
 
   /// Bindet [files] als HTTPS-Zugang.
   Future<void> _serveHttps(
     TlsFiles files,
-    List<int> certificate,
+    List<int> chain,
     SecurityContext context, {
     required int preferred,
   }) async {
     final server = await _bind(preferred, securityContext: context);
     _httpsServer = server;
-    _httpsCertificate = certificate;
+    _httpsChain = chain;
     _tlsFiles = files;
     _trustCheckedAt = null;
     final ctx = _context;

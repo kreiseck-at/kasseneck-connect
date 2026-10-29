@@ -54,6 +54,24 @@ authorityKeyIdentifier = keyid:always
 
 final Random _random = Random.secure();
 
+/// Die Kette, die der HTTPS-Zugang im Handshake vorlegt: zuerst das
+/// Serverzertifikat, dahinter die lokale Stelle (beides PEM, aneinander).
+///
+/// Mit dem Blatt allein müsste ein Browser am Mac die Stelle im Schlüsselbund
+/// finden. Liegt sie dort nicht (mehr), während der Vertrauenseintrag noch
+/// besteht, lehnt macOS ab — obwohl der Stelle vertraut wird. Mit ihr in der
+/// Kette zählt nur noch der Vertrauenseintrag, wie bei `isLocalCaTrusted`.
+/// Fehlt am Ende des Serverzertifikats der Zeilenumbruch, kommt einer
+/// dazwischen, sonst klebten die beiden Blöcke aneinander.
+List<int> serverCertificateChain(
+  List<int> serverCertificate,
+  List<int> caCertificate,
+) => <int>[
+  ...serverCertificate,
+  if (serverCertificate.isNotEmpty && serverCertificate.last != 0x0a) 0x0a,
+  ...caCertificate,
+];
+
 /// Die Dateien für den HTTPS-Zugang, wie [LocalCertificates.ensure] sie
 /// hinterlässt.
 class TlsFiles {

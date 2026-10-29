@@ -465,6 +465,29 @@ void main() {
       });
     });
 
+    test(
+      'Kette des HTTPS-Zugangs: Serverzertifikat zuerst, dann die Stelle',
+      () {
+        const server =
+            '-----BEGIN CERTIFICATE-----\nU0VSVkVS\n-----END CERTIFICATE-----';
+        const stelle =
+            '-----BEGIN CERTIFICATE-----\nU1RFTExF\n-----END CERTIFICATE-----\n';
+        String kette(String a, String b) =>
+            utf8.decode(serverCertificateChain(utf8.encode(a), utf8.encode(b)));
+
+        // Fehlt der Zeilenumbruch am Ende, kommt einer dazwischen; sonst klebte
+        // das Ende des einen am Anfang des anderen.
+        expect(kette(server, stelle), '$server\n$stelle');
+        expect(kette('$server\n', stelle), '$server\n$stelle');
+        expect(
+          RegExp(
+            r'U0VSVkVS|U1RFTExF',
+          ).allMatches(kette(server, stelle)).map((m) => m[0]).toList(),
+          <String>['U0VSVkVS', 'U1RFTExF'],
+        );
+      },
+    );
+
     test('renewalDue: unter 30 Tagen ja, ab 30 Tagen nein', () {
       final z = zertifikate();
       expect(z.renewalDue(_jetzt.add(const Duration(days: 31))), isFalse);

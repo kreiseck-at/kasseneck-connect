@@ -335,6 +335,100 @@ void main() {
         .where((c) => c.executable == _security)
         .map((c) => c.arguments.first);
 
+    /// Die Zertifikate, die der Zugang an [port] im Handshake vorlegt (DER,
+    /// in dieser Reihenfolge). Gelesen mit `openssl s_client -showcerts`: ein
+    /// Dart-Client zeigt nur das Blatt.
+    Future<List<List<int>>> vorgelegteKette(int port) async {
+      final prozess = await Process.start(_openssl, <String>[
+        's_client',
+        '-connect',
+        '127.0.0.1:$port',
+        '-showcerts',
+      ]);
+      // Ohne Eingabe beendet s_client die Verbindung nach dem Handshake.
+      await prozess.stdin.close();
+      final ausgabe = prozess.stdout.transform(utf8.decoder).join();
+      final fehler = prozess.stderr.transform(utf8.decoder).join();
+      final code = await prozess.exitCode.timeout(
+        const Duration(seconds: 20),
+        onTimeout: () {
+          prozess.kill();
+          return -1;
+        },
+      );
+      expect(code, 0, reason: await fehler);
+      final kette = RegExp(
+        r'-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----',
+      ).allMatches(await ausgabe).map((m) => _der(m[0]!)).toList();
+      expect(kette, hasLength(2), reason: 'Serverzertifikat und Stelle');
+      return kette;
+    }
+
+    List<int> stelleDer() =>
+        _der(File(tlsDatei('ca-cert.pem')).readAsStringSync());
+
+    test('HTTPS legt das Serverzertifikat und dahinter die Stelle vor, auch '
+        'nach einer neuen Stelle', () async {
+      final agent = httpsAgent();
+      await agent.start();
+      addTearDown(agent.stop);
+      final port = agent.httpsPort!;
+
+      // Ein Browser am Mac findet die Stelle so auch dann, wenn sie nicht im
+      // Schlüsselbund liegt — es reicht der Vertrauenseintrag.
+      final vorher = <List<int>>[serverZertifikat(), stelleDer()];
+      expect(await vorgelegteKette(port), vorher);
+
+      // Fehlt die Stelle, entsteht ein neuer Satz: der Zugang bindet neu, und
+      // die Kette trägt die neue Stelle.
+      File(tlsDatei('ca-cert.pem')).deleteSync();
+      await agent.checkTls();
+      final nachher = <List<int>>[serverZertifikat(), stelleDer()];
+      expect(nachher[1], isNot(vorher[1]));
+      expect(agent.httpsPort, port);
+      expect(await vorgelegteKette(port), nachher);
+    }, skip: ohneOpenssl);
+
+    test(
+      'eine andere Stelle bei gleichem Serverzertifikat bindet neu',
+      () async {
+        final zertifikate = _UmlenkbareZertifikate(
+          directory: temp,
+          run: runner.runner,
+          log: log,
+        );
+        final agent = httpsAgent(certificates: zertifikate);
+        await agent.start();
+        addTearDown(agent.stop);
+        final port = agent.httpsPort!;
+        final blatt = serverZertifikat();
+
+        final anders = Directory.systemTemp.createTempSync('connect-agent-');
+        addTearDown(() => anders.deleteSync(recursive: true));
+        final fremd = await LocalCertificates(
+          directory: anders,
+          run: runner.runner,
+          log: log,
+        ).ensure();
+        zertifikate.umlenken = TlsFiles(
+          caCertPath: fremd.caCertPath,
+          serverCertPath: tlsDatei('server-cert.pem'),
+          serverKeyPath: tlsDatei('server-key.pem'),
+          serverNotAfter: fremd.serverNotAfter,
+          caCreated: false,
+        );
+
+        await agent.checkTls();
+
+        expect(agent.httpsPort, port);
+        expect(await vorgelegteKette(port), <List<int>>[
+          blatt,
+          _der(File(fremd.caCertPath).readAsStringSync()),
+        ]);
+      },
+      skip: ohneOpenssl,
+    );
+
     test('Agent lauscht über HTTPS und HTTP mit demselben Token', () async {
       final agent = httpsAgent();
       await agent.start();

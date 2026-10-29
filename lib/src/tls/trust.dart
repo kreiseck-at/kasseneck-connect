@@ -30,10 +30,16 @@ String loginKeychainPath(String home) =>
 /// der Vertrauenseinstellungen: so zählt genau dieses Zertifikat — eine
 /// gleichnamige ältere Stelle im Schlüsselbund macht es nicht „vertraut“ —
 /// und auch „Nie vertrauen“ oder ein Eintrag im Admin-Bereich kommen richtig
-/// heraus. Geprüft wird die Kette des Serverzertifikats ([serverCertPath],
-/// ohne Angabe `server-cert.pem` daneben) mit der SSL-Richtlinie, so wie
-/// Safari sie sieht: eine Stelle allein fällt dort immer durch, weil macOS am
-/// Blatt die Erweiterung serverAuth verlangt. `-L` hält die Prüfung lokal.
+/// heraus. Geprüft wird die Kette aus Serverzertifikat ([serverCertPath],
+/// ohne Angabe `server-cert.pem` daneben) und Stelle mit der SSL-Richtlinie:
+/// eine Stelle allein fällt dort immer durch, weil macOS am Blatt die
+/// Erweiterung serverAuth verlangt. `-L` hält die Prüfung lokal.
+///
+/// Genau diese Kette schickt der HTTPS-Zugang im Handshake mit
+/// ([serverCertificateChain]): ein Browser braucht die Stelle deshalb nicht
+/// im Schlüsselbund, es zählt nur der Vertrauenseintrag. Die Prüfung hier ist
+/// damit genau das, was er sieht — auch wenn das Zertifikat der Stelle im
+/// Schlüsselbund fehlt.
 ///
 /// Fehlt `security`, scheitert es oder antwortet es nicht binnen [timeout]
 /// (dann wird es beendet), gilt die Stelle als nicht vertraut.

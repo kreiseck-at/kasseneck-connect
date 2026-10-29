@@ -185,11 +185,17 @@ class LocalCertificates {
   Future<TlsFiles> _ensureExclusive() async {
     if (!tlsDirectory.existsSync()) {
       await tlsDirectory.create(recursive: true);
-      await _restrict(tlsDirectory.path, '700');
     }
     final lock = await _acquireLock();
     try {
+      // Bei jedem Lauf, nicht nur beim Anlegen: Stirbt ein Lauf zwischen
+      // Anlegen und chmod, oder ändert jemand die Rechte, stünde der Ordner
+      // sonst für immer offen.
+      await _restrict(tlsDirectory.path, '700');
       _removeLeftovers();
+      for (final key in <File>[caKeyFile, serverKeyFile]) {
+        if (key.existsSync()) await _restrict(key.path, '600');
+      }
 
       final caProblem = await _caProblem();
       if (caProblem != null) {
@@ -386,9 +392,13 @@ class LocalCertificates {
     }
   }
 
-  /// EC-Schlüssel P-256 nach [target], sofort auf 0600 gesetzt — LibreSSL
-  /// legt ihn sonst lesbar für alle an.
+  /// EC-Schlüssel P-256 nach [target], ohne dass er je lesbar für andere
+  /// dasteht: LibreSSL legt die Datei mit `-out` selbst mit 0644 an. Darum
+  /// entsteht sie vorher leer und bekommt 0600 — in eine vorhandene Datei
+  /// schreiben LibreSSL und OpenSSL 3, ohne ihre Rechte zu ändern.
   Future<void> _generateKey(File target) async {
+    await target.writeAsBytes(const <int>[], flush: true);
+    await _restrict(target.path, '600');
     await _opensslOrFail(<String>[
       'ecparam',
       '-name',
@@ -400,7 +410,6 @@ class LocalCertificates {
       '-out',
       target.path,
     ]);
-    await _restrict(target.path, '600');
   }
 
   /// Ablauf und öffentlicher Schlüssel eines Zertifikats; `null`, wenn es

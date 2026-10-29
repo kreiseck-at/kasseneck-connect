@@ -74,11 +74,11 @@ void main() {
       final aufrufe = nachbau.aufrufe;
       expect(aufrufe.map((c) => c.executable).toList(), <String>[
         'chmod',
-        _openssl,
         'chmod',
         _openssl,
         _openssl,
         'chmod',
+        _openssl,
         _openssl,
         _openssl,
         _openssl,
@@ -86,9 +86,11 @@ void main() {
       ]);
       expect(aufrufe[0].arguments, <String>['700', tls.path]);
 
+      // Erst die leere Datei auf 0600, dann schreibt openssl hinein.
       final tmp = matches(RegExp(r'\.tmp$'));
-      final stellenSchluessel = aufrufe[1].arguments.last;
-      expect(aufrufe[1].arguments, <Object>[
+      final stellenSchluessel = aufrufe[2].arguments.last;
+      expect(aufrufe[1].arguments, <String>['600', stellenSchluessel]);
+      expect(aufrufe[2].arguments, <Object>[
         'ecparam',
         '-name',
         'prime256v1',
@@ -99,7 +101,6 @@ void main() {
         '-out',
         allOf(startsWith('${inTls('ca-key.pem')}.'), tmp),
       ]);
-      expect(aufrufe[2].arguments, <String>['600', stellenSchluessel]);
 
       final stellenZert = aufrufe[3].arguments[6];
       final konfiguration = aufrufe[3].arguments[15];
@@ -128,13 +129,13 @@ void main() {
       expect(p.isWithin(Directory.systemTemp.path, konfiguration), isTrue);
       expect(p.isWithin(temp.path, konfiguration), isFalse);
 
-      final serverSchluessel = aufrufe[4].arguments.last;
-      expect(aufrufe[4].arguments.take(8), aufrufe[1].arguments.take(8));
+      final serverSchluessel = aufrufe[5].arguments.last;
+      expect(aufrufe[4].arguments, <String>['600', serverSchluessel]);
+      expect(aufrufe[5].arguments.take(8), aufrufe[2].arguments.take(8));
       expect(
         serverSchluessel,
         allOf(startsWith('${inTls('server-key.pem')}.'), tmp),
       );
-      expect(aufrufe[5].arguments, <String>['600', serverSchluessel]);
 
       final antrag = aufrufe[6].arguments[5];
       expect(aufrufe[6].arguments, <String>[
@@ -236,7 +237,12 @@ void main() {
       expect(dateien.serverNotAfter, DateTime.utc(2027, 3, 7, 9, 15, 4));
       expect(dateien.caCertPath, inTls('ca-cert.pem'));
       expect(_inhalte(tls), vorher);
+      // Auch ohne Neuanlage: Ordner und Schlüssel werden jedes Mal wieder
+      // eingeschränkt.
       expect(nachbau.aufrufe.map((c) => c.line).toList(), <String>[
+        'chmod 700 ${tls.path}',
+        'chmod 600 ${inTls('ca-key.pem')}',
+        'chmod 600 ${inTls('server-key.pem')}',
         '$_openssl x509 -noout -enddate -pubkey -in ${inTls('ca-cert.pem')}',
         '$_openssl pkey -in ${inTls('ca-key.pem')} -pubout',
         '$_openssl x509 -noout -enddate -pubkey -in ${inTls('server-cert.pem')}',
@@ -307,14 +313,13 @@ void main() {
               c.arguments[1] == datei,
         );
         expect(chmod, isNot(-1), reason: 'chmod 600 für $datei');
-        // Eingeschränkt, bevor ein anderer Aufruf den Schlüssel liest.
-        final ersteNutzung = aufrufe.indexWhere(
-          (c) =>
-              c.executable == _openssl &&
-              c.arguments.first != 'ecparam' &&
-              c.arguments.contains(datei),
+        // Eingeschränkt, bevor openssl den Schlüssel hineinschreibt — die
+        // Datei stand da schon, aber leer.
+        final erzeugt = aufrufe.indexWhere(
+          (c) => c.arguments.first == 'ecparam' && c.arguments.last == datei,
         );
-        expect(chmod, lessThan(ersteNutzung), reason: datei);
+        expect(chmod, lessThan(erzeugt), reason: datei);
+        expect(nachbau.beiChmod[datei], '', reason: datei);
       }
       // Die eingeschränkten Temp-Dateien sind die, die jetzt als Schlüssel
       // dastehen.
@@ -611,12 +616,31 @@ void _mitEchtemOpenssl() {
       Future<ProcessResult> ossl(List<String> argumente) =>
           Process.run(openssl, argumente);
 
+      /// Modus jeder Schlüsseldatei unmittelbar vor und nach `ecparam`
+      /// (`null`: die Datei gab es vorher nicht).
+      final schluesselModi = <({String datei, int? vorher, int nachher})>[];
+
+      Future<ProcessResult> beobachtet(String programm, List<String> a) async {
+        if (a.isEmpty || a.first != 'ecparam') return Process.run(programm, a);
+        final datei = File(a.last);
+        final vorher = datei.existsSync()
+            ? datei.statSync().mode & 0x1ff
+            : null;
+        final ergebnis = await Process.run(programm, a);
+        schluesselModi.add((
+          datei: a.last,
+          vorher: vorher,
+          nachher: datei.statSync().mode & 0x1ff,
+        ));
+        return ergebnis;
+      }
+
       setUpAll(() async {
         temp = Directory.systemTemp.createTempSync('connect-tls-echt-');
         log = AgentLog(Directory(p.join(temp.path, 'logs')));
         dateien = await LocalCertificates(
           directory: temp,
-          run: Process.run,
+          run: beobachtet,
           log: log,
           openssl: openssl,
         ).ensure();
@@ -842,6 +866,81 @@ void _mitEchtemOpenssl() {
         final ordner = Directory(p.join(temp.path, 'tls')).statSync().mode;
         expect(ordner & 0x1ff, 0x1c0, reason: ordner.toRadixString(8));
       }, testOn: '!windows');
+
+      test(
+        'Schlüssel sind nie lesbar für andere: 0600, bevor openssl schreibt',
+        () {
+          expect(schluesselModi, hasLength(2));
+          for (final modus in schluesselModi) {
+            final name = p.basename(modus.datei);
+            expect(modus.vorher, 0x180, reason: '$name vor ecparam');
+            expect(modus.nachher, 0x180, reason: '$name nach ecparam');
+          }
+        },
+        testOn: '!windows',
+      );
+
+      Future<void> chmod(String modus, String pfad) async {
+        final r = await Process.run('chmod', <String>[modus, pfad]);
+        expect(r.exitCode, 0, reason: '${r.stderr}');
+      }
+
+      int modusVon(String pfad) => FileStat.statSync(pfad).mode & 0x1ff;
+
+      test(
+        'vorhandener tls-Ordner mit 0755 wird auf 0700 gezogen',
+        () async {
+          // Stand nach einem Lauf, der zwischen Anlegen und chmod starb.
+          final eigen = Directory.systemTemp.createTempSync('connect-tls-ord-');
+          addTearDown(() => eigen.deleteSync(recursive: true));
+          final tls = Directory(p.join(eigen.path, 'tls'))..createSync();
+          await chmod('755', tls.path);
+          expect(modusVon(tls.path), 0x1ed);
+
+          final ergebnis = await LocalCertificates(
+            directory: eigen,
+            run: Process.run,
+            log: log,
+            openssl: openssl,
+          ).ensure();
+
+          expect(ergebnis.caCreated, isTrue);
+          expect(modusVon(tls.path), 0x1c0);
+          expect(modusVon(p.join(tls.path, 'ca-key.pem')), 0x180);
+          expect(modusVon(ergebnis.serverKeyPath), 0x180);
+        },
+        testOn: '!windows',
+      );
+
+      test(
+        'vorhandene Schlüssel mit 0644 werden wieder 0600, sonst bleibt alles',
+        () async {
+          final eigen = Directory.systemTemp.createTempSync('connect-tls-sch-');
+          addTearDown(() => eigen.deleteSync(recursive: true));
+          LocalCertificates zertifikate() => LocalCertificates(
+            directory: eigen,
+            run: Process.run,
+            log: log,
+            openssl: openssl,
+          );
+          final erster = await zertifikate().ensure();
+          final tls = Directory(p.join(eigen.path, 'tls'));
+          final caKey = p.join(tls.path, 'ca-key.pem');
+          await chmod('755', tls.path);
+          await chmod('644', caKey);
+          await chmod('644', erster.serverKeyPath);
+          final vorher = _inhalte(tls);
+
+          final zweiter = await zertifikate().ensure();
+
+          expect(zweiter.caCreated, isFalse);
+          expect(_inhalte(tls), vorher);
+          expect(modusVon(tls.path), 0x1c0);
+          expect(modusVon(caKey), 0x180);
+          expect(modusVon(erster.serverKeyPath), 0x180);
+        },
+        testOn: '!windows',
+      );
 
       test('zweiter Lauf lässt alles stehen', () async {
         final tls = Directory(p.join(temp.path, 'tls'));
@@ -1109,6 +1208,9 @@ class _OpensslNachbau {
   /// Aufrufe, auf die das zutrifft, scheitern mit Exitcode 1.
   bool Function(List<String> argumente)? scheitertBei;
 
+  /// Inhalt jeder Datei im Moment ihres `chmod` (`null`: gab es nicht).
+  final Map<String, String?> beiChmod = <String, String?>{};
+
   ProcessRunner get runner => fake.runner;
 
   List<RecordedCall> get aufrufe => fake.calls;
@@ -1127,6 +1229,11 @@ class _OpensslNachbau {
       '-----END PUBLIC KEY-----\n';
 
   Future<ProcessResult?> _antwort(String programm, List<String> a) async {
+    if (programm == 'chmod') {
+      final datei = File(a.last);
+      beiChmod[a.last] = datei.existsSync() ? datei.readAsStringSync() : null;
+      return null;
+    }
     if (programm != _openssl) return null;
     if (scheitertBei?.call(a) ?? false) {
       return ProcessResult(42, 1, '', 'Attrappe: gescheitert');

@@ -447,7 +447,9 @@ class BluetoothBridge {
   /// schon nicht mehr. Berührt Bluetooth nicht.
   ///
   /// Für Zugriffe, die die Brücke selbst nicht prüft ([notifications],
-  /// [generationOf], [renewLease], [releaseLease]): die Route fragt vorher.
+  /// [generationOf], [renewLease]): die Route fragt vorher. [releaseLease]
+  /// bleibt bewusst ohne diese Frage – eine Freigabe nach dem Vergessen ist
+  /// kein Fehler.
   Future<bool> isApproved(String id) async {
     final key = id.toLowerCase();
     if (_forgetting.contains(key)) return false;

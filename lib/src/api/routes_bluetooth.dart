@@ -164,18 +164,16 @@ RouteRegistrar bluetoothRoutes({required BluetoothBridge bridge}) {
       )
       ..post(
         '$device/lease/release',
-        // Eine Belegung, die schon zu Ende ist (abgelaufen, entzogen), meldet
-        // `bluetooth_lease_required`: die Verbindung wurde dann vielleicht
-        // zurückgesetzt, und die Kasse soll das wissen können.
-        (Request r, String id) =>
-            _onDevice(bridge, id, approved: true, (key) async {
-              final lease = await _readLease(r);
-              if (lease.error case final error?) return error;
-              if (!bridge.releaseLease(key, lease.id!)) {
-                return _bridgeFailure(errorBluetoothLeaseRequired);
-              }
-              return okJson(const <String, Object?>{});
-            }),
+        // Wiederholbar und ohne Zulassungsprüfung: eine Freigabe nach Ablauf,
+        // Entzug, doppeltem Senden oder nach dem Vergessen ist kein Fehler,
+        // nur `released: false`.
+        (Request r, String id) => _onDevice(bridge, id, (key) async {
+          final lease = await _readLease(r);
+          if (lease.error case final error?) return error;
+          return okJson(<String, Object?>{
+            'released': bridge.releaseLease(key, lease.id!),
+          });
+        }),
       );
   };
 }
@@ -335,7 +333,7 @@ Future<Response> _handleAcquire(
 /// übersetzt Fehler der Brücke.
 ///
 /// [approved]: die Route prüft die Zulassung selbst, weil die Brücke es für
-/// diesen Zugriff nicht tut (Meldungen, Erneuern, Freigeben).
+/// diesen Zugriff nicht tut (Meldungen, Erneuern).
 Future<Response> _onDevice(
   BluetoothBridge bridge,
   String id,

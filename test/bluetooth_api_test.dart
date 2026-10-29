@@ -5,6 +5,7 @@ import 'dart:typed_data';
 
 import 'package:kasseneck_connect/kasseneck_connect.dart';
 import 'package:path/path.dart' as p;
+import 'package:shelf/shelf.dart' show Handler, Request;
 import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'package:test/test.dart';
 
@@ -111,6 +112,7 @@ void main() {
     late FakeM110 m110;
     late FakeBluetoothHelper fake;
     late BluetoothBridge bridge;
+    late Handler handler;
     late HttpServer server;
 
     setUp(() async {
@@ -130,14 +132,11 @@ void main() {
         events: bus,
         bluetooth: bridge,
       );
-      server = await shelf_io.serve(
-        buildHandler(
-          ctx,
-          extraRoutes: <RouteRegistrar>[bluetoothRoutes(bridge: bridge)],
-        ),
-        InternetAddress.loopbackIPv4,
-        0,
+      handler = buildHandler(
+        ctx,
+        extraRoutes: <RouteRegistrar>[bluetoothRoutes(bridge: bridge)],
       );
+      server = await shelf_io.serve(handler, InternetAddress.loopbackIPv4, 0);
       ctx.port = server.port;
     });
 
@@ -368,6 +367,19 @@ void main() {
         body: <String, Object?>{'lease': lease},
       );
       expect(freigegeben.ok, isTrue, reason: freigegeben.body);
+      expect(freigegeben.json['released'], isTrue);
+
+      // Ein zweites Freigeben (z. B. ein wiederholter Aufruf) ist kein Fehler.
+      final nochmalFrei = await send(
+        'POST',
+        '/v1/bluetooth/devices/$fakeM110Id/lease/release',
+        body: <String, Object?>{'lease': lease},
+      );
+      expect(nochmalFrei.status, 200);
+      expect(nochmalFrei.json, <String, Object?>{
+        'ok': true,
+        'released': false,
+      });
 
       // Nach der Freigabe gilt die Belegung nicht mehr.
       final ohneBelegung = await send(
@@ -464,17 +476,12 @@ void main() {
         'bluetooth_device_unknown', () async {
       await zulassen();
       // Rot-Probe der Zulassung: die Brücke selbst prüft für Meldungen und
-      // Erneuern/Freigeben nicht, ob das Gerät zugelassen ist.
+      // Erneuern nicht, ob das Gerät zugelassen ist.
       final aufrufe = <(String, String, Object?)>[
         ('GET', '/v1/bluetooth/devices/$_fremdeId/notifications', null),
         (
           'POST',
           '/v1/bluetooth/devices/$_fremdeId/lease/renew',
-          const <String, Object?>{'lease': 'AAAAAAAAAAAAAAAAAAAAAA'},
-        ),
-        (
-          'POST',
-          '/v1/bluetooth/devices/$_fremdeId/lease/release',
           const <String, Object?>{'lease': 'AAAAAAAAAAAAAAAAAAAAAA'},
         ),
         ('POST', '/v1/bluetooth/devices/$_fremdeId/connect', null),
@@ -492,6 +499,52 @@ void main() {
           bluetoothErrorMessages[errorBluetoothDeviceUnknown],
         );
       }
+      expect(fake.starts, 0);
+    });
+
+    test('Freigeben ist wiederholbar: auch nach dem Vergessen und für '
+        'unbekannte Geräte ok mit released false', () async {
+      await zulassen();
+      final belegt = await send(
+        'POST',
+        '/v1/bluetooth/devices/$fakeM110Id/lease',
+        body: const <String, Object?>{},
+      );
+      final lease = belegt.json['lease']! as String;
+
+      final vergessen = await send(
+        'DELETE',
+        '/v1/bluetooth/devices/$fakeM110Id',
+      );
+      expect(vergessen.ok, isTrue, reason: vergessen.body);
+
+      // Die Kasse gibt nach dem Druck frei, auch wenn das Gerät inzwischen
+      // vergessen wurde: das darf nicht scheitern.
+      final nachVergessen = await send(
+        'POST',
+        '/v1/bluetooth/devices/$fakeM110Id/lease/release',
+        body: <String, Object?>{'lease': lease},
+      );
+      expect(nachVergessen.status, 200);
+      expect(nachVergessen.json, <String, Object?>{
+        'ok': true,
+        'released': false,
+      });
+
+      final unbekannt = await send(
+        'POST',
+        '/v1/bluetooth/devices/$_fremdeId/lease/release',
+        body: const <String, Object?>{'lease': 'AAAAAAAAAAAAAAAAAAAAAA'},
+      );
+      expect(unbekannt.json, <String, Object?>{'ok': true, 'released': false});
+
+      // Kaputte Anfragen bleiben kaputt.
+      final ohneLease = await send(
+        'POST',
+        '/v1/bluetooth/devices/$_fremdeId/lease/release',
+        body: const <String, Object?>{},
+      );
+      expect(ohneLease.errorCode, errorBadRequest);
       expect(fake.starts, 0);
     });
 
@@ -577,6 +630,11 @@ void main() {
         ),
         'Wartezeit negativ': ('lease', const <String, Object?>{'waitMs': -1}),
         'Erneuern ohne lease': ('lease/renew', const <String, Object?>{}),
+        'Freigeben ohne lease': ('lease/release', const <String, Object?>{}),
+        'lease beim Freigeben kein Text': (
+          'lease/release',
+          const <String, Object?>{'lease': 7},
+        ),
         'Rumpf kein JSON': ('read', '{kaputt'),
       };
       for (final MapEntry(key: fall, value: (pfad, rumpf)) in faelle.entries) {
@@ -634,6 +692,25 @@ void main() {
         'pad': 'x' * fuellung,
       };
 
+      // Ohne Socket durch dieselbe Kette (Herkunft, Token, Router): über
+      // TCP verwirft der Server den ungelesenen Rest des Rumpfes, und der
+      // Klient sieht je nach Zeitpunkt statt der 413 nur „Verbindung zu“.
+      Future<ApiResponse> direkt(String path, Map<String, Object?> body) async {
+        final response = await handler(
+          Request(
+            'POST',
+            Uri.parse('http://127.0.0.1:${server.port}$path'),
+            headers: <String, String>{
+              'origin': _kasse,
+              'authorization': 'Bearer $_token',
+              'content-type': 'application/json',
+            },
+            body: utf8.encode(jsonEncode(body)),
+          ),
+        );
+        return ApiResponse(response.statusCode, await response.readAsString());
+      }
+
       // 200 KiB gehen durch (mehr als die üblichen 64 KB) …
       final gross = await send(
         'POST',
@@ -644,25 +721,24 @@ void main() {
       expect(gross.json['written'], 0);
 
       // … über 256 KiB nicht.
-      final zuGross = await send(
-        'POST',
+      final zuGross = await direkt(
         '/v1/bluetooth/devices/$fakeM110Id/write',
-        body: rumpf(256 * 1024),
+        rumpf(256 * 1024),
       );
       expect(zuGross.status, 413);
       expect(zuGross.errorCode, errorBodyTooLarge);
 
       // Andere Bluetooth-Pfade bleiben bei 64 KB.
-      final lesen = await send(
-        'POST',
+      final lesen = await direkt(
         '/v1/bluetooth/devices/$fakeM110Id/read',
-        body: <String, Object?>{
+        <String, Object?>{
           'service': 'ff00',
           'characteristic': 'ff01',
           'pad': 'x' * (64 * 1024),
         },
       );
       expect(lesen.status, 413);
+      expect(lesen.errorCode, errorBodyTooLarge);
       expect(m110.pakete, isEmpty);
     });
 

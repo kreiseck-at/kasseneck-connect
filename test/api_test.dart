@@ -484,6 +484,7 @@ void main() {
         ('POST', '/v1/bluetooth/devices/$id/connect'),
         ('GET', '/v1/bluetooth/devices/$id/notifications'),
         ('POST', '/v1/bluetooth/devices/$id/lease'),
+        ('POST', '/v1/bluetooth/devices/$id/lease/release'),
       ]) {
         final antwort = await rufe(method, path);
         expect(

@@ -43,6 +43,12 @@ class FakeProcessRunner {
   /// Programme, die es angeblich gar nicht gibt.
   final Set<String> missing = <String>{};
 
+  /// Eigene Antwort je Aufruf, wenn die Regeln oben nicht reichen — etwa eine
+  /// Ausgabe, die vom Inhalt einer Datei abhängt (`openssl x509 -in …`).
+  /// Liefert sie `null`, gelten [exitCodes], [stdoutOf] usw.
+  Future<ProcessResult?> Function(String executable, List<String> arguments)?
+  antwort;
+
   /// Der einsetzbare [ProcessRunner].
   ProcessRunner get runner => _run;
 
@@ -74,6 +80,8 @@ class FakeProcessRunner {
     if (missing.contains(executable)) {
       throw ProcessException(executable, arguments, 'Programm nicht gefunden');
     }
+    final eigene = await antwort?.call(executable, arguments);
+    if (eigene != null) return eigene;
     final key = arguments.isEmpty ? '' : arguments.first;
     final folge = exitCodeFolge[key];
     final code = folge != null && folge.isNotEmpty

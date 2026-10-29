@@ -5,6 +5,8 @@
 /// oder ältere `config.json` den Agenten nicht am Start hindert.
 library;
 
+import '../bluetooth/uuids.dart';
+
 /// Aktuelle Schemaversion der `config.json`.
 const int currentSchemaVersion = 1;
 
@@ -157,6 +159,52 @@ class TerminalConfig {
   String toString() => 'TerminalConfig($kind, $host:$port)';
 }
 
+/// Ein vom Kunden zugelassenes Bluetooth-Gerät (Waage, Lesegerät …).
+///
+/// Nur zugelassene Geräte darf die Kasse über die Brücke ansprechen; die
+/// Kennung ist die CoreBluetooth-UUID des Geräts auf diesem Rechner.
+class BluetoothDeviceConfig {
+  BluetoothDeviceConfig({
+    required String id,
+    required this.name,
+    required this.approvedAt,
+  }) : id = id.toLowerCase();
+
+  /// CoreBluetooth-Kennung, immer klein geschrieben.
+  final String id;
+
+  /// Name aus dem Scan; fehlt er, steht hier die Kennung.
+  final String name;
+
+  /// Zeitpunkt der Zulassung.
+  final DateTime approvedAt;
+
+  Map<String, Object?> toJson() => <String, Object?>{
+    'id': id,
+    'name': name,
+    'approvedAt': approvedAt.toUtc().toIso8601String(),
+  };
+
+  /// Liest einen Eintrag; `null` bei ungültiger Kennung oder fehlendem bzw.
+  /// kaputtem Zeitpunkt (der Eintrag wird dann beim Laden übersprungen).
+  static BluetoothDeviceConfig? fromJson(Map<String, Object?> json) {
+    final id = readString(json['id']);
+    if (id == null || !isValidDeviceId(id)) return null;
+    final approvedAt = readDateTime(json['approvedAt']);
+    if (approvedAt == null) return null;
+    final name = readString(json['name']);
+    return BluetoothDeviceConfig(
+      id: id,
+      // Unbenannte Geräte melden im Scan keinen Namen.
+      name: (name == null || name.isEmpty) ? id.toLowerCase() : name,
+      approvedAt: approvedAt.toUtc(),
+    );
+  }
+
+  @override
+  String toString() => 'BluetoothDeviceConfig($id, $name)';
+}
+
 /// Offener Kopplungsvorgang: Code, Ablauf, Fehlversuche, Sperre.
 ///
 /// Der Code steht im Klartext in der Datei — er ist sechsstellig, zehn Minuten
@@ -239,9 +287,13 @@ class AgentConfig {
     this.updateChannel = defaultUpdateChannel,
     this.pairing = PairingState.none,
     this.allowDevOrigins = false,
+    List<BluetoothDeviceConfig>? bluetoothDevices,
   }) : tokenHashes = List<String>.unmodifiable(tokenHashes ?? const <String>[]),
        printers = List<PrinterConfig>.unmodifiable(
          printers ?? const <PrinterConfig>[],
+       ),
+       bluetoothDevices = List<BluetoothDeviceConfig>.unmodifiable(
+         bluetoothDevices ?? const <BluetoothDeviceConfig>[],
        );
 
   final int schemaVersion;
@@ -268,6 +320,9 @@ class AgentConfig {
   /// Webseite den Agenten ansprechen.
   final bool allowDevOrigins;
 
+  /// Zugelassene Bluetooth-Geräte (Obergrenze prüft die Brücke, nicht das Modell).
+  final List<BluetoothDeviceConfig> bluetoothDevices;
+
   AgentConfig copyWith({
     int? schemaVersion,
     int? port,
@@ -278,6 +333,7 @@ class AgentConfig {
     String? updateChannel,
     PairingState? pairing,
     bool? allowDevOrigins,
+    List<BluetoothDeviceConfig>? bluetoothDevices,
   }) {
     return AgentConfig(
       schemaVersion: schemaVersion ?? this.schemaVersion,
@@ -288,6 +344,7 @@ class AgentConfig {
       updateChannel: updateChannel ?? this.updateChannel,
       pairing: pairing ?? this.pairing,
       allowDevOrigins: allowDevOrigins ?? this.allowDevOrigins,
+      bluetoothDevices: bluetoothDevices ?? this.bluetoothDevices,
     );
   }
 
@@ -300,6 +357,7 @@ class AgentConfig {
     'updateChannel': updateChannel,
     if (!pairing.isEmpty) 'pairing': pairing.toJson(),
     'allowDevOrigins': allowDevOrigins,
+    'bluetoothDevices': bluetoothDevices.map((d) => d.toJson()).toList(),
   };
 
   static AgentConfig fromJson(Map<String, Object?> json) {
@@ -323,6 +381,9 @@ class AgentConfig {
           ? null
           : TerminalConfig.fromJson(terminalJson),
       updateChannel: readString(json['updateChannel']) ?? defaultUpdateChannel,
+      bluetoothDevices: readMapList(
+        json['bluetoothDevices'],
+      ).map(BluetoothDeviceConfig.fromJson).nonNulls.toList(),
     );
   }
 

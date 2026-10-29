@@ -64,7 +64,11 @@ jobs:
           # An die Entwickler-Version gepinnt: der Formatter urteilt je Version anders.
           sdk: 3.12.1
 
-      - name: Binary und Paket bauen (macOS)
+      - name: Bluetooth-Hilfsprogramm testen (macOS)
+        if: matrix.script == 'macos'
+        run: swift test --package-path native/macos/KasseneckBluetooth
+
+      - name: App-Paket und .pkg bauen (macOS)
         if: matrix.script == 'macos'
         run: |
           tool/build_macos.sh
@@ -86,6 +90,12 @@ jobs:
         run: |
           BINARY="$(ls build/kasseneck-connect-* | head -1)"
           "$BINARY" version
+
+      - name: Ergebnis prüfen (App-Paket)
+        if: matrix.script == 'macos'
+        run: |
+          "build/Kasseneck Connect.app"/Contents/MacOS/kasseneck-connect version
+          plutil -lint "build/Kasseneck Connect.app"/Contents/Info.plist
 
       - name: Ergebnis prüfen (Windows)
         if: matrix.script == 'windows'

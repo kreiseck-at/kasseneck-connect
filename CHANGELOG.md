@@ -5,6 +5,42 @@ Alle nennenswerten Änderungen an Kasseneck Connect. Die Versionsnummer folgt
 `lib/src/version.dart` und wird über `GET /v1/status` sowie im Update-Feed
 gemeldet.
 
+## 1.3.0 — 2026-10-29
+
+- **Bluetooth-Brücke (macOS):** die Kasse erreicht Bluetooth-Geräte, allen
+  voran den Etikettendrucker, über die lokale API statt über Web Bluetooth —
+  damit auch in Safari. Neue Pfade unter `/v1/bluetooth` (Zustand, Suche,
+  Zulassen/Vergessen, Verbinden bei Bedarf, GATT, Lesen, Schreiben, Abos,
+  Meldungspuffer, Belegung je Gerät) und die Ereignisse `bluetooth.state`,
+  `bluetooth.device` und `bluetooth.notification`. Nutzbar sind nur
+  zugelassene Geräte (höchstens 16, in der `config.json`); Sperrliste wie bei
+  Web Bluetooth plus Firmware-Update-Dienste. Connect hält eine Verbindung 60 s
+  nach, verbindet während eines Bedarfs still neu samt Abos und setzt die
+  Verbindung zurück, wenn eine Belegung ohne Freigabe endet. Geschriebene
+  Bytes kommen nie ins Log. `GET /v1/status` meldet die Fähigkeit in
+  `features` (`bluetooth`), `doctor` zeigt Hilfsprogramm und Zustand.
+- **Bluetooth-Hilfsprogramm:** ein kleines Swift-Programm (CoreBluetooth)
+  spricht Bluetooth, die Logik bleibt im Agenten. Der Agent startet es erst
+  beim ersten Bluetooth-Aufruf, überwacht es und startet es nach Absturz oder
+  Hänger neu; die übrigen Endpunkte laufen dabei unberührt weiter.
+  CLI-Befehle berühren Bluetooth nie.
+- **HTTPS-Zugang (macOS):** zusätzlich zu HTTP lauscht der Agent auf
+  `https://127.0.0.1:27190` (Ausweich bis 27197), weil Safari eine Seite unter
+  `https://` nicht an `http://127.0.0.1` lässt. Das Zertifikat stammt von einer
+  lokalen Zertifizierungsstelle je Rechner (nur für `127.0.0.1` und
+  `localhost`); der Installer vertraut ihr einmal (Kennwort oder Touch ID),
+  sonst `kasseneck-connect zertifikat-vertrauen`. Das Serverzertifikat erneuert
+  der Agent selbst.
+- **App-Paket:** Connect liegt am Mac als `Kasseneck Connect.app` unter
+  `/usr/local/kasseneck-connect/` (Agent und Hilfsprogramm, Info.plist mit
+  Freigabetext, Symbol aus der Marke, kein Dock-Symbol). Der LaunchAgent
+  startet die Binary im Paket, `/usr/local/bin/kasseneck-connect` zeigt
+  hinein. macOS fragt die Bluetooth-Freigabe beim ersten Bluetooth-Zugriff
+  im Namen von „Kasseneck Connect“. Ein Update von 1.2.x behält
+  Konfiguration, Kopplungen und Drucker. Mindestens macOS 12.
+- **Deinstallieren:** `uninstall.sh` entfernt zusätzlich das App-Paket, das
+  Vertrauen in die lokale Zertifizierungsstelle und die Bluetooth-Freigabe.
+
 ## 1.2.5 — 2026-08-20
 
 - **Terminal-Wachhalten:** Android-Terminals legen das WLAN im Ruhezustand

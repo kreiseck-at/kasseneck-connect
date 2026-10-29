@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  Vorlage der Info.plist von Kasseneck Connect.app. tool/build_macos.sh
+	  setzt in die beiden Versionsfelder die Version aus der pubspec.yaml.
+
+	  Im Bluetooth-Dialog und in den Systemeinstellungen zeigt macOS den
+	  Ordnernamen des Pakets, nicht CFBundleName; der Text unter
+	  NSBluetoothAlwaysUsageDescription steht im Dialog. LSUIElement hält
+	  das Paket aus dem Dock.
+	-->
+	<key>CFBundleIdentifier</key>
+	<string>at.kasseneck.connect</string>
+	<key>CFBundleName</key>
+	<string>Kasseneck Connect</string>
+	<key>CFBundleDisplayName</key>
+	<string>Kasseneck Connect</string>
+	<key>CFBundleExecutable</key>
+	<string>kasseneck-connect</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>@VERSION@</string>
+	<key>CFBundleVersion</key>
+	<string>@VERSION@</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>12.0</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Kasseneck Connect verbindet die Kasse mit Bluetooth-Druckern wie dem Etikettendrucker.</string>
+</dict>
+</plist>

@@ -1,17 +1,24 @@
 #!/usr/bin/env bash
-# Baut das macOS-Installationspaket aus der bereits kompilierten Binary.
+# Baut das macOS-Installationspaket aus dem fertigen App-Paket.
 #
 #   tool/build_macos.sh && tool/pkg/macos/build_pkg.sh
 #   -> build/KasseneckConnect-<version>-macos-<arch>.pkg
+#
+# Das .pkg legt `Kasseneck Connect.app` unter /usr/local/kasseneck-connect/
+# ab, dazu den Symlink /usr/local/kasseneck-connect/kasseneck-connect auf die
+# Binary im Paket (dort lag sie bis 1.2.x; ältere Handgriffe und Anleitungen
+# treffen sie so weiter).
 #
 # Signiert wird zweistufig, sobald der Schlüsselbund die Zertifikate hergibt
 # (ab v1.0.2 der Regelfall, `KASSENECK_SIGN_APP`/`KASSENECK_SIGN_PKG` stechen
 # die Suche):
 #
-#   1. die Binary in der Nutzlast mit der **Developer-ID-Application**-Identität
-#      (Hardened Runtime + Zeitstempel) — `pkgbuild` signiert den Inhalt nicht
-#      mit, das Paket ist nur die Hülle;
-#   2. das fertige Paket mit der **Developer-ID-Installer**-Identität über
+#   1. das App-Paket in der Nutzlast mit der **Developer-ID-Application**-
+#      Identität (Hardened Runtime + Zeitstempel) — `pkgbuild` signiert den
+#      Inhalt nicht mit, das .pkg ist nur die Hülle. Das erledigt schon
+#      `tool/build_macos.sh`; hier wird nur nachgezogen, wenn das App-Paket
+#      ohne Developer-ID-Signatur ankommt;
+#   2. das fertige .pkg mit der **Developer-ID-Installer**-Identität über
 #      `productsign` — `pkgbuild --sign` könnte das auch, aber der Umweg über
 #      eine unsignierte Zwischendatei hält den Auslieferungsnamen frei von
 #      halbfertigen Ständen.
@@ -28,13 +35,14 @@ cd "$ROOT"
 
 VERSION="$(pubspec_version)"
 ARCH="$(normalize_arch "${ARCH:-}")"
-BINARY="build/$(binary_name macos "$ARCH")"
+APP="build/$APP_BUNDLE_NAME"
 IDENTIFIER="at.kasseneck.connect"
 INSTALL_DIR="/usr/local/kasseneck-connect"
 PKG="build/$(release_name "$VERSION" macos "$ARCH" pkg)"
 
-if [ ! -x "$BINARY" ]; then
-  echo "Binary fehlt: $BINARY — zuerst tool/build_macos.sh laufen lassen." >&2
+if [ ! -x "$APP/Contents/MacOS/kasseneck-connect" ] \
+   || [ ! -x "$APP/Contents/MacOS/kasseneck-bluetooth" ]; then
+  echo "App-Paket fehlt oder ist unvollständig: $APP — zuerst tool/build_macos.sh laufen lassen." >&2
   exit 1
 fi
 
@@ -43,36 +51,38 @@ SCRIPTS="$(mktemp -d)"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$STAGE" "$SCRIPTS" "$WORK"' EXIT
 
-# 1. Nutzlast: die Binary landet unter /usr/local/kasseneck-connect/.
+# 1. Nutzlast: das App-Paket unter /usr/local/kasseneck-connect/, daneben der
+#    Symlink an der alten Stelle der Binary (relativ, zeigt ins Paket).
+#    `ditto` übernimmt das Paket samt Signatur unverändert.
+STAGED_APP="$STAGE$INSTALL_DIR/$APP_BUNDLE_NAME"
 mkdir -p "$STAGE$INSTALL_DIR"
-cp "$BINARY" "$STAGE$INSTALL_DIR/kasseneck-connect"
-chmod 755 "$STAGE$INSTALL_DIR/kasseneck-connect"
-# Erweiterte Attribute weg — vor allem `com.apple.quarantine`, das die
-# heruntergeladene Binary sonst mit ins Paket schleppt.
+ditto "$APP" "$STAGED_APP"
+ln -s "$APP_BUNDLE_NAME/Contents/MacOS/kasseneck-connect" "$STAGE$INSTALL_DIR/kasseneck-connect"
+# Erweiterte Attribute weg — vor allem `com.apple.quarantine`, das ein
+# heruntergeladenes Paket sonst mit ins .pkg schleppt. Die Signatur deckt sie
+# nicht ab.
 # `com.apple.provenance` setzt macOS selbst und lässt sich nicht entfernen;
 # pkgbuild legt dafür AppleDouble-Einträge (`._kasseneck-connect`) in die
 # Nutzlast. Die sind harmlos: der Installer wertet sie aus und legt sie nicht
 # auf die Platte.
 xattr -cr "$STAGE"
 
-# 1a. Signatur der Nutzlast. `tool/build_macos.sh` signiert die Binary schon;
-# hier wird nachgezogen, falls das Paket aus einer fremd gebauten Binary
-# entsteht. `--force` macht den Lauf wiederholbar.
+# 1a. Signatur der Nutzlast. Ist das App-Paket schon mit Developer ID
+#     signiert (der Regelfall nach tool/build_macos.sh), bleibt es, wie es
+#     ist; eine zweite Signatur brächte nur einen neuen Zeitstempel.
 SIGN_APP="${KASSENECK_SIGN_APP:-$(find_signing_identity 'Developer ID Application' codesigning || true)}"
-if [ -n "$SIGN_APP" ]; then
-  codesign --force --options runtime --timestamp \
-    --entitlements tool/entitlements-macos.plist \
-    --sign "$SIGN_APP" "$STAGE$INSTALL_DIR/kasseneck-connect"
-  codesign --verify --strict "$STAGE$INSTALL_DIR/kasseneck-connect"
-  # Startprobe aus der Nutzlast heraus: ins Paket darf nur eine Binary, die
-  # auch wirklich startet (Hardened Runtime ohne Berechtigungen = SIGKILL).
-  "$STAGE$INSTALL_DIR/kasseneck-connect" version >/dev/null
-  echo "Nutzlast signiert: $SIGN_APP"
-elif codesign --verify --strict "$STAGE$INSTALL_DIR/kasseneck-connect" 2>/dev/null; then
+if signed_with_developer_id "$STAGED_APP"; then
   echo "Nutzlast ist bereits signiert."
+elif [ -n "$SIGN_APP" ]; then
+  sign_app_bundle "$STAGED_APP" "$SIGN_APP"
+  echo "Nutzlast signiert: $SIGN_APP"
 else
-  echo "Warnung: keine Developer-ID-Application-Identität — die Binary im Paket bleibt unsigniert." >&2
+  echo "Warnung: keine Developer-ID-Application-Identität — das App-Paket im .pkg bleibt unsigniert." >&2
 fi
+# Startprobe aus der Nutzlast heraus, über den Symlink: ins Paket darf nur
+# eine Binary, die auch wirklich startet (Hardened Runtime ohne
+# Berechtigungen = SIGKILL).
+"$STAGE$INSTALL_DIR/kasseneck-connect" version >/dev/null
 
 # 2. Postinstall: Symlink in den PATH, dann als **angemeldeter Benutzer**
 #    Autostart und Vertrauen in die lokale Zertifizierungsstelle (HTTPS).
@@ -80,11 +90,14 @@ cat > "$SCRIPTS/postinstall" <<'POSTINSTALL'
 #!/bin/bash
 set -u
 
-BINARY="/usr/local/kasseneck-connect/kasseneck-connect"
+# Die Binary im App-Paket. Von hier startet sie der LaunchAgent: macOS ordnet
+# die Bluetooth-Freigabe dem Paket zu, und das Hilfsprogramm liegt daneben.
+BINARY="/usr/local/kasseneck-connect/Kasseneck Connect.app/Contents/MacOS/kasseneck-connect"
 
-# Damit `kasseneck-connect doctor` und `… pair` ohne vollen Pfad laufen.
+# Damit `kasseneck-connect doctor` und `… pair` ohne vollen Pfad laufen. `-h`
+# ersetzt einen vorhandenen Symlink, statt ihm zu folgen.
 /bin/mkdir -p /usr/local/bin
-/bin/ln -sf "$BINARY" /usr/local/bin/kasseneck-connect
+/bin/ln -sfh "$BINARY" /usr/local/bin/kasseneck-connect
 
 CONSOLE_USER="$(/usr/bin/stat -f%Su /dev/console)"
 
@@ -112,9 +125,12 @@ if [ -z "$CONSOLE_HOME" ] || [ ! -d "$CONSOLE_HOME" ]; then
   exit 0
 fi
 
-# `install-autostart` schreibt den LaunchAgent und lädt ihn; `RunAtLoad`
-# startet den Agenten dabei gleich mit. Ein Fehlschlag darf die Installation
-# nicht abbrechen — die Binary liegt dann trotzdem richtig.
+# `install-autostart` schreibt den LaunchAgent auf die Binary im Paket und
+# lädt ihn; `RunAtLoad` startet den Agenten dabei gleich mit. Beim Update von
+# 1.2.x ersetzt das den alten Eintrag und beendet den alten Agenten.
+# Konfiguration, Kopplungen und Drucker liegen im Benutzerverzeichnis und
+# bleiben. Ein Fehlschlag darf die Installation nicht abbrechen — die Binary
+# liegt dann trotzdem richtig.
 if /bin/launchctl asuser "$CONSOLE_UID" /usr/bin/sudo -H -u "$CONSOLE_USER" \
      /usr/bin/env HOME="$CONSOLE_HOME" "$BINARY" install-autostart; then
   echo "Kasseneck Connect: Autostart für $CONSOLE_USER eingerichtet."
@@ -151,9 +167,30 @@ mkdir -p build
 
 # 3. Paket bauen — erst in eine Zwischendatei, damit unter dem
 #    Auslieferungsnamen nie ein unsigniertes Paket steht.
+#
+#    pkgbuild hält App-Pakete von sich aus für verschiebbar: der Installer
+#    sucht dann nach einem Paket mit derselben Kennung (etwa einer Kopie in
+#    einem Bauordner) und installiert DORTHIN statt nach /usr/local. Und mit
+#    Versionsprüfung ließe er ein vorhandenes neueres Paket stehen, während
+#    postinstall trotzdem läuft. Beides wird für jedes Paket der Nutzlast
+#    abgeschaltet: das .pkg legt immer genau seinen Stand an seinen Ort.
+COMPONENTS="$WORK/components.plist"
+pkgbuild --analyze --root "$STAGE" "$COMPONENTS"
+i=0
+while plutil -extract "$i" xml1 -o /dev/null "$COMPONENTS" 2>/dev/null; do
+  plutil -replace "$i.BundleIsRelocatable" -bool NO "$COMPONENTS"
+  plutil -replace "$i.BundleIsVersionChecked" -bool NO "$COMPONENTS"
+  i=$((i + 1))
+done
+if [ "$i" -eq 0 ]; then
+  echo "pkgbuild --analyze fand kein App-Paket in der Nutzlast." >&2
+  exit 1
+fi
+
 UNSIGNED="$WORK/unsigned.pkg"
 pkgbuild \
   --root "$STAGE" \
+  --component-plist "$COMPONENTS" \
   --scripts "$SCRIPTS" \
   --identifier "$IDENTIFIER" \
   --version "$VERSION" \

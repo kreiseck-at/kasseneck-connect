@@ -13,14 +13,19 @@
 # fragt dabei nach Kennwort oder Touch ID. Fremde Zertifikate bleiben
 # unberührt.
 #
+# Ab 1.3 liegt die Binary im App-Paket `Kasseneck Connect.app` im
+# Installationsordner; das Paket geht mit dem Ordner, und die
+# Bluetooth-Freigabe des Pakets nimmt das Skript zurück.
+#
 # Die Konfiguration (~/Library/Application Support/KasseneckConnect) bleibt
 # absichtlich liegen: dort stehen die gekoppelten Kassen, die Drucker und die
 # Zertifikate (`tls/`). Mit `--purge` fliegt auch sie weg.
 set -u
 
 INSTALL_DIR="/usr/local/kasseneck-connect"
-BINARY="$INSTALL_DIR/kasseneck-connect"
+BINARY="$INSTALL_DIR/Kasseneck Connect.app/Contents/MacOS/kasseneck-connect"
 LABEL="at.kasseneck.connect"
+BUNDLE_ID="at.kasseneck.connect"
 CA_NAME="Kasseneck Connect (lokal)"
 PURGE=0
 
@@ -146,10 +151,16 @@ if [ -n "$CONSOLE_USER" ] && [ "$CONSOLE_USER" != "root" ]; then
         "$KEYCHAIN" >/dev/null 2>&1 || true
     fi
     echo "Vertrauen in die lokale Zertifizierungsstelle entfernt (soweit eingetragen)."
+
+    # 1b. Die Bluetooth-Freigabe hängt an der Kennung des App-Pakets und
+    #     bliebe sonst in den Systemeinstellungen stehen. Ohne Frage.
+    as_console_user /usr/bin/tccutil reset BluetoothAlways "$BUNDLE_ID" \
+      >/dev/null 2>&1 || true
+    echo "Bluetooth-Freigabe zurückgesetzt."
   fi
 fi
 
-# 2. Dateien und Symlink.
+# 2. Dateien und Symlink; der Ordner enthält auch das App-Paket.
 /bin/rm -f /usr/local/bin/kasseneck-connect
 /bin/rm -rf "$INSTALL_DIR"
 echo "Programmdateien entfernt."

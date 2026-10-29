@@ -19,6 +19,10 @@ typedef RouteRegistrar = void Function(Router router, AgentContext context);
 /// Liefert die Druckerliste für `GET /v1/status` (Etappe A3).
 typedef PrinterSummaries = FutureOr<List<Map<String, Object?>>> Function();
 
+/// Liefert den Zertifikatsstand des HTTPS-Zugangs für die Langform des
+/// Status (`tls`), `null` ohne Zertifikat.
+typedef TlsSummary = Future<Map<String, Object?>?> Function();
+
 /// Gemeinsamer Zustand aller Endpunkte.
 ///
 /// Die Konfiguration wird bewusst **je Anfrage frisch gelesen** statt im
@@ -57,6 +61,14 @@ class AgentContext {
   /// Port, auf dem der Server tatsächlich lauscht; [Agent] setzt ihn nach dem
   /// Binden, weil erst dann feststeht, welcher Port frei war.
   int port;
+
+  /// Port des HTTPS-Zugangs, `null`, solange er nicht lauscht (außerhalb von
+  /// macOS immer). [Agent] setzt ihn nach jedem Binden und nimmt ihn weg,
+  /// sobald der Zugang schließt — daran hängt `features: https`.
+  int? httpsPort;
+
+  /// Zertifikatsstand für die Langform des Status; `null` ohne HTTPS.
+  TlsSummary? tls;
 
   /// Kopplung: Code erzeugen, prüfen, Token ausgeben und widerrufen.
   late final Pairing pairing;

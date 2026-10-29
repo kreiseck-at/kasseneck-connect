@@ -129,6 +129,39 @@ void main() {
     });
   });
 
+  group('HTTPS-Port', () {
+    test('Standard 27190, getrennt vom HTTP-Port', () {
+      expect(defaultHttpsPort, 27190);
+      expect(AgentConfig().httpsPort, 27190);
+      expect(AgentConfig.fromJson(<String, Object?>{}).httpsPort, 27190);
+    });
+
+    test('Roundtrip und copyWith', () {
+      final config = AgentConfig(httpsPort: 27192);
+      final copy = AgentConfig.fromJson(
+        readMap(jsonDecode(jsonEncode(config.toJson())))!,
+      );
+      expect(copy.httpsPort, 27192);
+      expect(copy.port, defaultAgentPort);
+      expect(config.copyWith(port: 27183).httpsPort, 27192);
+      expect(config.copyWith(httpsPort: 27191).httpsPort, 27191);
+    });
+
+    test('tolerant wie port: Unsinn ergibt den Standard', () {
+      expect(
+        AgentConfig.fromJson(<String, Object?>{'httpsPort': '27193'}).httpsPort,
+        27193,
+      );
+      for (final value in <Object?>[0, -1, 70000, 'abc', null, true]) {
+        expect(
+          AgentConfig.fromJson(<String, Object?>{'httpsPort': value}).httpsPort,
+          defaultHttpsPort,
+          reason: '$value',
+        );
+      }
+    });
+  });
+
   group('allowDevOrigins', () {
     test('ist standardmäßig aus und überlebt den Roundtrip', () {
       expect(AgentConfig().allowDevOrigins, isFalse);

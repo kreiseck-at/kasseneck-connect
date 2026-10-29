@@ -6,6 +6,12 @@ import 'package:kasseneck_connect/kasseneck_connect.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
+import 'support/fake_process_runner.dart';
+
+const String _openssl = '/usr/bin/openssl';
+const String _security = '/usr/bin/security';
+const String _kasse = 'https://kasse.kasseneck.at';
+
 void main() {
   late Directory temp;
   late ConfigStore store;
@@ -236,4 +242,463 @@ void main() {
     expect(log.file.readAsStringSync(), contains('Agent angehalten.'));
     await expectLater(get(port, '/v1/status'), throwsA(isA<SocketException>()));
   });
+  group('HTTPS', () {
+    // Echte Zertifikate brauchen echtes openssl; ohne wird übersprungen.
+    final ohneOpenssl = File(_openssl).existsSync() ? null : 'kein $_openssl';
+
+    late FakeProcessRunner runner;
+
+    setUp(() {
+      // openssl und chmod laufen echt (Zertifikate im Temp-Ordner),
+      // `security` bleibt Attrappe: kein Test fragt den echten Schlüsselbund.
+      runner = FakeProcessRunner()
+        ..echt.addAll(<String>{_openssl, 'chmod'})
+        ..exitCodes['verify-cert'] = 1;
+    });
+
+    String tlsDatei(String name) => p.join(temp.path, 'tls', name);
+
+    List<int> serverZertifikat() =>
+        _der(File(tlsDatei('server-cert.pem')).readAsStringSync());
+
+    Agent httpsAgent({
+      FakeProcessRunner? mit,
+      LocalCertificates? certificates,
+      int preferredHttpsPort = 0,
+      Duration tlsCheckInterval = const Duration(days: 1),
+    }) => Agent(
+      store: store,
+      log: log,
+      preferredPort: 0,
+      openBrowser: false,
+      https: true,
+      preferredHttpsPort: preferredHttpsPort,
+      runProcess: (mit ?? runner).runner,
+      certificates: certificates,
+      tlsCheckInterval: tlsCheckInterval,
+    );
+
+    Future<_Antwort> https(
+      int port,
+      String path, {
+      String method = 'GET',
+      String? origin,
+      String? token,
+    }) async {
+      final client = _httpsClient(Directory(p.join(temp.path, 'tls')));
+      try {
+        final request = await client.openUrl(
+          method,
+          Uri.parse('https://127.0.0.1:$port$path'),
+        );
+        if (origin != null) request.headers.set('origin', origin);
+        if (token != null) {
+          request.headers.set('authorization', 'Bearer $token');
+        }
+        final response = await request.close();
+        final text = await response.transform(utf8.decoder).join();
+        return _Antwort(
+          response.statusCode,
+          response.headers,
+          text.isEmpty
+              ? const <String, Object?>{}
+              : jsonDecode(text) as Map<String, Object?>,
+          response.certificate!.der.toList(),
+        );
+      } finally {
+        client.close(force: true);
+      }
+    }
+
+    /// Koppelt über HTTP und liefert den Token.
+    Future<String> koppeln(Agent agent) async {
+      final code = await agent.context.pairing.newCode();
+      final client = HttpClient();
+      try {
+        final request = await client.postUrl(
+          Uri.parse('http://127.0.0.1:${agent.port}/v1/pair'),
+        );
+        request.headers
+          ..set('origin', _kasse)
+          ..contentType = ContentType.json;
+        request.write(jsonEncode(<String, Object?>{'code': code}));
+        final response = await request.close();
+        final json =
+            jsonDecode(await response.transform(utf8.decoder).join()) as Map;
+        return json['token'] as String;
+      } finally {
+        client.close(force: true);
+      }
+    }
+
+    Iterable<String> securityAufrufe(FakeProcessRunner r) => r.calls
+        .where((c) => c.executable == _security)
+        .map((c) => c.arguments.first);
+
+    test('Agent lauscht über HTTPS und HTTP mit demselben Token', () async {
+      final agent = httpsAgent();
+      await agent.start();
+      addTearDown(agent.stop);
+
+      expect(agent.httpsPort, isNotNull);
+      expect(agent.httpsPort, isNot(agent.port));
+      final token = await koppeln(agent);
+
+      final ueberHttps = await https(
+        agent.httpsPort!,
+        '/v1/status',
+        origin: _kasse,
+        token: token,
+      );
+      expect(ueberHttps.status, 200);
+      expect(ueberHttps.zertifikat, serverZertifikat());
+      expect(ueberHttps.json['port'], agent.port);
+      expect(ueberHttps.json['httpsPort'], agent.httpsPort);
+      expect(ueberHttps.json['features'], contains('https'));
+      // Langform: der über HTTP ausgegebene Token gilt auch hier.
+      expect(ueberHttps.json.containsKey('printers'), isTrue);
+      final tls = ueberHttps.json['tls']! as Map<String, Object?>;
+      expect(tls['trusted'], isFalse);
+      expect(
+        DateTime.parse(
+          tls['notAfter']! as String,
+        ).isAfter(DateTime.now().add(const Duration(days: 390))),
+        isTrue,
+      );
+
+      final ueberHttp =
+          jsonDecode(await get(agent.port, '/v1/status', token: token))
+              as Map<String, Object?>;
+      expect(ueberHttp['httpsPort'], agent.httpsPort);
+      expect(ueberHttp['features'], contains('https'));
+      expect(ueberHttp.containsKey('printers'), isTrue);
+
+      // Der Port landet in der Konfiguration, wie der HTTP-Port.
+      expect((await store.load()).httpsPort, agent.httpsPort);
+
+      // Vertrauen fragt der Agent nur ab und warnt im Log; eintragen tut er
+      // es nie selbst — kein Dialog aus dem Hintergrund bei der Anmeldung.
+      expect(securityAufrufe(runner), contains('verify-cert'));
+      expect(securityAufrufe(runner), everyElement('verify-cert'));
+      expect(log.file.readAsStringSync(), contains('zertifikat-vertrauen'));
+    }, skip: ohneOpenssl);
+
+    test('Herkunft und Token gelten auch über HTTPS', () async {
+      final agent = httpsAgent();
+      await agent.start();
+      addTearDown(agent.stop);
+      final token = await koppeln(agent);
+      final port = agent.httpsPort!;
+
+      final fremd = await https(
+        port,
+        '/v1/status',
+        origin: 'https://boese.example.com',
+      );
+      expect(fremd.status, 403);
+      expect((fremd.json['error']! as Map)['code'], errorOriginForbidden);
+
+      final ohneToken = await https(
+        port,
+        '/v1/printers?probe=0',
+        origin: _kasse,
+      );
+      expect(ohneToken.status, 401);
+      expect((ohneToken.json['error']! as Map)['code'], errorUnauthorized);
+
+      final falsch = await https(
+        port,
+        '/v1/printers?probe=0',
+        origin: _kasse,
+        token: 'falsch',
+      );
+      expect(falsch.status, 401);
+
+      final richtig = await https(
+        port,
+        '/v1/printers?probe=0',
+        origin: _kasse,
+        token: token,
+      );
+      expect(richtig.status, 200);
+      expect(richtig.json['ok'], isTrue);
+
+      final preflight = await https(
+        port,
+        '/v1/print',
+        method: 'OPTIONS',
+        origin: _kasse,
+      );
+      expect(preflight.status, 204);
+      expect(
+        preflight.headers.value('access-control-allow-private-network'),
+        'true',
+      );
+      expect(preflight.headers.value('access-control-allow-origin'), _kasse);
+    }, skip: ohneOpenssl);
+
+    test(
+      'HTTPS scheitert (kein openssl): HTTP läuft, features ohne https',
+      () async {
+        final ohne = FakeProcessRunner()..missing.add(_openssl);
+        final agent = httpsAgent(mit: ohne);
+        await agent.start();
+        addTearDown(agent.stop);
+
+        expect(agent.httpsPort, isNull);
+        const token = 'agent-token';
+        await store.mutate(
+          (c) => c.copyWith(tokenHashes: <String>[hashToken(token)]),
+        );
+        final kurz =
+            jsonDecode(await get(agent.port, '/v1/status'))
+                as Map<String, Object?>;
+        expect(kurz['ok'], isTrue);
+        expect(kurz.containsKey('httpsPort'), isTrue);
+        expect(kurz['httpsPort'], isNull);
+        expect(kurz['features'], isNot(contains('https')));
+        final lang =
+            jsonDecode(await get(agent.port, '/v1/status', token: token))
+                as Map<String, Object?>;
+        expect(lang['features'], isNot(contains('https')));
+        expect(lang.containsKey('tls'), isFalse);
+
+        expect(log.file.readAsStringSync(), contains('HTTPS'));
+        expect(securityAufrufe(ohne), isEmpty);
+        // Der gemerkte HTTPS-Port bleibt stehen.
+        expect((await store.load()).httpsPort, defaultHttpsPort);
+      },
+    );
+
+    test('belegter HTTPS-Port führt zum nächsten freien Port', () async {
+      final blocker = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      addTearDown(() => blocker.close(force: true));
+
+      final agent = httpsAgent(preferredHttpsPort: blocker.port);
+      await agent.start();
+      addTearDown(agent.stop);
+
+      expect(agent.httpsPort, greaterThan(blocker.port));
+      expect(
+        agent.httpsPort,
+        lessThanOrEqualTo(blocker.port + portFallbackRange - 1),
+      );
+      expect((await https(agent.httpsPort!, '/v1/status')).status, 200);
+    }, skip: ohneOpenssl);
+
+    test(
+      'erneuertes Serverzertifikat wird ohne Neustart des Agenten übernommen',
+      () async {
+        var uhr = DateTime.now();
+        final zertifikate = LocalCertificates(
+          directory: temp,
+          run: runner.runner,
+          log: log,
+          clock: () => uhr,
+        );
+        final agent = httpsAgent(certificates: zertifikate);
+        await agent.start();
+        addTearDown(agent.stop);
+
+        final httpPort = agent.port;
+        final httpsPort = agent.httpsPort!;
+        final stelle = File(tlsDatei('ca-cert.pem')).readAsStringSync();
+        final vorher = serverZertifikat();
+        expect((await https(httpsPort, '/v1/status')).zertifikat, vorher);
+
+        // 368 Tage später läuft das Serverzertifikat in weniger als 30
+        // Tagen ab — die tägliche Prüfung erneuert es.
+        uhr = uhr.add(const Duration(days: 368));
+        await agent.checkTls();
+
+        final nachher = serverZertifikat();
+        expect(nachher, isNot(vorher));
+        expect(
+          File(tlsDatei('ca-cert.pem')).readAsStringSync(),
+          stelle,
+          reason: 'nur das Serverzertifikat ist neu',
+        );
+        expect((await https(httpsPort, '/v1/status')).zertifikat, nachher);
+
+        // Gleicher HTTPS-Port, HTTP unberührt, kein Neustart.
+        expect(agent.httpsPort, httpsPort);
+        expect(agent.port, httpPort);
+        final status =
+            jsonDecode(await get(httpPort, '/v1/status'))
+                as Map<String, Object?>;
+        expect(status['ok'], isTrue);
+        expect(status['httpsPort'], httpsPort);
+        expect(log.file.readAsStringSync(), contains('neu gebunden'));
+      },
+      skip: ohneOpenssl,
+    );
+
+    test('passen Zertifikat und Schlüssel nach einer Erneuerung nicht '
+        'zusammen, bleibt der alte Zugang stehen', () async {
+      final zertifikate = _UmlenkbareZertifikate(
+        directory: temp,
+        run: runner.runner,
+        log: log,
+      );
+      final agent = httpsAgent(certificates: zertifikate);
+      await agent.start();
+      addTearDown(agent.stop);
+      final port = agent.httpsPort!;
+      final vorher = serverZertifikat();
+
+      // Ein zweiter Satz in einem anderen Ordner: sein Zertifikat passt nicht
+      // zum Schlüssel des ersten.
+      final anders = Directory.systemTemp.createTempSync('connect-agent-');
+      addTearDown(() => anders.deleteSync(recursive: true));
+      final fremd = await LocalCertificates(
+        directory: anders,
+        run: runner.runner,
+        log: log,
+      ).ensure();
+      zertifikate.umlenken = TlsFiles(
+        caCertPath: fremd.caCertPath,
+        serverCertPath: fremd.serverCertPath,
+        serverKeyPath: tlsDatei('server-key.pem'),
+        serverNotAfter: fremd.serverNotAfter,
+        caCreated: false,
+      );
+
+      await agent.checkTls();
+
+      expect(agent.httpsPort, port);
+      expect((await https(port, '/v1/status')).zertifikat, vorher);
+      expect(
+        log.file.readAsStringSync(),
+        contains('Prüfung der Zertifikate gescheitert'),
+      );
+    }, skip: ohneOpenssl);
+
+    test('die tägliche Prüfung läuft über den Zeitgeber', () async {
+      final agent = httpsAgent(
+        tlsCheckInterval: const Duration(milliseconds: 200),
+      );
+      await agent.start();
+      addTearDown(agent.stop);
+      final port = agent.httpsPort!;
+      final vorher = serverZertifikat();
+
+      // Fehlt das Serverzertifikat, stellt die nächste Prüfung es neu aus und
+      // bindet den Zugang neu — von selbst, ohne Aufruf von außen.
+      File(tlsDatei('server-cert.pem')).deleteSync();
+
+      final ende = DateTime.now().add(const Duration(seconds: 20));
+      List<int>? vorgelegt;
+      while (DateTime.now().isBefore(ende)) {
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+        final datei = File(tlsDatei('server-cert.pem'));
+        if (!datei.existsSync()) continue;
+        try {
+          vorgelegt = (await https(port, '/v1/status')).zertifikat;
+        } on IOException {
+          continue; // gerade beim Neubinden
+        }
+        if (!_gleich(vorgelegt, vorher)) break;
+      }
+      expect(vorgelegt, isNotNull);
+      expect(vorgelegt, isNot(vorher));
+      expect(vorgelegt, serverZertifikat());
+    }, skip: ohneOpenssl);
+
+    test('stop schließt auch den HTTPS-Zugang', () async {
+      final agent = httpsAgent();
+      await agent.start();
+      final port = agent.httpsPort!;
+      await agent.stop();
+
+      expect(agent.httpsPort, isNull);
+      await expectLater(
+        https(port, '/v1/status'),
+        throwsA(isA<SocketException>()),
+      );
+    }, skip: ohneOpenssl);
+
+    test(
+      'ohne https: kein zweiter Zugang, kein openssl, kein security',
+      () async {
+        final agent = Agent(
+          store: store,
+          log: log,
+          preferredPort: 0,
+          openBrowser: false,
+          runProcess: runner.runner,
+        );
+        await agent.start();
+        addTearDown(agent.stop);
+
+        expect(agent.httpsPort, isNull);
+        expect(runner.calls, isEmpty);
+        expect(Directory(p.join(temp.path, 'tls')).existsSync(), isFalse);
+      },
+    );
+  });
+}
+
+/// Zertifikate, deren nächstes [ensure] auf einen anderen Satz zeigen kann —
+/// so lässt sich ein Stand nachstellen, den [LocalCertificates] selbst nie
+/// hinterlässt.
+class _UmlenkbareZertifikate extends LocalCertificates {
+  _UmlenkbareZertifikate({
+    required super.directory,
+    required super.run,
+    required super.log,
+  });
+
+  TlsFiles? umlenken;
+
+  @override
+  Future<TlsFiles> ensure() async => umlenken ?? await super.ensure();
+}
+
+class _Antwort {
+  _Antwort(this.status, this.headers, this.json, this.zertifikat);
+
+  final int status;
+  final HttpHeaders headers;
+  final Map<String, Object?> json;
+
+  /// Das vom Server vorgelegte Zertifikat (DER).
+  final List<int> zertifikat;
+}
+
+/// HTTPS-Client, der genau der Test-Stelle bzw. dem Serverzertifikat im
+/// Ordner [tls] traut — der Schlüsselbund des Rechners bleibt unberührt.
+///
+/// Unter macOS prüft Dart mit der Vertrauensprüfung des Systems (wie Safari),
+/// hier mit der Test-Stelle als einzigem Anker. Unter Linux lehnt BoringSSL
+/// jede Kette dieser Stelle ab („unsupported name constraint type“, wegen der
+/// IP-Namensbeschränkung); dort nimmt der Client nur das Zertifikat an, das
+/// Byte für Byte in `server-cert.pem` steht.
+HttpClient _httpsClient(Directory tls) {
+  if (Platform.isMacOS) {
+    return HttpClient(
+      context: SecurityContext(withTrustedRoots: false)
+        ..setTrustedCertificates(p.join(tls.path, 'ca-cert.pem')),
+    );
+  }
+  final erwartet = _der(
+    File(p.join(tls.path, 'server-cert.pem')).readAsStringSync(),
+  );
+  return HttpClient(context: SecurityContext(withTrustedRoots: false))
+    ..badCertificateCallback = (zertifikat, host, port) =>
+        host == '127.0.0.1' && _gleich(zertifikat.der, erwartet);
+}
+
+List<int> _der(String pem) => base64.decode(
+  pem
+      .replaceAll('-----BEGIN CERTIFICATE-----', '')
+      .replaceAll('-----END CERTIFICATE-----', '')
+      .replaceAll(RegExp(r'\s'), ''),
+);
+
+bool _gleich(List<int>? a, List<int> b) {
+  if (a == null || a.length != b.length) return false;
+  for (var i = 0; i < a.length; i++) {
+    if (a[i] != b[i]) return false;
+  }
+  return true;
 }

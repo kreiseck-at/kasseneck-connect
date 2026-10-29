@@ -81,11 +81,13 @@ freigeschaltet werden müsste.
 es `tool/pkg/macos/uninstall.sh` (liegt auch im Repo):
 
 ```bash
-sudo bash uninstall.sh            # Autostart, Binary, Symlink, Paketvermerk
-sudo bash uninstall.sh --purge    # zusätzlich Konfiguration und Log
+sudo bash uninstall.sh            # Autostart, Vertrauen (HTTPS), Binary, Symlink, Paketvermerk
+sudo bash uninstall.sh --purge    # zusätzlich Konfiguration, Zertifikate und Log
 ```
 
-Ohne `--purge` bleiben die gekoppelten Kassen und die Drucker erhalten. Von
+Ohne `--purge` bleiben die gekoppelten Kassen, die Drucker und die Zertifikate
+erhalten; das Vertrauen in die lokale Zertifizierungsstelle entfernt das Skript
+immer (macOS fragt dabei nach Kennwort oder Touch ID). Von
 Hand geht es genauso: `kasseneck-connect uninstall-autostart`, dann
 `/usr/local/kasseneck-connect` und `/usr/local/bin/kasseneck-connect` löschen
 und `sudo pkgutil --forget at.kasseneck.connect`.
@@ -163,7 +165,8 @@ kasseneck-connect <befehl>
 | `pair` | Kopplungscode für die Kasse anzeigen |
 | `install-autostart` | Autostart einrichten und Agenten starten |
 | `uninstall-autostart` | Autostart entfernen und Agenten anhalten |
-| `doctor` | Diagnose ausgeben (Version, Pfade, Ports, Drucker, Fehler) |
+| `zertifikat-vertrauen` | der lokalen Zertifizierungsstelle für HTTPS vertrauen (nur Mac; macOS fragt einmal nach Kennwort oder Touch ID) |
+| `doctor` | Diagnose ausgeben (Version, Pfade, Ports, HTTPS, Drucker, Fehler) |
 | `version` | Version ausgeben |
 
 `run` läuft, bis SIGINT/SIGTERM kommt. Ist noch kein Gerät gekoppelt, erzeugt der
@@ -212,6 +215,15 @@ heraus — Handarbeit in der Datei ist nicht nötig.
 Basis: `http://127.0.0.1:27182` (bei belegtem Port bis 27189 hinauf; die Kasse
 probiert die Reihe durch und erkennt den Agenten an `GET /v1/status`).
 
+Am Mac lauscht derselbe Agent zusätzlich über **HTTPS** auf
+`https://127.0.0.1:27190` (Ausweich bis 27197) — Safari lässt eine Seite unter
+`https://` nicht an `http://127.0.0.1`. Herkunft, Token und Pfade sind dieselben.
+Das Zertifikat stammt von einer eigenen Zertifizierungsstelle je Rechner
+(„Kasseneck Connect (lokal)“, nur gültig für `127.0.0.1` und `localhost`), der
+der Installer einmal vertraut; das Serverzertifikat erneuert der Agent selbst.
+`GET /v1/status` meldet `port` und `httpsPort`; `features` enthält `https`,
+solange der Zugang lauscht.
+
 Alle Pfade außer `GET /v1/status`, `POST /v1/pair` und `POST /v1/pair/request`
 brauchen den Kopplungstoken (`Authorization: Bearer …`) **und** eine erlaubte
 Herkunft.
@@ -222,7 +234,7 @@ WebSocket-Upgrade).
 
 | Methode | Pfad | Zweck |
 |---|---|---|
-| GET | `/v1/status` | Lebenszeichen; ohne Token Kurzform, mit Token zusätzlich Drucker und letzte Fehler |
+| GET | `/v1/status` | Lebenszeichen; ohne Token Kurzform, mit Token zusätzlich Drucker, letzte Fehler und (HTTPS) `tls: {notAfter, trusted}` |
 | POST | `/v1/pair` | `{code}` → `{token}` |
 | POST | `/v1/pair/request` | Kopplung anstoßen: neuer Code, Kopplungsseite geht lokal im Browser auf → `{ok}` (nie der Code) |
 | DELETE | `/v1/pair` | den mitgeschickten Token zurückziehen |
@@ -325,7 +337,8 @@ kasseneck-connect doctor
 ```
 
 Die Diagnose nennt Version, Programmpfad, Konfigurations- und Logpfad, ob
-gekoppelt ist, auf welchem der Ports 27182–27189 ein Agent antwortet, die
+gekoppelt ist, auf welchem der Ports 27182–27189 ein Agent antwortet, am Mac
+den HTTPS-Zugang (Port, Ablauf des Zertifikats, ob ihm vertraut wird), die
 eingetragenen Drucker mit ihrem aktuellen Zustand, den Autostart-Zustand und die
 letzten Fehlerzeilen aus dem Log.
 
@@ -334,6 +347,7 @@ letzten Fehlerzeilen aus dem Log.
 | „Kein Agent erreichbar" | Läuft er? `kasseneck-connect run` im Terminal starten und die Ausgabe lesen |
 | Kasse findet den Agenten nicht | `doctor` zeigt den tatsächlichen Port; Firewall auf der Loopback-Adresse prüfen |
 | Kasse meldet „nicht gekoppelt" | `kasseneck-connect pair` und den Code neu eingeben |
+| Safari findet Connect nicht (Chrome schon) | `doctor` → HTTPS-Zeile; bei „vertraut nein“ `kasseneck-connect zertifikat-vertrauen` |
 | Drucker `offline` | IP und Port prüfen (`doctor`), Gerät anpingen, `POST /v1/printers/discover` |
 | Bon kam nicht | Log ansehen: `logs/connect.log`; bei `timeout` mit `mayHavePrinted` erst am Gerät nachsehen |
 | Agent startet nach dem Neustart nicht | `doctor` → Autostart-Zeile; notfalls `install-autostart` erneut |

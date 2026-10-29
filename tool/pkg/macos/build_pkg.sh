@@ -74,8 +74,8 @@ else
   echo "Warnung: keine Developer-ID-Application-Identität — die Binary im Paket bleibt unsigniert." >&2
 fi
 
-# 2. Postinstall: Symlink in den PATH und Autostart als **angemeldeter
-#    Benutzer**.
+# 2. Postinstall: Symlink in den PATH, dann als **angemeldeter Benutzer**
+#    Autostart und Vertrauen in die lokale Zertifizierungsstelle (HTTPS).
 cat > "$SCRIPTS/postinstall" <<'POSTINSTALL'
 #!/bin/bash
 set -u
@@ -90,8 +90,9 @@ CONSOLE_USER="$(/usr/bin/stat -f%Su /dev/console)"
 
 if [ -z "$CONSOLE_USER" ] || [ "$CONSOLE_USER" = "root" ]; then
   echo "Kasseneck Connect: kein angemeldeter Benutzer an der Konsole."
-  echo "Kasseneck Connect: Autostart bitte selbst einrichten:"
+  echo "Kasseneck Connect: Autostart und HTTPS-Zertifikat bitte selbst einrichten:"
   echo "  kasseneck-connect install-autostart"
+  echo "  kasseneck-connect zertifikat-vertrauen"
   exit 0
 fi
 
@@ -105,8 +106,9 @@ CONSOLE_HOME="$(/usr/bin/dscl . -read "/Users/$CONSOLE_USER" NFSHomeDirectory \
 
 if [ -z "$CONSOLE_HOME" ] || [ ! -d "$CONSOLE_HOME" ]; then
   echo "Kasseneck Connect: Benutzerverzeichnis von $CONSOLE_USER nicht gefunden."
-  echo "Kasseneck Connect: Autostart bitte selbst einrichten:"
+  echo "Kasseneck Connect: Autostart und HTTPS-Zertifikat bitte selbst einrichten:"
   echo "  kasseneck-connect install-autostart"
+  echo "  kasseneck-connect zertifikat-vertrauen"
   exit 0
 fi
 
@@ -120,6 +122,24 @@ else
   echo "Kasseneck Connect: Autostart ließ sich nicht einrichten."
   echo "Kasseneck Connect: bitte als $CONSOLE_USER von Hand nachholen:"
   echo "  kasseneck-connect install-autostart"
+fi
+
+# Safari lässt https://kasse.kasseneck.at nur über HTTPS an 127.0.0.1. Dafür
+# muss der lokalen Zertifizierungsstelle einmal vertraut werden; macOS fragt
+# den angemeldeten Benutzer dabei nach Kennwort oder Touch ID (Absender
+# „security“). Ist sie schon vertraut (Update), fragt es nicht noch einmal.
+# Fehlen die Zertifikate noch, legt der Befehl sie an — gleichzeitig mit dem
+# eben gestarteten Agenten, die Sperrdatei ordnet das. Ohne Antwort gibt er
+# nach drei Minuten auf. Ein Fehlschlag bricht die Installation nicht ab:
+# HTTP läuft trotzdem, und das Vertrauen lässt sich nachholen.
+if /bin/launchctl asuser "$CONSOLE_UID" /usr/bin/sudo -H -u "$CONSOLE_USER" \
+     /usr/bin/env HOME="$CONSOLE_HOME" "$BINARY" zertifikat-vertrauen; then
+  echo "Kasseneck Connect: Zertifikat für HTTPS ist vertraut."
+else
+  echo "Kasseneck Connect: dem Zertifikat für HTTPS wird noch nicht vertraut."
+  echo "Kasseneck Connect: bitte als $CONSOLE_USER im Terminal nachholen"
+  echo "Kasseneck Connect: (macOS fragt dann nach dem Kennwort oder Touch ID):"
+  echo "  kasseneck-connect zertifikat-vertrauen"
 fi
 
 exit 0

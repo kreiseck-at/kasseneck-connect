@@ -161,6 +161,18 @@ class LocalCertificates {
   bool renewalDue(DateTime notAfter) =>
       notAfter.isBefore(_clock().add(renewalWindow));
 
+  /// Ablauf des vorhandenen Serverzertifikats, ohne zu sperren, zu prüfen
+  /// oder etwas anzulegen — für die Diagnose, die nur nachsieht. `null`, wenn
+  /// es fehlt oder sich nicht lesen lässt (auch ohne `openssl`).
+  Future<DateTime?> readServerNotAfter() async {
+    if (!serverCertFile.existsSync()) return null;
+    try {
+      return (await _readCertificate(serverCertFile))?.notAfter;
+    } on TlsCertificateException {
+      return null;
+    }
+  }
+
   /// Sorgt für gültige Zertifikate und liefert ihre Pfade.
   ///
   /// Fehlt die Zertifizierungsstelle, ist sie unlesbar, passt ihr Schlüssel

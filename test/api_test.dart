@@ -390,6 +390,59 @@ void main() {
         'unsupported',
       );
     });
+    test('status meldet httpsPort und features https', () async {
+      final token = await pair();
+
+      // Ohne HTTPS-Zugang: httpsPort steht da, aber leer; keine Fähigkeit.
+      final ohne = await send('GET', '/v1/status', origin: kasse);
+      expect(ohne.json.containsKey('httpsPort'), isTrue);
+      expect(ohne.json['httpsPort'], isNull);
+      expect(ohne.json['features'], isNot(contains('https')));
+      final ohneLang = await send(
+        'GET',
+        '/v1/status',
+        origin: kasse,
+        token: token,
+      );
+      expect(ohneLang.json['httpsPort'], isNull);
+      expect(ohneLang.json.containsKey('tls'), isFalse);
+
+      // Der Agent setzt beides, sobald der HTTPS-Zugang lauscht.
+      var abfragen = 0;
+      ctx
+        ..httpsPort = 27190
+        ..tls = () async {
+          abfragen++;
+          return <String, Object?>{
+            'notAfter': '2027-11-30T12:00:00.000Z',
+            'trusted': false,
+          };
+        };
+
+      final kurz = await send('GET', '/v1/status', origin: kasse);
+      expect(kurz.json['port'], server.port);
+      expect(kurz.json['httpsPort'], 27190);
+      expect(kurz.json['features'], contains('https'));
+      // Der Zertifikatsstand gehört nur in die Langform.
+      expect(kurz.json.containsKey('tls'), isFalse);
+      expect(abfragen, 0);
+
+      final lang = await send('GET', '/v1/status', origin: kasse, token: token);
+      expect(lang.json['httpsPort'], 27190);
+      expect(lang.json['features'], contains('https'));
+      expect(lang.json['tls'], <String, Object?>{
+        'notAfter': '2027-11-30T12:00:00.000Z',
+        'trusted': false,
+      });
+      expect(abfragen, 1);
+
+      // Hört der Zugang auf (z. B. beim Neubinden gescheitert), fällt die
+      // Fähigkeit sofort weg.
+      ctx.httpsPort = null;
+      final danach = await send('GET', '/v1/status', origin: kasse);
+      expect(danach.json['httpsPort'], isNull);
+      expect(danach.json['features'], isNot(contains('https')));
+    });
   });
 
   group('Bluetooth ohne Brücke', () {

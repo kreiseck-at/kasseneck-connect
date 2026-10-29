@@ -84,6 +84,8 @@ void main() {
     statusProbe: probe ?? noAgent,
     printerStates: printers ?? noPrinters,
     autostart: autostart ?? FakeAutostart(),
+    // Die Diagnose fragt am Mac den Schlüsselbund — im Test nie echt.
+    runProcess: FakeProcessRunner().runner,
   );
 
   group('Bericht sammeln', () {
@@ -465,6 +467,131 @@ void main() {
       );
 
       expect(runner.calls, isEmpty);
+    });
+  });
+  group('HTTPS', () {
+    late FakeProcessRunner runner;
+
+    setUp(() => runner = FakeProcessRunner()..exitCodes['verify-cert'] = 1);
+
+    /// Zertifikate im Datenordner; `openssl x509` (Attrappe) meldet den Ablauf.
+    void zertifikate() {
+      final tls = Directory(p.join(temp.path, 'tls'))..createSync();
+      File(p.join(tls.path, 'ca-cert.pem')).writeAsStringSync('stelle');
+      File(p.join(tls.path, 'server-cert.pem')).writeAsStringSync('server');
+      runner.stdoutOf['x509'] =
+          'notAfter=Nov 30 12:00:00 2027 GMT\n'
+          '-----BEGIN PUBLIC KEY-----\nMFkw\n-----END PUBLIC KEY-----\n';
+    }
+
+    StatusProbe agentMitHttps(int? httpsPort) =>
+        (int port) async => port == 27182
+        ? <String, Object?>{
+            'ok': true,
+            'version': agentVersion,
+            'port': port,
+            'httpsPort': httpsPort,
+            'paired': true,
+            'uptimeSeconds': 5,
+            'features': <String>[if (httpsPort != null) 'https'],
+          }
+        : null;
+
+    Future<String> bericht({String os = 'macos', StatusProbe? probe}) async =>
+        formatDoctorReport(
+          await collectDoctorReport(
+            paths: paths,
+            probe: probe ?? agentMitHttps(27190),
+            printerStates: noPrinters,
+            autostart: FakeAutostart(),
+            operatingSystem: os,
+            environment: const <String, String>{},
+            runProcess: runner.runner,
+          ),
+        );
+
+    test('Zeile mit Port, Ablauf und Vertrauen', () async {
+      zertifikate();
+      runner.exitCodes['verify-cert'] = 0;
+
+      final text = await bericht();
+
+      expect(
+        text,
+        contains(
+          'HTTPS: Port 27190, Zertifikat gültig bis 2027-11-30, vertraut ja',
+        ),
+      );
+      expect(text, isNot(contains('zertifikat-vertrauen')));
+      // Die Diagnose liest nur: Ablauf über openssl, Vertrauen über
+      // `security verify-cert` — nie eintragen, nie neu anlegen.
+      expect(
+        runner.calls.map((c) => c.arguments.first),
+        unorderedEquals(<String>['x509', 'verify-cert']),
+      );
+    });
+
+    test('nicht vertraut: „vertraut nein“ und der Weg dahin', () async {
+      zertifikate();
+
+      final text = await bericht();
+
+      expect(
+        text,
+        contains(
+          'HTTPS: Port 27190, Zertifikat gültig bis 2027-11-30, vertraut nein',
+        ),
+      );
+      expect(text, contains('kasseneck-connect zertifikat-vertrauen'));
+    });
+
+    test('Agent ohne HTTPS-Zugang: aus', () async {
+      zertifikate();
+      runner.exitCodes['verify-cert'] = 0;
+
+      expect(
+        await bericht(probe: agentMitHttps(null)),
+        contains('HTTPS: aus, Zertifikat gültig bis 2027-11-30, vertraut ja'),
+      );
+    });
+
+    test('ohne Zertifikat: nichts wird aufgerufen oder angelegt', () async {
+      final text = await bericht();
+
+      expect(
+        text,
+        contains('HTTPS: Port 27190, kein Zertifikat, vertraut nein'),
+      );
+      expect(runner.calls, isEmpty);
+      expect(Directory(p.join(temp.path, 'tls')).existsSync(), isFalse);
+    });
+
+    test('unlesbares Zertifikat wird so genannt', () async {
+      zertifikate();
+      runner.exitCodes['x509'] = 1;
+
+      expect(await bericht(), contains('Zertifikat unlesbar'));
+    });
+
+    test('außerhalb von macOS: Hinweis, kein Programmaufruf', () async {
+      zertifikate();
+
+      final text = await bericht(os: 'windows');
+
+      expect(text, contains('HTTPS: gibt es bisher nur am Mac'));
+      expect(runner.calls, isEmpty);
+    });
+
+    test('DoctorPort liest httpsPort aus der Kurzform', () async {
+      final report = await collectDoctorReport(
+        paths: paths,
+        probe: agentMitHttps(27191),
+        printerStates: noPrinters,
+        autostart: FakeAutostart(),
+        operatingSystem: 'macos',
+        runProcess: runner.runner,
+      );
+      expect(report.runningOn?.httpsPort, 27191);
     });
   });
 }

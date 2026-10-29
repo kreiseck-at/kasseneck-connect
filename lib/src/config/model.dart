@@ -13,6 +13,10 @@ const int currentSchemaVersion = 1;
 /// Standardport der lokalen API.
 const int defaultAgentPort = 27182;
 
+/// Standardport des HTTPS-Zugangs (Ausweich bis 27197). Eigene Portreihe,
+/// damit HTTP auf 27182 ff. für bestehende Kassen unverändert bleibt.
+const int defaultHttpsPort = 27190;
+
 /// Standard-Update-Kanal.
 const String defaultUpdateChannel = 'stable';
 
@@ -281,6 +285,7 @@ class AgentConfig {
   AgentConfig({
     this.schemaVersion = currentSchemaVersion,
     this.port = defaultAgentPort,
+    this.httpsPort = defaultHttpsPort,
     List<String>? tokenHashes,
     List<PrinterConfig>? printers,
     this.terminal,
@@ -300,6 +305,10 @@ class AgentConfig {
 
   /// Port der lokalen API (Standard 27182, Fallback 27183–27189).
   final int port;
+
+  /// Port des HTTPS-Zugangs (Standard 27190, Fallback 27191–27197); der
+  /// Agent merkt sich hier, wo er zuletzt lauschte.
+  final int httpsPort;
 
   /// SHA-256-Hashes der ausgegebenen Tokens — Klartext-Tokens werden nie gespeichert.
   final List<String> tokenHashes;
@@ -326,6 +335,7 @@ class AgentConfig {
   AgentConfig copyWith({
     int? schemaVersion,
     int? port,
+    int? httpsPort,
     List<String>? tokenHashes,
     List<PrinterConfig>? printers,
     TerminalConfig? terminal,
@@ -338,6 +348,7 @@ class AgentConfig {
     return AgentConfig(
       schemaVersion: schemaVersion ?? this.schemaVersion,
       port: port ?? this.port,
+      httpsPort: httpsPort ?? this.httpsPort,
       tokenHashes: tokenHashes ?? this.tokenHashes,
       printers: printers ?? this.printers,
       terminal: clearTerminal ? null : (terminal ?? this.terminal),
@@ -351,6 +362,7 @@ class AgentConfig {
   Map<String, Object?> toJson() => <String, Object?>{
     'schemaVersion': schemaVersion,
     'port': port,
+    'httpsPort': httpsPort,
     'tokenHashes': tokenHashes,
     'printers': printers.map((p) => p.toJson()).toList(),
     'terminal': terminal?.toJson(),
@@ -373,6 +385,7 @@ class AgentConfig {
       // der Datei gelesen wäre er ein Fehler und ergäbe bei jedem Start einen
       // anderen Port, den die Kasse nicht findet.
       port: _readPort(json['port']),
+      httpsPort: _readPort(json['httpsPort'], fallback: defaultHttpsPort),
       tokenHashes: readStringList(json['tokenHashes']),
       printers: readMapList(
         json['printers'],
@@ -389,14 +402,15 @@ class AgentConfig {
 
   @override
   String toString() =>
-      'AgentConfig(v$schemaVersion, port $port, ${tokenHashes.length} Token, '
+      'AgentConfig(v$schemaVersion, port $port, https $httpsPort, '
+      '${tokenHashes.length} Token, '
       '${printers.length} Drucker)';
 }
 
-/// Liest den Port aus der Datei; 0 oder Unsinn ergibt den Standardport.
-int _readPort(Object? value) {
+/// Liest einen Port aus der Datei; 0 oder Unsinn ergibt [fallback].
+int _readPort(Object? value, {int fallback = defaultAgentPort}) {
   final port = readInt(value);
-  if (port == null || port <= 0 || port > 65535) return defaultAgentPort;
+  if (port == null || port <= 0 || port > 65535) return fallback;
   return port;
 }
 

@@ -3,8 +3,8 @@
 /// Öffentliche Bausteine dieser Etappe: Kommandozeile, Konfiguration, Log,
 /// lokale API (CORS/PNA, Token, Status), Kopplung, Netzwerkdrucker (Treiber,
 /// Verwaltung, Warteschlange, Suche), Bluetooth-Brücke (Hilfsprogramm,
-/// Verbindungen, Belegung), Ereignisbus, lokale Zertifikate für HTTPS und der
-/// Agent selbst.
+/// Verbindungen, Belegung), Ereignisbus, lokale Zertifikate und Vertrauen für
+/// HTTPS und der Agent selbst.
 library;
 
 export 'src/agent.dart';
@@ -51,4 +51,5 @@ export 'src/terminal/discovery.dart';
 export 'src/terminal/hps.dart';
 export 'src/terminal/warmhalten.dart';
 export 'src/tls/certificates.dart';
+export 'src/tls/trust.dart';
 export 'src/version.dart';

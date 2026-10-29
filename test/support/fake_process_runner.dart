@@ -19,7 +19,8 @@ class RecordedCall {
 }
 
 /// Doppelgänger für [ProcessRunner]: schreibt alle Aufrufe mit und antwortet
-/// nach hinterlegten Regeln. **Kein Test startet ein echtes Programm.**
+/// nach hinterlegten Regeln. **Kein Test startet ein echtes Programm** —
+/// außer denen, die er ausdrücklich in [echt] einträgt.
 class FakeProcessRunner {
   FakeProcessRunner({this.defaultExitCode = 0});
 
@@ -42,6 +43,12 @@ class FakeProcessRunner {
 
   /// Programme, die es angeblich gar nicht gibt.
   final Set<String> missing = <String>{};
+
+  /// Programme, die wirklich laufen — etwa `/usr/bin/openssl` und `chmod`,
+  /// wenn ein Test echte Zertifikate braucht. Mitgeschrieben werden sie
+  /// trotzdem. `security` und `launchctl` nimmt die Attrappe hier nie an:
+  /// kein Test fasst den Schlüsselbund oder launchd an.
+  final Set<String> echt = <String>{};
 
   /// Eigene Antwort je Aufruf, wenn die Regeln oben nicht reichen — etwa eine
   /// Ausgabe, die vom Inhalt einer Datei abhängt (`openssl x509 -in …`).
@@ -79,6 +86,13 @@ class FakeProcessRunner {
     calls.add(RecordedCall(executable, arguments));
     if (missing.contains(executable)) {
       throw ProcessException(executable, arguments, 'Programm nicht gefunden');
+    }
+    if (echt.contains(executable)) {
+      final name = executable.split('/').last;
+      if (name == 'security' || name == 'launchctl') {
+        throw StateError('$name läuft im Test nie echt.');
+      }
+      return Process.run(executable, arguments);
     }
     final eigene = await antwort?.call(executable, arguments);
     if (eigene != null) return eigene;

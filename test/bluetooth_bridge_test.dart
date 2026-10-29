@@ -1074,6 +1074,48 @@ void main() {
     expect(m110.verbunden, isTrue);
   });
 
+  test('isApproved: nur zugelassene Geräte, auch nicht während des '
+      'Vergessens; berührt Bluetooth nicht', () async {
+    final store = ConfigStore.forDirectory(temp);
+    await store.mutate(
+      (c) => c.copyWith(
+        bluetoothDevices: [
+          BluetoothDeviceConfig(
+            id: fakeM110Id,
+            name: 'Q199E00000',
+            approvedAt: _start,
+          ),
+        ],
+      ),
+    );
+    final fake = FakeBluetoothHelper(log: log, geraete: [FakeM110()]);
+    final bus = EventBus();
+    final bridge = BluetoothBridge(
+      store: store,
+      log: log,
+      events: bus,
+      helper: fake,
+    );
+    addTearDown(() async {
+      await bridge.close();
+      await bus.close();
+    });
+
+    expect(await bridge.isApproved(fakeM110Id), isTrue);
+    expect(await bridge.isApproved(fakeM110Id.toUpperCase()), isTrue);
+    expect(await bridge.isApproved(_zweiteId), isFalse);
+    expect(await bridge.isApproved('kein-geraet'), isFalse);
+
+    // Ab dem ersten Schritt des Vergessens gilt es nicht mehr als zugelassen,
+    // auch solange es noch in der Datei steht.
+    final vergessen = bridge.forget(fakeM110Id);
+    final waehrend = bridge.isApproved(fakeM110Id);
+    expect(await waehrend, isFalse);
+    expect(await vergessen, isTrue);
+    expect(await bridge.isApproved(fakeM110Id), isFalse);
+    expect(fake.starts, 0);
+  });
+
   test('17. Gerät: bluetooth_too_many_devices', () async {
     final store = ConfigStore.forDirectory(temp);
     var jetzt = _start;

@@ -2,7 +2,8 @@
 ///
 /// Öffentliche Bausteine dieser Etappe: Kommandozeile, Konfiguration, Log,
 /// lokale API (CORS/PNA, Token, Status), Kopplung, Netzwerkdrucker (Treiber,
-/// Verwaltung, Warteschlange, Suche), Ereignisbus und der Agent selbst.
+/// Verwaltung, Warteschlange, Suche), Bluetooth-Brücke (Hilfsprogramm,
+/// Verbindungen, Belegung), Ereignisbus und der Agent selbst.
 library;
 
 export 'src/agent.dart';
@@ -10,6 +11,7 @@ export 'src/api/auth.dart';
 export 'src/api/context.dart';
 export 'src/api/cors.dart';
 export 'src/api/responses.dart';
+export 'src/api/routes_bluetooth.dart';
 export 'src/api/routes_events.dart';
 export 'src/api/routes_pair.dart';
 export 'src/api/routes_print.dart';
@@ -22,6 +24,11 @@ export 'src/autostart/linux.dart';
 export 'src/autostart/macos.dart';
 export 'src/autostart/windows.dart';
 export 'src/bluetooth/blocklist.dart';
+export 'src/bluetooth/bridge.dart';
+export 'src/bluetooth/connections.dart';
+export 'src/bluetooth/helper.dart';
+export 'src/bluetooth/leases.dart';
+export 'src/bluetooth/protocol.dart';
 export 'src/bluetooth/uuids.dart';
 export 'src/cli.dart';
 export 'src/config/model.dart';

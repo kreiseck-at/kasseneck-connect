@@ -4,10 +4,13 @@ import 'dart:io';
 import 'package:shelf/shelf_io.dart' as shelf_io;
 
 import 'api/context.dart';
+import 'api/routes_bluetooth.dart';
 import 'api/routes_events.dart';
 import 'api/routes_printers.dart';
 import 'api/routes_terminal.dart';
 import 'api/server.dart';
+import 'bluetooth/bridge.dart';
+import 'bluetooth/helper.dart';
 import 'config/model.dart';
 import 'config/store.dart';
 import 'events/bus.dart';
@@ -44,6 +47,7 @@ class Agent {
     PrinterRegistry? registry,
     PrintQueue? queue,
     PrinterDiscovery? discovery,
+    BluetoothHelper? bluetoothHelper,
   }) : _clock = clock ?? DateTime.now,
        _pairing = pairing,
        _extraRoutes = extraRoutes,
@@ -52,7 +56,8 @@ class Agent {
        _events = events,
        _registry = registry,
        _queue = queue,
-       _discovery = discovery;
+       _discovery = discovery,
+       _bluetoothHelper = bluetoothHelper;
 
   final ConfigStore store;
   final AgentLog log;
@@ -71,10 +76,16 @@ class Agent {
   final PrintQueue? _queue;
   final PrinterDiscovery? _discovery;
 
+  /// Zugang zum Bluetooth-Hilfsprogramm; ohne ihn der dieses Rechners
+  /// ([platformBluetoothHelper]). [stop] beendet ihn – auch einen
+  /// hereingereichten: ein Hilfsprogramm ohne Agenten hielte nur Geräte fest.
+  final BluetoothHelper? _bluetoothHelper;
+
   HttpServer? _server;
   AgentContext? _context;
   TerminalWarmhalter? _warmhalter;
   PrinterRegistry? _printers;
+  BluetoothBridge? _bluetooth;
   List<RouteRegistrar> _routes = const <RouteRegistrar>[];
 
   /// Ob der Bus dem Agenten gehört. Einen von außen hereingereichten Bus
@@ -121,6 +132,19 @@ class Agent {
         _queue ?? PrintQueue(registry: registry, events: bus, log: log);
     _printers = registry;
 
+    // Die Brücke steht ab hier, Bluetooth selbst startet erst mit dem ersten
+    // Gerätezugriff bzw. der ersten Suche: der Start des Agenten (Anmeldung,
+    // Autostart) soll macOS nie nach der Bluetooth-Freigabe fragen lassen.
+    final bluetooth = BluetoothBridge(
+      store: store,
+      log: log,
+      events: bus,
+      helper:
+          _bluetoothHelper ??
+          platformBluetoothHelper(log, environment: _environment),
+    );
+    _bluetooth = bluetooth;
+
     final ctx = AgentContext(
       store: store,
       log: log,
@@ -130,6 +154,7 @@ class Agent {
       events: bus,
       printers: registry.summaries,
       environment: _environment,
+      bluetooth: bluetooth,
     );
     _context = ctx;
     _warmhalter = TerminalWarmhalter(store: store, log: log);
@@ -142,6 +167,7 @@ class Agent {
         queue: queue,
         discovery: _discovery ?? PrinterDiscovery(log: log),
       ),
+      bluetoothRoutes(bridge: bluetooth),
       ..._extraRoutes,
     ];
 
@@ -172,11 +198,24 @@ class Agent {
     _warmhalter?.stop();
     final server = _server;
     final ctx = _context;
+    final bluetooth = _bluetooth;
     _server = null;
     _context = null;
+    _bluetooth = null;
     if (server == null) return;
 
-    // Zuerst der Bus: die offenen WebSocket-Verbindungen hängen nach dem
+    // Zuerst Bluetooth: die Brücke schreibt in den Bus, wartende Belegungen
+    // und Aufrufe sollen sauber scheitern, und das Hilfsprogramm darf den
+    // Agenten nicht überleben. Ein Fehler dabei hält das Anhalten nicht auf.
+    if (bluetooth != null) {
+      try {
+        await bluetooth.close();
+      } on Object catch (error) {
+        log.error('Bluetooth ließ sich nicht sauber beenden', error);
+      }
+    }
+
+    // Dann der Bus: die offenen WebSocket-Verbindungen hängen nach dem
     // Hijack nicht mehr am HttpServer und überlebten dessen `close()`. Mit dem
     // Bus endet ihr Abo, und `serveEvents` schließt daraufhin die Senke —
     // die Kasse sieht ein sauberes Ende statt einer Verbindung ins Nichts.

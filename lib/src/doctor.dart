@@ -3,7 +3,9 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'agent.dart';
+import 'api/routes_status.dart';
 import 'autostart/autostart.dart';
+import 'bluetooth/helper.dart';
 import 'config/model.dart';
 import 'config/paths.dart';
 import 'config/store.dart';
@@ -40,6 +42,9 @@ class DoctorPort {
   bool get paired => status?['paired'] == true;
 
   int? get uptimeSeconds => status?['uptimeSeconds'] as int?;
+
+  /// Was der Agent kann (`features`); ältere Agenten melden nichts.
+  List<String> get features => readStringList(status?['features']);
 }
 
 /// Alles, was die Diagnose zusammengetragen hat.
@@ -57,6 +62,7 @@ class DoctorReport {
     required this.autostartInstalled,
     required this.autostartTarget,
     required this.lastErrors,
+    this.bluetoothHelper,
   });
 
   final String version;
@@ -84,6 +90,10 @@ class DoctorReport {
   /// Die letzten Fehlerzeilen aus der Logdatei.
   final List<String> lastErrors;
 
+  /// Pfad zum Bluetooth-Hilfsprogramm; `null`, wenn es fehlt (außerhalb von
+  /// macOS immer).
+  final String? bluetoothHelper;
+
   bool get paired => tokenCount > 0;
 
   /// Der Port, an dem tatsächlich ein Agent antwortet.
@@ -101,6 +111,12 @@ class DoctorReport {
 /// Kopplungstoken. Sie sieht deshalb nur die Kurzform von `GET /v1/status`,
 /// liest die Fehler aus der Logdatei statt aus dem Ringpuffer des laufenden
 /// Agenten und fragt die Drucker selbst ab, statt den Agenten zu fragen.
+///
+/// Bluetooth fasst sie dagegen nie selbst an: das Hilfsprogramm wird nur im
+/// Dateisystem gesucht ([findBluetoothHelper]), nie gestartet – sonst fragte
+/// macOS im Namen des Terminals nach der Bluetooth-Freigabe. Ob der Agent
+/// Bluetooth anbietet, steht in seinem Status (`features`).
+/// [environment] ersetzt in Tests die Umgebung des Prozesses.
 Future<DoctorReport> collectDoctorReport({
   required ConfigPaths paths,
   StatusProbe? probe,
@@ -108,6 +124,7 @@ Future<DoctorReport> collectDoctorReport({
   Autostart? autostart,
   String? operatingSystem,
   String? executable,
+  Map<String, String>? environment,
 }) async {
   final store = ConfigStore(paths);
   final config = await store.load();
@@ -143,6 +160,11 @@ Future<DoctorReport> collectDoctorReport({
     autostartInstalled: await resolvedAutostart.isInstalled(),
     autostartTarget: resolvedAutostart.target,
     lastErrors: readRecentErrors(paths.logDirectory),
+    bluetoothHelper: findBluetoothHelper(
+      environment: environment,
+      operatingSystem: operatingSystem,
+      executable: executable,
+    ),
   );
 }
 
@@ -243,6 +265,29 @@ String formatDoctorReport(DoctorReport report) {
         '${printer['host']}:${printer['port']})  — ${printer['state']}',
       );
     }
+  }
+
+  buffer
+    ..writeln()
+    ..writeln('Bluetooth');
+  final helper = report.bluetoothHelper;
+  if (helper != null) {
+    buffer.writeln('  Bluetooth-Hilfsprogramm: vorhanden ($helper)');
+  } else if (report.operatingSystem == 'macos') {
+    buffer.writeln(
+      '  Bluetooth-Hilfsprogramm: fehlt — Kasseneck Connect neu installieren',
+    );
+  } else {
+    buffer.writeln(
+      '  Bluetooth-Hilfsprogramm: fehlt (Bluetooth gibt es bisher nur am Mac)',
+    );
+  }
+  if (running != null) {
+    buffer.writeln(
+      running.features.contains(featureBluetooth)
+          ? '  Agent: mit Bluetooth'
+          : '  Agent: ohne Bluetooth',
+    );
   }
 
   buffer

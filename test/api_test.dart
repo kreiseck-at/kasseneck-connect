@@ -7,6 +7,7 @@ import 'package:path/path.dart' as p;
 import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'package:test/test.dart';
 
+import 'support/fake_bluetooth.dart';
 import 'support/fake_process_runner.dart';
 
 /// Antwort des Testklienten in bequemer Form.
@@ -299,6 +300,199 @@ void main() {
       expect(response.status, 200);
       expect(response.json['paired'], isTrue);
       expect(response.json.containsKey('printers'), isFalse);
+      expect(response.json.containsKey('bluetooth'), isFalse);
+    });
+
+    test('status: features enthält bluetooth nur mit Brücke', () async {
+      final token = await pair();
+
+      // Ohne Brücke: leere Liste in beiden Formen, kein Bluetooth-Block.
+      final kurz = await send('GET', '/v1/status', origin: kasse);
+      expect(kurz.json['features'], isEmpty);
+      final lang = await send('GET', '/v1/status', origin: kasse, token: token);
+      expect(lang.json['features'], isEmpty);
+      expect(lang.json.containsKey('bluetooth'), isFalse);
+
+      Future<(TestResponse, TestResponse)> mitBruecke(
+        BluetoothHelper helper,
+      ) async {
+        final bus = EventBus();
+        final bridge = BluetoothBridge(
+          store: store,
+          log: log,
+          events: bus,
+          helper: helper,
+        );
+        final mit = AgentContext(
+          store: store,
+          log: log,
+          startedAt: now,
+          clock: () => now,
+          environment: const <String, String>{},
+          bluetooth: bridge,
+        );
+        final zweiter = await shelf_io.serve(
+          buildHandler(mit),
+          InternetAddress.loopbackIPv4,
+          0,
+        );
+        addTearDown(() async {
+          await zweiter.close(force: true);
+          await bridge.close();
+          await bus.close();
+        });
+        Future<TestResponse> status({String? token}) async {
+          final client = HttpClient();
+          try {
+            final request = await client.getUrl(
+              Uri.parse('http://127.0.0.1:${zweiter.port}/v1/status'),
+            );
+            request.headers.set('origin', kasse);
+            if (token != null) {
+              request.headers.set('authorization', 'Bearer $token');
+            }
+            final response = await request.close();
+            return TestResponse(
+              response.statusCode,
+              response.headers,
+              await response.transform(utf8.decoder).join(),
+            );
+          } finally {
+            client.close(force: true);
+          }
+        }
+
+        return (await status(), await status(token: token));
+      }
+
+      // Mit Hilfsprogramm: in beiden Formen, die Langform mit Zustand –
+      // ohne dass der Status Bluetooth startet.
+      final fake = FakeBluetoothHelper(log: log);
+      final (kurzMit, langMit) = await mitBruecke(fake);
+      expect(kurzMit.json['features'], <String>['bluetooth']);
+      expect(kurzMit.json.containsKey('bluetooth'), isFalse);
+      expect(langMit.json['features'], <String>['bluetooth']);
+      expect(langMit.json['bluetooth'], <String, Object?>{
+        'state': 'unknown',
+        'devices': <Object?>[],
+      });
+      expect(fake.starts, 0);
+
+      // Brücke ohne Hilfsprogramm (Windows, Linux): keine Fähigkeit, der
+      // Zustand sagt warum.
+      final (kurzOhne, langOhne) = await mitBruecke(
+        const UnsupportedBluetoothHelper(),
+      );
+      expect(kurzOhne.json['features'], isEmpty);
+      expect(langOhne.json['features'], isEmpty);
+      expect(
+        (langOhne.json['bluetooth']! as Map<String, Object?>)['state'],
+        'unsupported',
+      );
+    });
+  });
+
+  group('Bluetooth ohne Brücke', () {
+    test('alle Bluetooth-Pfade antworten bluetooth_unsupported', () async {
+      final token = await pair();
+      const id = '3f2a9c1e-7b4d-4e2a-9a10-5c6d7e8f9a0b';
+      final aufrufe = <(String, String)>[
+        ('GET', '/v1/bluetooth'),
+        ('POST', '/v1/bluetooth/scan'),
+        ('PUT', '/v1/bluetooth/devices/$id'),
+        ('DELETE', '/v1/bluetooth/devices/$id'),
+        ('POST', '/v1/bluetooth/devices/$id/connect'),
+        ('GET', '/v1/bluetooth/devices/$id/notifications'),
+        ('POST', '/v1/bluetooth/devices/$id/lease/renew'),
+      ];
+      for (final (method, path) in aufrufe) {
+        final response = await send(method, path, origin: kasse, token: token);
+        expect(response.status, 200, reason: '$method $path');
+        expect(
+          response.errorCode,
+          'bluetooth_unsupported',
+          reason: '$method $path',
+        );
+        expect(
+          (response.json['error']! as Map)['message'],
+          bluetoothErrorMessages[errorBluetoothUnsupported],
+        );
+      }
+
+      // Der Schutz davor gilt weiter.
+      final ohneToken = await send('GET', '/v1/bluetooth', origin: kasse);
+      expect(ohneToken.status, 401);
+    });
+
+    test('Brücke ohne Hilfsprogramm: Zustand unsupported, Zugriffe '
+        'bluetooth_unsupported', () async {
+      final token = await pair();
+      final bus = EventBus();
+      final bridge = BluetoothBridge(
+        store: store,
+        log: log,
+        events: bus,
+        helper: const UnsupportedBluetoothHelper(),
+      );
+      final mit = AgentContext(
+        store: store,
+        log: log,
+        startedAt: now,
+        environment: const <String, String>{},
+        bluetooth: bridge,
+      );
+      final zweiter = await shelf_io.serve(
+        buildHandler(
+          mit,
+          extraRoutes: <RouteRegistrar>[bluetoothRoutes(bridge: bridge)],
+        ),
+        InternetAddress.loopbackIPv4,
+        0,
+      );
+      addTearDown(() async {
+        await zweiter.close(force: true);
+        await bridge.close();
+        await bus.close();
+      });
+
+      Future<Map<String, Object?>> rufe(String method, String path) async {
+        final client = HttpClient();
+        try {
+          final request = await client.openUrl(
+            method,
+            Uri.parse('http://127.0.0.1:${zweiter.port}$path'),
+          );
+          request.headers
+            ..set('origin', kasse)
+            ..set('authorization', 'Bearer $token');
+          final response = await request.close();
+          return jsonDecode(await response.transform(utf8.decoder).join())
+              as Map<String, Object?>;
+        } finally {
+          client.close(force: true);
+        }
+      }
+
+      final zustand = await rufe('GET', '/v1/bluetooth');
+      expect(zustand['ok'], isTrue);
+      expect(zustand['state'], 'unsupported');
+
+      const id = '3f2a9c1e-7b4d-4e2a-9a10-5c6d7e8f9a0b';
+      for (final (method, path) in <(String, String)>[
+        ('POST', '/v1/bluetooth/scan'),
+        ('PUT', '/v1/bluetooth/devices/$id'),
+        ('POST', '/v1/bluetooth/devices/$id/connect'),
+        ('GET', '/v1/bluetooth/devices/$id/notifications'),
+        ('POST', '/v1/bluetooth/devices/$id/lease'),
+      ]) {
+        final antwort = await rufe(method, path);
+        expect(
+          (antwort['error']! as Map)['code'],
+          errorBluetoothUnsupported,
+          reason: '$method $path',
+        );
+      }
+      expect((await store.load()).bluetoothDevices, isEmpty);
     });
   });
 

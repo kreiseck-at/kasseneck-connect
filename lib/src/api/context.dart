@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:shelf_router/shelf_router.dart';
 
+import '../bluetooth/bridge.dart';
 import '../config/model.dart';
 import '../config/store.dart';
 import '../events/bus.dart';
@@ -35,6 +36,7 @@ class AgentContext {
     PrinterSummaries? printers,
     EventBus? events,
     this.environment,
+    this.bluetooth,
   }) : clock = clock ?? DateTime.now,
        events = events ?? EventBus(),
        printers = printers ?? _noPrinters {
@@ -74,6 +76,12 @@ class AgentContext {
   /// entscheidet im Test der Test darüber, ob ein Browser aufginge — und nicht
   /// die Umgebung des Rechners, auf dem er läuft.
   final Map<String, String>? environment;
+
+  /// Bluetooth-Brücke des Agenten, `null` ohne Bluetooth (z. B. in Tests).
+  ///
+  /// `GET /v1/status` liest daraus `features` und den Bluetooth-Zustand; ohne
+  /// Brücke antworten alle Bluetooth-Pfade `bluetooth_unsupported`.
+  final BluetoothBridge? bluetooth;
 
   /// Zeitpunkt der letzten Kopplungsanforderung über `POST /v1/pair/request`.
   ///

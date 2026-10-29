@@ -443,6 +443,19 @@ class BluetoothBridge {
         );
       });
 
+  /// Ob [id] zugelassen ist; ein Gerät, das gerade vergessen wird, ist es
+  /// schon nicht mehr. Berührt Bluetooth nicht.
+  ///
+  /// Für Zugriffe, die die Brücke selbst nicht prüft ([notifications],
+  /// [generationOf], [renewLease], [releaseLease]): die Route fragt vorher.
+  Future<bool> isApproved(String id) async {
+    final key = id.toLowerCase();
+    if (_forgetting.contains(key)) return false;
+    final config = await _store.load();
+    return !_forgetting.contains(key) &&
+        config.bluetoothDevices.any((d) => d.id == key);
+  }
+
   /// Gepufferte Meldungen der laufenden Verbindung. Nicht zugelassene Geräte
   /// haben keine: verbunden wird nur nach der Zulassung, und Vergessen
   /// verwirft den Puffer.
@@ -666,12 +679,7 @@ class BluetoothBridge {
   ) async {
     _requireAvailable();
     final key = id.toLowerCase();
-    if (_forgetting.contains(key)) throw _failure(errorBluetoothDeviceUnknown);
-    final config = await _store.load();
-    if (_forgetting.contains(key) ||
-        !config.bluetoothDevices.any((d) => d.id == key)) {
-      throw _failure(errorBluetoothDeviceUnknown);
-    }
+    if (!await isApproved(key)) throw _failure(errorBluetoothDeviceUnknown);
     try {
       return await action(key);
     } on BluetoothFailure catch (failure) {

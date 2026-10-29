@@ -203,6 +203,117 @@ void main() {
         isEmpty,
       );
     });
+
+    test('Bluetooth-Hilfsprogramm: vorhanden neben der Binary, sonst '
+        'fehlt', () async {
+      final programm = Directory(p.join(temp.path, 'paket'))..createSync();
+      final binary = p.join(programm.path, 'kasseneck-connect');
+
+      Future<DoctorReport> bericht(String os) => collectDoctorReport(
+        paths: paths,
+        probe: noAgent,
+        printerStates: noPrinters,
+        autostart: FakeAutostart(),
+        operatingSystem: os,
+        executable: binary,
+        environment: const <String, String>{},
+      );
+
+      final ohne = await bericht('macos');
+      expect(ohne.bluetoothHelper, isNull);
+      expect(
+        formatDoctorReport(ohne),
+        contains('Bluetooth-Hilfsprogramm: fehlt'),
+      );
+
+      final helfer = File(p.join(programm.path, bluetoothHelperName))
+        ..writeAsStringSync('');
+      final mit = await bericht('macos');
+      expect(mit.bluetoothHelper, helfer.path);
+      expect(
+        formatDoctorReport(mit),
+        contains('Bluetooth-Hilfsprogramm: vorhanden (${helfer.path})'),
+      );
+
+      // Außerhalb von macOS gibt es keines – das Hilfsprogramm daneben zählt
+      // dort nicht.
+      final windows = await bericht('windows');
+      expect(windows.bluetoothHelper, isNull);
+      expect(
+        formatDoctorReport(windows),
+        contains(
+          'Bluetooth-Hilfsprogramm: fehlt (Bluetooth gibt es bisher '
+          'nur am Mac)',
+        ),
+      );
+    });
+
+    test('nennt, ob der laufende Agent Bluetooth anbietet', () async {
+      StatusProbe mitFeatures(List<String> features) =>
+          (int port) async => port == 27182
+          ? <String, Object?>{
+              'ok': true,
+              'version': agentVersion,
+              'port': port,
+              'paired': true,
+              'uptimeSeconds': 5,
+              'features': features,
+            }
+          : null;
+
+      Future<String> text(List<String> features) async => formatDoctorReport(
+        await collectDoctorReport(
+          paths: paths,
+          probe: mitFeatures(features),
+          printerStates: noPrinters,
+          autostart: FakeAutostart(),
+        ),
+      );
+
+      expect(
+        await text(<String>['bluetooth']),
+        contains('Agent: mit Bluetooth'),
+      );
+      expect(await text(<String>[]), contains('Agent: ohne Bluetooth'));
+      // Ohne laufenden Agenten steht dazu nichts.
+      final ohneAgent = formatDoctorReport(
+        await collectDoctorReport(
+          paths: paths,
+          probe: noAgent,
+          printerStates: noPrinters,
+          autostart: FakeAutostart(),
+        ),
+      );
+      expect(ohneAgent, isNot(contains('Agent: mit')));
+      expect(ohneAgent, isNot(contains('Agent: ohne')));
+    });
+
+    test('doctor berührt Bluetooth nicht', () async {
+      // Stolperdraht: ein Hilfsprogramm, das beim Start eine Marke
+      // hinterlegt. Die Diagnose darf es finden, aber nie starten – sonst
+      // fragte macOS im Namen des Terminals nach Bluetooth.
+      final marke = File(p.join(temp.path, 'gestartet'));
+      final helfer = File(p.join(temp.path, bluetoothHelperName))
+        ..writeAsStringSync('#!/bin/sh\necho gestartet > "${marke.path}"\n');
+      final chmod = await Process.run('chmod', <String>['755', helfer.path]);
+      expect(chmod.exitCode, 0);
+
+      final report = await collectDoctorReport(
+        paths: paths,
+        probe: noAgent,
+        printerStates: noPrinters,
+        autostart: FakeAutostart(),
+        operatingSystem: 'macos',
+        environment: <String, String>{bluetoothHelperEnvVar: helfer.path},
+      );
+      final text = formatDoctorReport(report);
+      expect(text, contains('Bluetooth-Hilfsprogramm: vorhanden'));
+
+      // Ein Start liefe im Hintergrund: kurz warten, ob die Marke kommt.
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+      expect(marke.existsSync(), isFalse);
+      expect(readRecentErrors(paths.logDirectory), isEmpty);
+    }, testOn: '!windows');
   });
 
   group('Ausgabe', () {

@@ -71,7 +71,9 @@ Das Hilfsprogramm übersetzt nur; es verbindet nie von selbst neu und hat keine 
   bzw. `maxWriteWithoutResponse`: `write_failed`, nichts wird geschrieben (nie gekürzt). Mit Antwort kommt `{}` nach
   der Bestätigung des Geräts, ohne Antwort sobald CoreBluetooth die Daten nach seiner Flusssteuerung übernommen hat.
 - **Lesen und Abo.** Ein offenes `read` nimmt den nächsten Wert des Merkmals; der kommt nicht zusätzlich als
-  `notification`. `subscribe`/`unsubscribe` antworten nach der Bestätigung; scheitert sie, `write_failed`.
+  `notification`. `subscribe`/`unsubscribe` antworten sofort `{}`, wenn der gewünschte Zustand schon besteht und kein
+  Wechsel läuft; sonst nach der Bestätigung von CoreBluetooth, wobei gleiche Wünsche während eines laufenden Wechsels
+  mit dessen Bestätigung beantwortet werden (jeder genau einmal); scheitert sie, `write_failed`.
 - **Ungültige Zeilen.** Ein JSON-Objekt mit ganzzahliger `id`, das kein gültiger Befehl ist (auch unbekanntes `op`),
   bekommt `bad_request`; alles andere wird mit einer Notiz auf stderr verworfen. Endet stdin, endet das Programm.
 

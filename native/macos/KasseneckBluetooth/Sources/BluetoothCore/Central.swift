@@ -25,7 +25,8 @@ public final class Central: NSObject {
     private var scanCount = 0
     private var reads: [CharacteristicKey: [Int]] = [:]
     private var writes: [CharacteristicKey: [Int]] = [:]
-    private var notifyChanges: [CharacteristicKey: [Int]] = [:]
+    /// Offene Abo-Wünsche je Merkmal, gruppiert nach Ziel (Regeln und Unveränderliches in `NotifyRequests`).
+    private var notifyChanges: [CharacteristicKey: NotifyRequests] = [:]
     /// Schreiben ohne Antwort, das auf die Flusssteuerung wartet (Reihenfolge je Gerät).
     private var unsent: [UUID: [UnsentWrite]] = [:]
 
@@ -232,10 +233,15 @@ public final class Central: NSObject {
             return fail(id, unsupported("characteristic cannot notify"))
         }
         let key = CharacteristicKey(address.device, characteristic)
-        // Steht der Wunsch schon, meldet CoreBluetooth nicht zwingend zurück – dann gleich antworten.
-        if (notifyChanges[key] ?? []).isEmpty && characteristic.isNotifying == enabled { return succeed(id) }
-        notifyChanges[key, default: []].append(id)
-        peripheral.setNotifyValue(enabled, for: characteristic)
+        // Nur echte Wechsel gehen an CoreBluetooth; alles andere antwortet sofort oder mit dem laufenden Wechsel.
+        var requests = notifyChanges[key] ?? NotifyRequests()
+        let action = requests.add(id, enabled: enabled, current: characteristic.isNotifying)
+        notifyChanges[key] = requests.isEmpty ? nil : requests
+        switch action {
+        case .answerNow: succeed(id)
+        case .callSetNotify: peripheral.setNotifyValue(enabled, for: characteristic)
+        case .wait: break
+        }
     }
 
     // MARK: - Hilfen
@@ -306,7 +312,10 @@ public final class Central: NSObject {
         if link.announced { send(.event(.disconnected(device: device, reason: reason))) }
         let gone = HelperError(code: HelperErrorCode.notConnected, message: reason)
         link.connects.forEach { fail($0, gone) }
-        var open = take(&reads, device) + take(&writes, device) + take(&notifyChanges, device)
+        var open = take(&reads, device) + take(&writes, device)
+        for key in notifyChanges.keys.filter({ $0.device == device }) {
+            open += notifyChanges.removeValue(forKey: key)?.allIds ?? []
+        }
         open += (unsent.removeValue(forKey: device) ?? []).map(\.id)
         open.sorted().forEach { fail($0, gone) }
         link.disconnects.forEach { succeed($0) }
@@ -474,12 +483,16 @@ extension Central: CBCentralManagerDelegate, CBPeripheralDelegate {
 
     public func peripheral(_ peripheral: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic,
                            error: Error?) {
-        guard let id = pop(&notifyChanges, CharacteristicKey(peripheral.identifier, characteristic)) else { return }
+        let key = CharacteristicKey(peripheral.identifier, characteristic)
+        guard var requests = notifyChanges[key] else { return }
+        let ids = requests.confirm()
+        notifyChanges[key] = requests.isEmpty ? nil : requests
         if let error {
             // Ein Abo ist ein Schreibvorgang auf den Deskriptor des Merkmals.
-            fail(id, HelperError(code: HelperErrorCode.writeFailed, message: error.localizedDescription))
+            let failed = HelperError(code: HelperErrorCode.writeFailed, message: error.localizedDescription)
+            ids.forEach { fail($0, failed) }
         } else {
-            succeed(id)
+            ids.forEach { succeed($0) }
         }
     }
 }

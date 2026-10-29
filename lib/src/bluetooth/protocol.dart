@@ -50,6 +50,7 @@ abstract final class HelperErrorCode {
   static const readFailed = 'read_failed';
   static const bluetoothOff = 'bluetooth_off';
   static const unauthorized = 'unauthorized';
+  static const bluetoothUnsupported = 'bluetooth_unsupported';
   static const badRequest = 'bad_request';
 }
 

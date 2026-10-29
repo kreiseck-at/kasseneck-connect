@@ -9,9 +9,11 @@
 # Autostart-Teil in die Sitzung des Benutzers.
 #
 # Das Vertrauen in die lokale Zertifizierungsstelle (HTTPS) entzieht es
-# immer, die aktuelle Stelle nimmt es aus dem Anmelde-Schlüsselbund; macOS
-# fragt dabei nach Kennwort oder Touch ID. Fremde Zertifikate bleiben
-# unberührt.
+# immer; macOS fragt dabei nach Kennwort oder Touch ID. Die aktuelle Stelle
+# nimmt es erst aus dem Anmelde-Schlüsselbund, wenn ihr nachweislich nicht
+# mehr vertraut wird – sonst bleibt sie stehen, und das Skript nennt den
+# Befehl, mit dem der Benutzer das Vertrauen selbst entzieht. Fremde
+# Zertifikate bleiben unberührt.
 #
 # Ab 1.3 liegt die Binary im App-Paket `Kasseneck Connect.app` im
 # Installationsordner; das Paket geht mit dem Ordner, und die
@@ -28,8 +30,15 @@ LABEL="at.kasseneck.connect"
 BUNDLE_ID="at.kasseneck.connect"
 CA_NAME="Kasseneck Connect (lokal)"
 PURGE=0
+CERT_DIR=""
+CA_TRUST_LEFT=0
 
-# >>> Auswahl im Schlüsselbund (geprüft von test/uninstall_script_test.dart)
+# >>> Schlüsselbund und Bluetooth (geprüft von test/uninstall_script_test.dart)
+#
+# Was hier den Schlüsselbund oder die Datenschutz-Freigaben anfasst, läuft
+# über as_console_user (unten, in der Sitzung des angemeldeten Benutzers).
+# Der Test setzt dafür eine eigene Funktion ein und gibt die Ergebnisse vor;
+# das Skript selbst kennt keinen anderen Weg.
 
 # SHA-1 jedes Treffers aus `security find-certificate -a -Z` (stdin), dessen
 # Bezeichnung GENAU $1 ist. `-c` allein trifft auch jede Bezeichnung, die den
@@ -69,7 +78,166 @@ sha1_of() {
     | /usr/bin/sed 's/^[^=]*=//; s/://g' | /usr/bin/tr 'abcdef' 'ABCDEF'
 }
 
-# <<< Auswahl im Schlüsselbund
+# Die Fingerabdrücke aus $1 (durch Leerraum getrennt) ohne $2.
+without_hash() {
+  printf '%s\n' "$1" | /usr/bin/awk -v drop="$2" '
+    { for (i = 1; i <= NF; i++) if ($i != drop) printf "%s ", $i }'
+}
+
+# Legt unter $1 den Arbeitsordner CERT_DIR für die PEM-Dateien an und räumt
+# ihn beim Ende des Skripts weg, auch nach einem Fehler oder Abbruch.
+#
+# `security` läuft als Benutzer und muss die Dateien lesen können. Der
+# TMPDIR von root (Start über sudo oder über das Admin-Fenster) liegt aber
+# unter /var/folders/… mit Rechten 0700: remove-trusted-cert scheiterte dort
+# still. Das Skript nimmt deshalb /private/tmp; mktemp legt den Ordner
+# exklusiv an, 755 lässt jeden lesen, schreiben kann nur root.
+make_cert_dir() {
+  CERT_DIR="$(/usr/bin/mktemp -d "$1/kasseneck-connect-deinstall.XXXXXX")" \
+    || { CERT_DIR=""; return 1; }
+  trap remove_cert_dir EXIT
+  trap 'exit 130' HUP INT TERM
+  /bin/chmod 755 "$CERT_DIR"
+}
+
+remove_cert_dir() {
+  if [ -n "${CERT_DIR:-}" ]; then
+    /bin/rm -rf "$CERT_DIR"
+  fi
+  CERT_DIR=""
+}
+
+# Kopiert die Datei $1 nach $2, lesbar für jeden.
+readable_copy() {
+  /bin/cp "$1" "$2" && /bin/chmod 644 "$2"
+}
+
+# Nennt den Befehl, mit dem der Benutzer der Stelle $1 selbst das Vertrauen
+# entzieht.
+manual_untrust_hint() {
+  echo "         Ihr Zertifikat bleibt deshalb im Anmelde-Schlüsselbund. Vertrauen selbst"
+  echo "         entziehen (im Terminal des angemeldeten Benutzers, ohne sudo):"
+  echo "         security remove-trusted-cert \"$1\""
+}
+
+# Entzieht den Stellen von Connect das Vertrauen und nimmt die aktuelle
+# Stelle aus dem Anmelde-Schlüsselbund $1 – aber nur, wenn ihr danach
+# nachweislich nicht mehr vertraut wird. $2 ist der Ordner tls/ der
+# Konfiguration (ca-cert.pem, server-cert.pem), $3 der Ort für den
+# Arbeitsordner. Setzt CA_TRUST_LEFT=1, wenn das Vertrauen in die aktuelle
+# Stelle nicht nachweislich weg ist.
+#
+# Die aktuelle Stelle verliert ihr Vertrauen immer über ihre eigene Datei
+# ca-cert.pem, nie über das Zertifikat aus dem Schlüsselbund – so auch dann,
+# wenn es dort schon fehlt und nur der Vertrauenseintrag übrig ist. Geprüft
+# wird danach wie im Agenten (isLocalCaTrusted). Beide Aufrufe bekommen
+# lesbare Kopien im Arbeitsordner: eine Datei, die der Benutzer nicht lesen
+# kann, ergäbe sonst „nicht vertraut“ und damit ein Löschen. Ein Zertifikat zu
+# löschen, dem noch vertraut wird, hinterließe genau so einen verwaisten
+# Eintrag: macOS wendet ihn weiter an, zeigt ihn aber nirgends mehr.
+untrust_local_ca() {
+  local keychain="$1" ca="$2/ca-cert.pem" server="$2/server-cert.pem"
+  local ca_sha1="" wanted older pem found=0 removed=0 state=ungeprueft
+  CA_TRUST_LEFT=0
+
+  if ! make_cert_dir "$3"; then
+    echo "WARNUNG: Kein Arbeitsordner unter $3 – am Vertrauen in die lokale"
+    echo "         Zertifizierungsstelle hat sich nichts geändert."
+    if [ -f "$ca" ]; then
+      CA_TRUST_LEFT=1
+      manual_untrust_hint "$ca"
+    fi
+    return 0
+  fi
+  if [ -f "$ca" ]; then
+    ca_sha1="$(sha1_of "$ca")"
+  fi
+
+  # Ältere Stellen: Bezeichnung genau der Name, aber nicht die aktuelle.
+  wanted="$(as_console_user /usr/bin/security find-certificate -a -Z \
+              -c "$CA_NAME" "$keychain" 2>/dev/null \
+            | exact_label_hashes "$CA_NAME")"
+  older="$(without_hash "$wanted" "$ca_sha1")"
+  if [ -n "${older// /}" ]; then
+    /bin/mkdir -m 755 "$CERT_DIR/aeltere"
+    as_console_user /usr/bin/security find-certificate -a -Z -p \
+        -c "$CA_NAME" "$keychain" 2>/dev/null \
+      | write_pems "$CERT_DIR/aeltere" "$older"
+    for pem in "$CERT_DIR"/aeltere/*.pem; do
+      [ -f "$pem" ] || continue
+      /bin/chmod 644 "$pem"
+      found=$((found + 1))
+      if as_console_user /usr/bin/security remove-trusted-cert "$pem" \
+           >/dev/null 2>&1; then
+        removed=$((removed + 1))
+      fi
+    done
+    echo "Ältere Stellen von Connect im Schlüsselbund: $found, Vertrauen entzogen bei $removed."
+  fi
+
+  if [ ! -f "$ca" ]; then
+    remove_cert_dir
+    echo "Keine lokale Zertifizierungsstelle in der Konfiguration – nichts weiter zu entziehen."
+    return 0
+  fi
+
+  if readable_copy "$ca" "$CERT_DIR/ca-cert.pem"; then
+    as_console_user /usr/bin/security remove-trusted-cert "$CERT_DIR/ca-cert.pem" \
+      >/dev/null 2>&1 || true
+    if [ -f "$server" ] && readable_copy "$server" "$CERT_DIR/server-cert.pem"; then
+      if as_console_user /usr/bin/security verify-cert \
+           -c "$CERT_DIR/server-cert.pem" -c "$CERT_DIR/ca-cert.pem" \
+           -p ssl -L -q >/dev/null 2>&1; then
+        state=vertraut
+      else
+        state=entzogen
+      fi
+    fi
+  fi
+  remove_cert_dir
+
+  case "$state" in
+    entzogen)
+      echo "Vertrauen in die lokale Zertifizierungsstelle entzogen (nachgeprüft)."
+      # Gelöscht wird nur die eigene Stelle: das Zertifikat mit genau dem
+      # Fingerabdruck von ca-cert.pem.
+      if [ -n "$ca_sha1" ] \
+         && as_console_user /usr/bin/security delete-certificate -Z "$ca_sha1" \
+              "$keychain" >/dev/null 2>&1; then
+        echo "Zertifikat der Stelle aus dem Anmelde-Schlüsselbund entfernt."
+      fi
+      ;;
+    vertraut)
+      CA_TRUST_LEFT=1
+      echo "WARNUNG: Der lokalen Zertifizierungsstelle wird weiterhin vertraut"
+      echo "         (Abfrage abgebrochen oder abgelehnt?)."
+      manual_untrust_hint "$ca"
+      ;;
+    *)
+      CA_TRUST_LEFT=1
+      echo "WARNUNG: Ob der lokalen Zertifizierungsstelle noch vertraut wird, ließ"
+      echo "         sich nicht prüfen (server-cert.pem fehlt, oder eine der Dateien in"
+      echo "         tls/ ist nicht lesbar)."
+      manual_untrust_hint "$ca"
+      ;;
+  esac
+}
+
+# Setzt die Bluetooth-Freigabe des App-Pakets mit der Kennung $1 zurück; sie
+# hängt an der Kennung und bliebe sonst in den Systemeinstellungen stehen.
+# Ohne Frage.
+reset_bluetooth() {
+  if as_console_user /usr/bin/tccutil reset BluetoothAlways "$1" \
+       >/dev/null 2>&1; then
+    echo "Bluetooth-Freigabe zurückgesetzt."
+  else
+    echo "WARNUNG: Die Bluetooth-Freigabe ließ sich nicht zurücksetzen. Von Hand:"
+    echo "         Systemeinstellungen → Datenschutz & Sicherheit → Bluetooth,"
+    echo "         „Kasseneck Connect“ entfernen."
+  fi
+}
+
+# <<< Schlüsselbund und Bluetooth
 
 for arg in "$@"; do
   case "$arg" in
@@ -102,61 +270,19 @@ if [ -n "$CONSOLE_USER" ] && [ "$CONSOLE_USER" != "root" ]; then
   echo "Autostart von $CONSOLE_USER entfernt."
 
   # 1a. Vertrauen in die lokale Zertifizierungsstelle entziehen und die
-  #     aktuelle Stelle aus dem Anmelde-Schlüsselbund nehmen. Beides gehört
-  #     dem Benutzer, also in seiner Sitzung; Fehlschläge (abgebrochene
-  #     Frage, nichts eingetragen) halten die Deinstallation nicht auf.
+  #     Stelle (nur nachgeprüft) aus dem Anmelde-Schlüsselbund nehmen,
+  # 1b. die Bluetooth-Freigabe zurücksetzen. Beides gehört dem Benutzer,
+  #     also in seiner Sitzung; Fehlschläge halten die Deinstallation nicht
+  #     auf, die Ausgabe nennt sie.
   if [ -n "$CONSOLE_HOME" ]; then
     as_console_user() {
       /bin/launchctl asuser "$CONSOLE_UID" /usr/bin/sudo -H -u "$CONSOLE_USER" \
         /usr/bin/env HOME="$CONSOLE_HOME" "$@"
     }
-    CA_CERT="$CONSOLE_HOME/Library/Application Support/KasseneckConnect/tls/ca-cert.pem"
-    KEYCHAIN="$CONSOLE_HOME/Library/Keychains/login.keychain-db"
-    CA_SHA1=""
-    if [ -f "$CA_CERT" ]; then
-      CA_SHA1="$(sha1_of "$CA_CERT")"
-    fi
-
-    # Vertrauen entziehen — nur Zertifikaten, deren Bezeichnung genau der
-    # Name der Stelle ist (auch älteren Stellen nach einer Neuanlage).
-    WANTED="$(as_console_user /usr/bin/security find-certificate -a -Z \
-                -c "$CA_NAME" "$KEYCHAIN" 2>/dev/null \
-              | exact_label_hashes "$CA_NAME" | /usr/bin/tr '\n' ' ')"
-    CERT_DIR="$(/usr/bin/mktemp -d)"
-    /bin/chmod 755 "$CERT_DIR"
-    if [ -n "${WANTED// /}" ]; then
-      as_console_user /usr/bin/security find-certificate -a -Z -p \
-          -c "$CA_NAME" "$KEYCHAIN" 2>/dev/null \
-        | write_pems "$CERT_DIR" "$WANTED"
-    fi
-    for PEM in "$CERT_DIR"/*.pem; do
-      [ -f "$PEM" ] || continue
-      /bin/chmod 644 "$PEM"
-      as_console_user /usr/bin/security remove-trusted-cert "$PEM" \
-        >/dev/null 2>&1 || true
-    done
-    /bin/rm -rf "$CERT_DIR"
-    # Die aktuelle Stelle auch dann, wenn sie nicht (mehr) im Schlüsselbund
-    # steht — sonst wäre sie oben schon dabei gewesen.
-    if [ -f "$CA_CERT" ] \
-       && { [ -z "$CA_SHA1" ] || [ "${WANTED/$CA_SHA1/}" = "$WANTED" ]; }; then
-      as_console_user /usr/bin/security remove-trusted-cert "$CA_CERT" \
-        >/dev/null 2>&1 || true
-    fi
-
-    # Gelöscht wird nur die eigene Stelle: das Zertifikat mit genau dem
-    # Fingerabdruck von ca-cert.pem dieses Benutzers.
-    if [ -n "$CA_SHA1" ]; then
-      as_console_user /usr/bin/security delete-certificate -Z "$CA_SHA1" \
-        "$KEYCHAIN" >/dev/null 2>&1 || true
-    fi
-    echo "Vertrauen in die lokale Zertifizierungsstelle entfernt (soweit eingetragen)."
-
-    # 1b. Die Bluetooth-Freigabe hängt an der Kennung des App-Pakets und
-    #     bliebe sonst in den Systemeinstellungen stehen. Ohne Frage.
-    as_console_user /usr/bin/tccutil reset BluetoothAlways "$BUNDLE_ID" \
-      >/dev/null 2>&1 || true
-    echo "Bluetooth-Freigabe zurückgesetzt."
+    untrust_local_ca "$CONSOLE_HOME/Library/Keychains/login.keychain-db" \
+      "$CONSOLE_HOME/Library/Application Support/KasseneckConnect/tls" \
+      /private/tmp
+    reset_bluetooth "$BUNDLE_ID"
   fi
 fi
 
@@ -171,8 +297,14 @@ echo "Programmdateien entfernt."
 echo "Paketvermerk ($LABEL) entfernt."
 
 if [ "$PURGE" -eq 1 ] && [ -n "${CONSOLE_HOME:-}" ]; then
-  /bin/rm -rf "$CONSOLE_HOME/Library/Application Support/KasseneckConnect"
-  echo "Konfiguration, Zertifikate und Log entfernt."
+  if [ "$CA_TRUST_LEFT" -eq 1 ]; then
+    # Der Befehl oben braucht tls/ca-cert.pem.
+    echo "WARNUNG: Konfiguration und Zertifikate bleiben trotz --purge liegen, bis der"
+    echo "         Stelle nicht mehr vertraut wird; danach das Skript erneut mit --purge starten."
+  else
+    /bin/rm -rf "$CONSOLE_HOME/Library/Application Support/KasseneckConnect"
+    echo "Konfiguration, Zertifikate und Log entfernt."
+  fi
 else
   echo "Konfiguration und Zertifikate bleiben liegen (--purge entfernt sie mit)."
 fi

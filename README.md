@@ -108,11 +108,14 @@ sudo bash uninstall.sh --purge    # zusätzlich Konfiguration, Zertifikate und L
 ```
 
 Das Skript hält den Agenten an, nimmt den LaunchAgent heraus, entzieht der
-lokalen Zertifizierungsstelle das Vertrauen und löscht sie aus dem
-Anmelde-Schlüsselbund (macOS fragt dabei nach Kennwort oder Touch ID), setzt
-die Bluetooth-Freigabe von „Kasseneck Connect“ zurück und löscht
+lokalen Zertifizierungsstelle das Vertrauen (macOS fragt dabei nach Kennwort
+oder Touch ID) und prüft danach nach: erst wenn ihr nicht mehr vertraut wird,
+löscht es sie aus dem Anmelde-Schlüsselbund. Sonst bleibt sie stehen, und das
+Skript warnt und nennt den Befehl, mit dem man das Vertrauen selbst entzieht.
+Dann setzt es die Bluetooth-Freigabe von „Kasseneck Connect“ zurück und löscht
 `/usr/local/kasseneck-connect` samt App-Paket. Ohne `--purge` bleiben die
-gekoppelten Kassen, die Drucker und die Zertifikatsdateien erhalten. Von
+gekoppelten Kassen, die Drucker und die Zertifikatsdateien erhalten; mit
+`--purge` auch, solange der Stelle noch vertraut wird. Von
 Hand geht es genauso: `kasseneck-connect uninstall-autostart`, dann
 `/usr/local/kasseneck-connect` und `/usr/local/bin/kasseneck-connect` löschen
 und `sudo pkgutil --forget at.kasseneck.connect`.

@@ -66,6 +66,7 @@ class Agent {
     this.preferredHttpsPort = defaultHttpsPort,
     this.tlsCheckInterval = tlsCheckPeriod,
     ProcessRunner? runProcess,
+    ProcessStarter? startProcess,
     LocalCertificates? certificates,
   }) : _clock = clock ?? DateTime.now,
        _pairing = pairing,
@@ -77,7 +78,11 @@ class Agent {
        _queue = queue,
        _discovery = discovery,
        _bluetoothHelper = bluetoothHelper,
-       _runProcess = runProcess ?? Process.run,
+       _startProcess =
+           startProcess ??
+           (runProcess == null
+               ? Process.start
+               : processStarterFrom(runProcess)),
        _certificates =
            certificates ??
            LocalCertificates(
@@ -120,8 +125,10 @@ class Agent {
   /// hereingereichten: ein Hilfsprogramm ohne Agenten hielte nur Geräte fest.
   final BluetoothHelper? _bluetoothHelper;
 
-  /// Für `openssl` (Zertifikate) und `security verify-cert` (Vertrauen).
-  final ProcessRunner _runProcess;
+  /// Für `security verify-cert` (Vertrauen): mit Zeitgrenze, ein hängender
+  /// Aufruf wird beendet. Ohne eigenen Starter, aber mit eigenem Runner
+  /// (Tests) läuft er über den Runner — nie am System vorbei.
+  final ProcessStarter _startProcess;
 
   /// Genau eine Instanz je Agent: sie hält die Sperrdatei der Zertifikate.
   /// Ein zweiter Prozess (`zertifikat-vertrauen`) hat seine eigene; die
@@ -463,7 +470,7 @@ class Agent {
     try {
       trusted = await isLocalCaTrusted(
         files.caCertPath,
-        run: _runProcess,
+        start: _startProcess,
         serverCertPath: files.serverCertPath,
       );
     } on Object catch (error) {

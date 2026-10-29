@@ -12,11 +12,12 @@ import 'certificates.dart';
 const String securityTool = '/usr/bin/security';
 
 /// So lange darf die Frage nach Kennwort oder Touch ID offen bleiben. Danach
-/// gibt der Befehl auf, damit ein Installer nie endlos hängt — bestätigt der
-/// Benutzer später doch noch, gilt das Vertrauen trotzdem.
+/// wird der Aufruf beendet ([runWithTimeout]), damit ein Installer nie
+/// endlos hängt.
 const Duration trustPromptTimeout = Duration(minutes: 3);
 
-/// So lange darf eine Abfrage ohne Frage an den Benutzer dauern.
+/// So lange darf eine Abfrage ohne Frage an den Benutzer dauern; danach wird
+/// sie ebenso beendet.
 const Duration trustQueryTimeout = Duration(seconds: 10);
 
 /// Anmelde-Schlüsselbund des Benutzers mit dem Heimatordner [home].
@@ -34,17 +35,17 @@ String loginKeychainPath(String home) =>
 /// Safari sie sieht: eine Stelle allein fällt dort immer durch, weil macOS am
 /// Blatt die Erweiterung serverAuth verlangt. `-L` hält die Prüfung lokal.
 ///
-/// Fehlt `security`, hängt es oder scheitert es, gilt die Stelle als nicht
-/// vertraut.
+/// Fehlt `security`, scheitert es oder antwortet es nicht binnen [timeout]
+/// (dann wird es beendet), gilt die Stelle als nicht vertraut.
 Future<bool> isLocalCaTrusted(
   String caCertPath, {
-  required ProcessRunner run,
+  required ProcessStarter start,
   String? serverCertPath,
   Duration timeout = trustQueryTimeout,
 }) async {
   final server =
       serverCertPath ?? p.join(p.dirname(caCertPath), 'server-cert.pem');
-  final result = await _security(run, <String>[
+  final result = await runWithTimeout(start, securityTool, <String>[
     'verify-cert',
     '-c',
     server,
@@ -63,21 +64,27 @@ Future<bool> isLocalCaTrusted(
 /// `security add-trusted-cert -r trustRoot -p ssl -k <login.keychain-db> <ca>`.
 /// macOS fragt dabei nach Kennwort oder Touch ID (Absender „security“).
 ///
-/// Vorher verliert jede andere Stelle gleichen Namens im Anmelde-Schlüsselbund
-/// ihr Vertrauen: eine neu erzeugte Stelle heißt wie die alte, und vertraut
-/// sein soll immer höchstens eine. Lässt sich das nicht entziehen (Frage
-/// abgebrochen), wird auch die neue Stelle nicht eingetragen. Ist die
+/// Vorher verliert jede ältere Stelle von Connect ihr Vertrauen: eine neu
+/// erzeugte Stelle heißt wie die alte, und vertraut sein soll immer höchstens
+/// eine. Als Stelle von Connect zählt dabei nur, was es nachweislich ist
+/// ([matchesLocalCa]): die Suche nach dem Namen trifft jede Bezeichnung, die
+/// ihn nur enthält, und ein fremdes Zertifikat (auch eines mit „Nie
+/// vertrauen“) bleibt unberührt. Lässt sich das Vertrauen nicht entziehen
+/// (Frage abgebrochen), wird auch die neue Stelle nicht eingetragen. Ist die
 /// aktuelle Stelle schon vertraut, fragt macOS nicht noch einmal — der
 /// Installer ruft das bei jedem Update auf.
 ///
 /// `true`, wenn die Stelle danach vertraut ist bzw. das Eintragen gelang.
-/// Nie von selbst aus dem Agenten heraus aufrufen: eine Frage aus dem
-/// Hintergrund bei der Anmeldung wäre ein Schreck ohne Zusammenhang.
+/// Antwortet der Benutzer nicht binnen [promptTimeout], wird die Frage
+/// beendet (`false`). Nie von selbst aus dem Agenten heraus aufrufen: eine
+/// Frage aus dem Hintergrund bei der Anmeldung wäre ein Schreck ohne
+/// Zusammenhang.
 Future<bool> trustLocalCa(
   String caCertPath, {
-  required ProcessRunner run,
+  required ProcessStarter start,
   required String home,
   String? serverCertPath,
+  String openssl = '/usr/bin/openssl',
   Duration promptTimeout = trustPromptTimeout,
   Duration queryTimeout = trustQueryTimeout,
 }) async {
@@ -92,28 +99,32 @@ Future<bool> trustLocalCa(
   final keychain = loginKeychainPath(home);
 
   final others = (await _certificatesNamed(
-    run,
+    start,
     keychain,
     queryTimeout,
   )).where((certificate) => certificate.sha256 != current.sha256).toList();
   if (others.isNotEmpty) {
-    final trusted = await _trustedHashes(run, queryTimeout);
+    final trusted = await _trustedHashes(start, queryTimeout);
     for (final other in others) {
       if (!trusted.contains(other.sha1)) continue;
-      if (!await _untrustPem(other.pem, run, promptTimeout)) return false;
+      final removed = await _withPemFile(other.pem, (path) async {
+        if (!await _isLocalCa(path, start, openssl, queryTimeout)) return true;
+        return untrustLocalCa(path, start: start, timeout: promptTimeout);
+      });
+      if (!removed) return false;
     }
   }
 
   if (await isLocalCaTrusted(
     caCertPath,
-    run: run,
+    start: start,
     serverCertPath: serverCertPath,
     timeout: queryTimeout,
   )) {
     return true;
   }
 
-  final result = await _security(run, <String>[
+  final result = await runWithTimeout(start, securityTool, <String>[
     'add-trusted-cert',
     '-r',
     'trustRoot',
@@ -128,17 +139,90 @@ Future<bool> trustLocalCa(
 
 /// Entzieht dem Zertifikat [caCertPath] das Vertrauen im Benutzerbereich:
 /// `security remove-trusted-cert <ca>`. Auch das fragt macOS nach Kennwort
-/// oder Touch ID. `true`, wenn es gelang.
+/// oder Touch ID; ohne Antwort binnen [timeout] wird die Frage beendet.
+/// `true`, wenn es gelang.
 Future<bool> untrustLocalCa(
   String caCertPath, {
-  required ProcessRunner run,
+  required ProcessStarter start,
   Duration timeout = trustPromptTimeout,
 }) async {
-  final result = await _security(run, <String>[
+  final result = await runWithTimeout(start, securityTool, <String>[
     'remove-trusted-cert',
     caCertPath,
   ], timeout);
   return result?.exitCode == 0;
+}
+
+/// Ob die Ausgabe von `openssl x509 -noout -text` eine Stelle von Connect
+/// beschreibt: Inhaber **und** Aussteller genau `CN=Kasseneck Connect
+/// (lokal)` (selbst ausgestellt), `CA:TRUE` und genau unsere
+/// Namensbeschränkung (erlaubt nur `IP:127.0.0.1/255.255.255.255` und
+/// `DNS:localhost`, nichts ausgeschlossen).
+///
+/// Gelesen wird `-text`, weil LibreSSL 3.3 (`/usr/bin/openssl` am Mac) kein
+/// `-ext` kennt; diese Zeilen schreiben LibreSSL und OpenSSL 3 gleich.
+bool matchesLocalCa(String x509Text) {
+  final lines = x509Text
+      .split('\n')
+      .map((line) => line.trim())
+      .toList(growable: false);
+  const name = 'CN=$localCaName';
+  if (!lines.contains('Subject: $name') || !lines.contains('Issuer: $name')) {
+    return false;
+  }
+
+  final basic = lines.indexWhere(
+    (line) => line.startsWith('X509v3 Basic Constraints:'),
+  );
+  if (basic < 0 ||
+      basic + 1 >= lines.length ||
+      !RegExp(r'^CA:TRUE\b').hasMatch(lines[basic + 1])) {
+    return false;
+  }
+
+  final constraints = lines.indexWhere(
+    (line) => line.startsWith('X509v3 Name Constraints:'),
+  );
+  if (constraints < 0) return false;
+  final permitted = <String>{};
+  String? section;
+  for (final line in lines.skip(constraints + 1)) {
+    if (line == 'Permitted:' || line == 'Excluded:') {
+      section = line;
+      if (section == 'Excluded:') return false;
+      continue;
+    }
+    // Einträge wie `IP:…`, `DNS:…`, `email:…`; die nächste Erweiterung
+    // (`X509v3 …:`) beendet den Block.
+    if (section != null && RegExp(r'^[A-Za-z ]+:\S').hasMatch(line)) {
+      permitted.add(line);
+      continue;
+    }
+    break;
+  }
+  return permitted.length == 2 &&
+      permitted.contains('IP:127.0.0.1/255.255.255.255') &&
+      permitted.contains('DNS:localhost');
+}
+
+/// Ob das Zertifikat in [path] nachweislich eine Stelle von Connect ist.
+/// Lässt es sich nicht lesen (kein openssl, unlesbar), zählt es nicht dazu.
+Future<bool> _isLocalCa(
+  String path,
+  ProcessStarter start,
+  String openssl,
+  Duration timeout,
+) async {
+  final result = await runWithTimeout(start, openssl, <String>[
+    'x509',
+    '-noout',
+    '-text',
+    '-in',
+    path,
+  ], timeout);
+  return result != null &&
+      result.exitCode == 0 &&
+      matchesLocalCa('${result.stdout}');
 }
 
 /// Ein Zertifikat aus dem Schlüsselbund mit seinen Fingerabdrücken
@@ -151,17 +235,19 @@ class _KeychainCertificate {
   final String pem;
 }
 
-/// Alle Zertifikate mit dem Namen der lokalen Stelle im [keychain].
+/// Alle Zertifikate im [keychain], deren Bezeichnung den Namen der lokalen
+/// Stelle **enthält** (`-c` sucht nach Teilen) — nur Kandidaten, geprüft
+/// wird erst mit [matchesLocalCa].
 ///
 /// `find-certificate -a -Z -p` schreibt je Treffer `SHA-256 hash: …`,
 /// `SHA-1 hash: …` und das PEM. Kein Treffer endet mit Exitcode 44 — dann,
 /// wie bei jedem Fehler, eine leere Liste.
 Future<List<_KeychainCertificate>> _certificatesNamed(
-  ProcessRunner run,
+  ProcessStarter start,
   String keychain,
   Duration timeout,
 ) async {
-  final result = await _security(run, <String>[
+  final result = await runWithTimeout(start, securityTool, <String>[
     'find-certificate',
     '-a',
     '-Z',
@@ -203,13 +289,16 @@ final RegExp _findCertificateEntry = RegExp(
 /// Zertifikate nach SHA-1 führt. `dump-trust-settings` nennte nur Namen — und
 /// die sind bei einer neu erzeugten Stelle gleich. Ohne Einstellungen endet
 /// der Export mit einem Fehler: dann ist eben nichts vertraut.
-Future<Set<String>> _trustedHashes(ProcessRunner run, Duration timeout) async {
+Future<Set<String>> _trustedHashes(
+  ProcessStarter start,
+  Duration timeout,
+) async {
   final work = await Directory.systemTemp.createTemp(
     'kasseneck-connect-trust-',
   );
   try {
     final export = p.join(work.path, 'vertrauen.plist');
-    final result = await _security(run, <String>[
+    final result = await runWithTimeout(start, securityTool, <String>[
       'trust-settings-export',
       export,
     ], timeout);
@@ -226,20 +315,19 @@ Future<Set<String>> _trustedHashes(ProcessRunner run, Duration timeout) async {
   }
 }
 
-/// Entzieht einem Zertifikat aus dem Schlüsselbund das Vertrauen; dafür muss
-/// es als Datei vorliegen.
-Future<bool> _untrustPem(
+/// Legt [pem] für die Dauer von [action] als Datei ab — `security` und
+/// `openssl` wollen eine Datei.
+Future<bool> _withPemFile(
   String pem,
-  ProcessRunner run,
-  Duration timeout,
+  Future<bool> Function(String path) action,
 ) async {
   final work = await Directory.systemTemp.createTemp(
     'kasseneck-connect-trust-',
   );
   try {
-    final file = File(p.join(work.path, 'alte-stelle.pem'));
+    final file = File(p.join(work.path, 'stelle.pem'));
     await file.writeAsString(pem, flush: true);
-    return await untrustLocalCa(file.path, run: run, timeout: timeout);
+    return await action(file.path);
   } finally {
     await _deleteQuietly(work);
   }
@@ -263,22 +351,6 @@ Future<bool> _untrustPem(
     sha256: sha256.convert(der).toString().toUpperCase(),
     sha1: sha1.convert(der).toString().toUpperCase(),
   );
-}
-
-/// Ruft `security` auf; `null`, wenn es fehlt oder nicht rechtzeitig
-/// antwortet.
-Future<ProcessResult?> _security(
-  ProcessRunner run,
-  List<String> arguments,
-  Duration timeout,
-) async {
-  try {
-    return await run(securityTool, arguments).timeout(timeout);
-  } on ProcessException {
-    return null;
-  } on TimeoutException {
-    return null;
-  }
 }
 
 Future<void> _deleteQuietly(Directory directory) async {

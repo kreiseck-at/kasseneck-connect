@@ -14,6 +14,7 @@ import 'dart:math' as math;
 import 'package:path/path.dart' as p;
 
 import '../log/logger.dart';
+import '../process_runner.dart';
 import 'protocol.dart';
 
 /// Name des Hilfsprogramms im App-Paket, neben der Binary des Agenten.
@@ -100,10 +101,6 @@ abstract interface class BluetoothHelper {
   /// Beendet das Hilfsprogramm; danach scheitert jeder Aufruf.
   Future<void> stop();
 }
-
-/// Startet ein Programm als Kindprozess – in Tests austauschbar.
-typedef ProcessStarter =
-    Future<Process> Function(String executable, List<String> arguments);
 
 /// Hilfsprogramm als Kindprozess mit stdin/stdout-Zeilen.
 ///

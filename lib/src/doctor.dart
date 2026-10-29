@@ -149,7 +149,8 @@ class DoctorReport {
 ///
 /// Die Zertifikate für HTTPS sieht sie am Mac nur nach: Ablauf über
 /// `openssl`, Vertrauen über `security verify-cert` — sie legt keine an und
-/// trägt kein Vertrauen ein ([runProcess] ersetzt beides im Test).
+/// trägt kein Vertrauen ein ([runProcess] bzw. [startProcess] ersetzen beides
+/// im Test).
 /// [environment] ersetzt in Tests die Umgebung des Prozesses.
 Future<DoctorReport> collectDoctorReport({
   required ConfigPaths paths,
@@ -160,6 +161,7 @@ Future<DoctorReport> collectDoctorReport({
   String? executable,
   Map<String, String>? environment,
   ProcessRunner? runProcess,
+  ProcessStarter? startProcess,
 }) async {
   final store = ConfigStore(paths);
   final config = await store.load();
@@ -184,7 +186,14 @@ Future<DoctorReport> collectDoctorReport({
 
   final os = operatingSystem ?? Platform.operatingSystem;
   final tls = os == 'macos'
-      ? await _inspectTls(paths, runProcess ?? Process.run)
+      ? await _inspectTls(
+          paths,
+          runProcess ?? Process.run,
+          startProcess ??
+              (runProcess == null
+                  ? Process.start
+                  : processStarterFrom(runProcess)),
+        )
       : null;
 
   return DoctorReport(
@@ -211,7 +220,11 @@ Future<DoctorReport> collectDoctorReport({
 
 /// Liest Ablauf und Vertrauen der vorhandenen Zertifikate, ohne etwas
 /// anzulegen. Ohne Zertifikat wird gar nichts aufgerufen.
-Future<DoctorTls> _inspectTls(ConfigPaths paths, ProcessRunner run) async {
+Future<DoctorTls> _inspectTls(
+  ConfigPaths paths,
+  ProcessRunner run,
+  ProcessStarter start,
+) async {
   final certificates = LocalCertificates(
     directory: paths.directory,
     run: run,
@@ -224,7 +237,7 @@ Future<DoctorTls> _inspectTls(ConfigPaths paths, ProcessRunner run) async {
       certificates.caCertFile.existsSync() &&
       await isLocalCaTrusted(
         certificates.caCertFile.path,
-        run: run,
+        start: start,
         serverCertPath: certificates.serverCertFile.path,
       );
   return DoctorTls(

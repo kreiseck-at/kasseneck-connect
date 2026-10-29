@@ -129,8 +129,9 @@ fi
 # den angemeldeten Benutzer dabei nach Kennwort oder Touch ID (Absender
 # „security“). Ist sie schon vertraut (Update), fragt es nicht noch einmal.
 # Fehlen die Zertifikate noch, legt der Befehl sie an — gleichzeitig mit dem
-# eben gestarteten Agenten, die Sperrdatei ordnet das. Ohne Antwort gibt er
-# nach drei Minuten auf. Ein Fehlschlag bricht die Installation nicht ab:
+# eben gestarteten Agenten, die Sperrdatei ordnet das. Bleibt die Frage drei
+# Minuten unbeantwortet, beendet der Befehl sie und sich selbst — der
+# Installer hängt nie. Ein Fehlschlag bricht die Installation nicht ab:
 # HTTP läuft trotzdem, und das Vertrauen lässt sich nachholen.
 if /bin/launchctl asuser "$CONSOLE_UID" /usr/bin/sudo -H -u "$CONSOLE_USER" \
      /usr/bin/env HOME="$CONSOLE_HOME" "$BINARY" zertifikat-vertrauen; then

@@ -53,7 +53,8 @@ ArgParser buildArgParser() {
 /// Alle benannten Parameter außer [out]/[err] sind **Nahtstellen für Tests**:
 /// Datenverzeichnis, Ersatz für das Warten auf SIGINT/SIGTERM, Wunschport,
 /// Browser, Autostart-Weg, die beiden Abfragen der Diagnose, Betriebssystem,
-/// Umgebung (`HOME`) und der Programmstart für `openssl`/`security`. Ohne sie
+/// Umgebung (`HOME`) und der Programmstart für `openssl`/`security` (Runner,
+/// dazu der Starter für Aufrufe mit Zeitgrenze). Ohne sie
 /// entscheidet das laufende System — kein Test startet ein echtes
 /// `launchctl`, keiner fragt echte Drucker oder den echten Schlüsselbund.
 Future<int> runCli(
@@ -70,6 +71,7 @@ Future<int> runCli(
   String? operatingSystem,
   Map<String, String>? environment,
   ProcessRunner? runProcess,
+  ProcessStarter? startProcess,
 }) async {
   final stdoutSink = out ?? stdout;
   final stderrSink = err ?? stderr;
@@ -105,6 +107,11 @@ Future<int> runCli(
   final resolvedPaths = paths ?? ConfigPaths.forPlatform();
   final os = operatingSystem ?? Platform.operatingSystem;
   final run = runProcess ?? Process.run;
+  // Aufrufe, die hängen können, laufen mit Zeitgrenze über einen Starter.
+  // Reicht ein Test nur einen Runner herein, laufen sie über ihn.
+  final start =
+      startProcess ??
+      (runProcess == null ? Process.start : processStarterFrom(runProcess));
 
   switch (command) {
     case 'version':
@@ -120,6 +127,7 @@ Future<int> runCli(
         openBrowser: openBrowser,
         https: os == 'macos',
         runProcess: run,
+        startProcess: start,
       );
     case 'pair':
       return _printPairingCode(resolvedPaths, stdoutSink);
@@ -147,6 +155,7 @@ Future<int> runCli(
         operatingSystem: os,
         environment: environment ?? Platform.environment,
         runProcess: run,
+        startProcess: start,
       );
     case 'doctor':
       return _printDoctorReport(
@@ -157,6 +166,7 @@ Future<int> runCli(
         printerStates: printerStates,
         operatingSystem: operatingSystem,
         runProcess: run,
+        startProcess: start,
       );
   }
 
@@ -200,6 +210,7 @@ Future<int> _trustLocalCertificate(
   required String operatingSystem,
   required Map<String, String> environment,
   required ProcessRunner runProcess,
+  required ProcessStarter startProcess,
 }) async {
   const retry = 'Erneut versuchen: kasseneck-connect zertifikat-vertrauen';
   if (operatingSystem != 'macos') {
@@ -235,7 +246,7 @@ Future<int> _trustLocalCertificate(
 
   final before = await isLocalCaTrusted(
     files.caCertPath,
-    run: runProcess,
+    start: startProcess,
     serverCertPath: files.serverCertPath,
   );
   if (!before) {
@@ -247,7 +258,7 @@ Future<int> _trustLocalCertificate(
   }
   final trusted = await trustLocalCa(
     files.caCertPath,
-    run: runProcess,
+    start: startProcess,
     home: home,
     serverCertPath: files.serverCertPath,
   );
@@ -281,6 +292,7 @@ Future<int> _printDoctorReport(
   PrinterStates? printerStates,
   String? operatingSystem,
   ProcessRunner? runProcess,
+  ProcessStarter? startProcess,
 }) async {
   final report = await collectDoctorReport(
     paths: paths,
@@ -289,6 +301,7 @@ Future<int> _printDoctorReport(
     autostart: autostart,
     operatingSystem: operatingSystem,
     runProcess: runProcess,
+    startProcess: startProcess,
   );
   out.write(formatDoctorReport(report));
   return 0;
@@ -316,6 +329,7 @@ Future<int> _runAgent(
   bool? openBrowser,
   required bool https,
   required ProcessRunner runProcess,
+  required ProcessStarter startProcess,
 }) {
   final log = AgentLog(paths.logDirectory);
   final done = Completer<int>();
@@ -334,6 +348,7 @@ Future<int> _runAgent(
           openBrowser: openBrowser,
           https: https,
           runProcess: runProcess,
+          startProcess: startProcess,
         );
       } on Object catch (e) {
         // Der Ablauf selbst ist gescheitert — das beendet den Befehl.
@@ -364,6 +379,7 @@ Future<int> _serveAgent(
   bool? openBrowser,
   required bool https,
   required ProcessRunner runProcess,
+  required ProcessStarter startProcess,
 }) async {
   final store = ConfigStore(paths);
   final config = await store.load();
@@ -378,6 +394,7 @@ Future<int> _serveAgent(
     https: https,
     preferredHttpsPort: config.httpsPort,
     runProcess: runProcess,
+    startProcess: startProcess,
   );
 
   try {

@@ -21,6 +21,8 @@ export 'src/autostart/autostart.dart';
 export 'src/autostart/linux.dart';
 export 'src/autostart/macos.dart';
 export 'src/autostart/windows.dart';
+export 'src/bluetooth/blocklist.dart';
+export 'src/bluetooth/uuids.dart';
 export 'src/cli.dart';
 export 'src/config/model.dart';
 export 'src/config/paths.dart';

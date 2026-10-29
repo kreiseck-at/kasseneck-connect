@@ -479,4 +479,72 @@ void main() {
       expect(a.rueckrufe, hasLength(5));
     });
   });
+
+  test('revoke beendet die Belegung normal, Wartende scheitern mit '
+      'bluetooth_device_unknown', () {
+    fakeAsync((async) {
+      final a = _Aufbau(async);
+      final erste = a.hole(_drucker);
+      final zweite = _verfolge(a.leases.acquire(_drucker));
+      final dritte = _verfolge(a.leases.acquire(_drucker.toUpperCase()));
+      final waage = a.hole(_waage);
+
+      expect(a.leases.revoke(_drucker.toUpperCase()), isTrue);
+      async.flushMicrotasks();
+      expect(zweite.code, 'bluetooth_device_unknown');
+      expect(dritte.code, 'bluetooth_device_unknown');
+      expect(a.rueckrufe, ['beginn drucker', 'beginn waage', 'ende drucker']);
+      expect(a.leases.holds(_drucker, erste.id), isFalse);
+      expect(a.leases.renew(_drucker, erste.id), isFalse);
+      expect(a.leases.release(_drucker, erste.id), isFalse);
+
+      // Der alte Zeitgeber meldet kein Ende mehr, die Waage bleibt belegt.
+      expect(a.leases.renew(_waage, waage.id), isTrue);
+      async.elapse(const Duration(seconds: 4));
+      expect(a.leases.renew(_waage, waage.id), isTrue);
+      async.elapse(const Duration(seconds: 4));
+      expect(a.zaehle('abnorm drucker'), 0);
+      expect(a.zaehle('ende drucker'), 1);
+      expect(a.zaehle('abnorm waage'), 0);
+
+      // Danach ist das Gerät frei wie neu.
+      final neu = a.hole(_drucker);
+      expect(neu.id, isNot(erste.id));
+      expect(a.zaehle('beginn drucker'), 2);
+
+      // Nichts zu beenden: false, kein Rückruf.
+      expect(a.leases.release(_drucker, neu.id), isTrue);
+      final vorher = List<String>.of(a.rueckrufe);
+      expect(a.leases.revoke(_drucker), isFalse);
+      expect(a.rueckrufe, vorher);
+    });
+  });
+
+  test('revoke während des Zurücksetzens: ein Ende, niemand rückt nach', () {
+    fakeAsync((async) {
+      final zurueckgesetzt = Completer<void>();
+      final a = _Aufbau(async, abnorm: (_) => zurueckgesetzt.future);
+      a.hole(_drucker);
+      async.elapse(const Duration(seconds: 5));
+      expect(a.rueckrufe, ['beginn drucker', 'abnorm drucker']);
+      final wartet = _verfolge(a.leases.acquire(_drucker));
+
+      expect(a.leases.revoke(_drucker), isTrue);
+      async.flushMicrotasks();
+      expect(wartet.code, 'bluetooth_device_unknown');
+
+      zurueckgesetzt.complete();
+      async.elapse(const Duration(minutes: 1));
+      expect(a.rueckrufe, ['beginn drucker', 'abnorm drucker', 'ende drucker']);
+
+      // Nach dem Zurücksetzen ist das Gerät wieder frei.
+      a.hole(_drucker);
+      expect(a.zaehle('beginn drucker'), 2);
+
+      // Nach close beendet revoke nichts mehr (close hat das schon getan).
+      a.leases.close();
+      expect(a.leases.revoke(_drucker), isFalse);
+      expect(a.zaehle('ende drucker'), 2);
+    });
+  });
 }

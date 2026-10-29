@@ -16,6 +16,7 @@ import 'helper.dart';
 
 const String _codeBusy = 'bluetooth_busy';
 const String _codeUnavailable = 'bluetooth_unavailable';
+const String _codeDeviceUnknown = 'bluetooth_device_unknown';
 
 /// Zufallsbytes einer Belegungs-ID.
 const int _idBytes = 16;
@@ -28,6 +29,11 @@ const BluetoothFailure _busy = BluetoothFailure(
 const BluetoothFailure _closedFailure = BluetoothFailure(
   _codeUnavailable,
   'Bluetooth ist beendet.',
+);
+
+const BluetoothFailure _revokedFailure = BluetoothFailure(
+  _codeDeviceUnknown,
+  'Das Gerät ist nicht mehr zugelassen.',
 );
 
 /// Eine Belegung eines Geräts.
@@ -63,8 +69,11 @@ class Lease {
 ///   den Ablauf überschritten hat, der Zeitgeber aber noch nicht gelaufen ist –
 ///   im Ruhezustand können Zeitgeber stehen, die Uhr läuft weiter. Jede
 ///   Belegung endet genau einmal, gleich wer den Ablauf zuerst bemerkt.
+/// * **Entzug:** [revoke] beendet die Belegung normal und weist Wartende ab,
+///   wenn das Gerät nicht mehr zugelassen ist.
 ///
-/// Jedes `onAcquired` bekommt genau ein `onEnded`, auch bei [close].
+/// Jedes `onAcquired` bekommt genau ein `onEnded`, auch bei [close] und
+/// [revoke].
 /// Rückrufe, die werfen, ändern am Ablauf nichts.
 class DeviceLeases {
   DeviceLeases({
@@ -136,6 +145,37 @@ class DeviceLeases {
     _notify(_onEnded, lease.deviceId);
     _grantNext(slot);
     return true;
+  }
+
+  /// Beendet die Belegung des Geräts sofort als normales Ende (nur
+  /// `onEnded`, kein Zurücksetzen) und lässt alle Wartenden mit
+  /// `bluetooth_device_unknown` scheitern – für ein Gerät, das nicht mehr
+  /// zugelassen ist. Die Brücke trennt danach selbst.
+  ///
+  /// Läuft gerade ein abnormes Ende, endet es wie gewohnt mit seinem
+  /// `onEnded`; nachrücken kann dann niemand mehr. `false`, wenn es weder
+  /// eine Belegung noch Wartende gab.
+  bool revoke(String deviceId) {
+    if (_closed) return false;
+    final key = _key(deviceId);
+    final slot = _slots[key];
+    if (slot == null) return false;
+    final waiters = List<_Waiter>.of(slot.waiters);
+    slot.waiters.clear();
+    for (final waiter in waiters) {
+      waiter.timer?.cancel();
+      waiter.completer.completeError(_revokedFailure);
+    }
+    final lease = slot.holder;
+    if (lease != null) {
+      slot.expiry?.cancel();
+      slot.expiry = null;
+      slot.holder = null;
+      _notify(_onEnded, lease.deviceId);
+    }
+    // Ein laufendes abnormes Ende räumt den Platz selbst ab.
+    if (!slot.ending && identical(_slots[key], slot)) _slots.remove(key);
+    return lease != null || waiters.isNotEmpty;
   }
 
   /// Ob [leaseId] das Gerät gerade belegt.

@@ -178,6 +178,20 @@ class DeviceLeases {
     return lease != null || waiters.isNotEmpty;
   }
 
+  /// Ob das Gerät gerade belegt ist – von wem auch immer – oder ein abnormes
+  /// Ende noch läuft (das Zurücksetzen hält die Verbindung bis zuletzt).
+  ///
+  /// Eine nach der Uhr abgelaufene Belegung zählt nicht mehr; ihr abnormes
+  /// Ende beginnt hier, und solange es läuft, gilt das Gerät als belegt.
+  bool isHeld(String deviceId) {
+    if (_closed) return false;
+    final slot = _slots[_key(deviceId)];
+    if (slot == null) return false;
+    final holder = slot.holder;
+    if (holder != null && _overdue(holder)) _expire(slot, holder);
+    return slot.holder != null || slot.ending;
+  }
+
   /// Ob [leaseId] das Gerät gerade belegt.
   bool holds(String deviceId, String leaseId) =>
       _held(deviceId, leaseId) != null;

@@ -851,6 +851,101 @@ void main() {
     });
   });
 
+  test('Freigeben während einer Belegung: bluetooth_busy, das Gerät bleibt '
+      'verbunden und gehalten', () {
+    fakeAsync((async) {
+      final t = _Aufbau(async, temp, log);
+      t.verbinden();
+      t.abonnieren();
+      final a = t.belegen();
+      t.schreiben(a, [_paket(1)]);
+      final b = _verfolge(t.bridge.acquireLease(fakeM110Id));
+
+      // Ein anderer Tab will das Gerät freigeben, während A druckt.
+      final abgewiesen = t.fehler(t.bridge.release(fakeM110Id));
+      expect(abgewiesen.code, errorBluetoothBusy);
+      expect(abgewiesen.message, bluetoothErrorMessages[errorBluetoothBusy]);
+      expect(t.m110.verbunden, isTrue);
+      expect(t.verlauf, ['verbunden 1']);
+      expect(t.schreiben(a, [_paket(2)]), 1);
+
+      // A gibt frei, B übernimmt; auch jetzt wird nicht freigegeben.
+      expect(t.bridge.releaseLease(fakeM110Id, a.id), isTrue);
+      async.flushMicrotasks();
+      final lease = b.wert!;
+      expect(t.fehler(t.bridge.release(fakeM110Id)).code, errorBluetoothBusy);
+
+      // B hält das Gerät: fällt die Verbindung, verbindet Connect still neu …
+      t.m110.verbindungAbbrechen();
+      async.flushMicrotasks();
+      expect(t.verlauf, [
+        'verbunden 1',
+        'getrennt 1 (peripheral disconnected)',
+        'verbunden 2',
+      ]);
+      // … und das Nachhalten trennt B nicht mitten im Druck.
+      for (var i = 0; i < 30; i++) {
+        async.elapse(const Duration(seconds: 3));
+        expect(t.bridge.renewLease(fakeM110Id, lease.id), isTrue);
+      }
+      expect(t.m110.verbunden, isTrue);
+      expect(t.verlauf.last, 'verbunden 2');
+      expect(t.schreiben(lease, [_paket(3)]), 1);
+
+      // Ohne Belegung geht das Freigeben.
+      expect(t.bridge.releaseLease(fakeM110Id, lease.id), isTrue);
+      async.flushMicrotasks();
+      t.ok(t.bridge.release(fakeM110Id));
+      expect(t.verlauf.last, 'getrennt 2 (released)');
+      expect(t.m110.verbunden, isFalse);
+      t.ende();
+    });
+  });
+
+  test('Freigeben während des Zurücksetzens: bluetooth_busy, das Halten '
+      'bleibt im Lot', () {
+    fakeAsync((async) {
+      final t = _Aufbau(
+        async,
+        temp,
+        log,
+        geraete: [FakeM110(fertigNach: const Duration(seconds: 30))],
+      );
+      t.verbinden();
+      t.abonnieren();
+      final a = t.belegen();
+      t.schreiben(a, [_paket(1)]);
+      final b = _verfolge(t.bridge.acquireLease(fakeM110Id));
+
+      // A läuft ab; das Neuverbinden nach dem Zurücksetzen wartet, weil die
+      // Kassen-App den Drucker gerade hält.
+      async.elapse(const Duration(seconds: 4));
+      t.m110.vonAnderemGeraetGehalten = true;
+      async.elapse(const Duration(seconds: 1));
+      expect(t.verlauf, ['verbunden 1', 'getrennt 1 (reset)']);
+      expect(b.fertig, isFalse);
+
+      expect(t.fehler(t.bridge.release(fakeM110Id)).code, errorBluetoothBusy);
+
+      // Das Zurücksetzen endet, B übernimmt das gehaltene Gerät.
+      t.m110.vonAnderemGeraetGehalten = false;
+      async.flushMicrotasks();
+      expect(b.fehler, isNull);
+      expect(t.verlauf, ['verbunden 1', 'getrennt 1 (reset)', 'verbunden 2']);
+      final lease = b.wert!;
+      t.m110.verbindungAbbrechen();
+      async.flushMicrotasks();
+      expect(t.verlauf.last, 'verbunden 3');
+      for (var i = 0; i < 30; i++) {
+        async.elapse(const Duration(seconds: 3));
+        expect(t.bridge.renewLease(fakeM110Id, lease.id), isTrue);
+      }
+      expect(t.m110.verbunden, isTrue);
+      expect(t.schreiben(lease, [_paket(2)]), 1);
+      t.ende();
+    });
+  });
+
   test('Verbindung fällt mitten im Schreiben: Abbruch mit written, nichts '
       'in die neue Verbindung', () {
     fakeAsync((async) {

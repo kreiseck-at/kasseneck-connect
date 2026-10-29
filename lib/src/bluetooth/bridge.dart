@@ -332,8 +332,16 @@ class BluetoothBridge {
       _onDevice(id, (key) => _connections.demand(key));
 
   /// Beendet den Bedarf sofort: trennt, verwirft Abos und Meldungen.
-  Future<void> release(String id) =>
-      _onDevice(id, (key) => _connections.release(key));
+  ///
+  /// Solange das Gerät belegt ist (oder nach einem Ablauf zurückgesetzt
+  /// wird), `bluetooth_busy`: sonst kappte ein anderer Tab einen laufenden
+  /// Druck, und das Halten der Belegung fiele mit weg – der Nächste in der
+  /// Warteschlange bekäme ein Gerät, das weder still neu verbindet noch vor
+  /// dem Nachhalten sicher ist.
+  Future<void> release(String id) => _onDevice(id, (key) {
+    if (_leases.isHeld(key)) throw _failure(errorBluetoothBusy);
+    return _connections.release(key);
+  });
 
   /// Dienste und Merkmale mit Eigenschaften; Gesperrtes fehlt.
   Future<List<Map<String, Object?>>> gatt(String id) =>

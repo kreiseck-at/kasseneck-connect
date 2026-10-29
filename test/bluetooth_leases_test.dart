@@ -547,4 +547,44 @@ void main() {
       expect(a.zaehle('ende drucker'), 2);
     });
   });
+
+  test('isHeld: belegt, nach der Uhr abgelaufen, während des Zurücksetzens, '
+      'nach der Freigabe', () {
+    fakeAsync((async) {
+      final zurueckgesetzt = Completer<void>();
+      final a = _Aufbau(async, abnorm: (_) => zurueckgesetzt.future);
+      expect(a.leases.isHeld(_drucker), isFalse);
+
+      // Belegt; nach der Freigabe frei.
+      final erste = a.hole(_drucker);
+      expect(a.leases.isHeld(_drucker.toUpperCase()), isTrue);
+      expect(a.leases.isHeld(_waage), isFalse);
+      expect(a.leases.release(_drucker, erste.id), isTrue);
+      expect(a.leases.isHeld(_drucker), isFalse);
+
+      // Nach der Uhr abgelaufen (Zeitgeber stehen): die Belegung zählt nicht
+      // mehr, ihr abnormes Ende beginnt, und solange es läuft, gilt das Gerät
+      // als belegt.
+      final zweite = a.hole(_drucker);
+      a.sprung = const Duration(minutes: 10);
+      expect(a.leases.isHeld(_drucker), isTrue);
+      expect(a.rueckrufe.last, 'abnorm drucker');
+      expect(a.leases.holds(_drucker, zweite.id), isFalse);
+
+      // Während des Zurücksetzens: weiter belegt, kein zweites Ende.
+      async.elapse(const Duration(seconds: 10));
+      expect(a.leases.isHeld(_drucker), isTrue);
+      expect(a.zaehle('abnorm drucker'), 1);
+
+      zurueckgesetzt.complete();
+      async.flushMicrotasks();
+      expect(a.leases.isHeld(_drucker), isFalse);
+      expect(a.zaehle('ende drucker'), 2);
+
+      // Nach close ist nichts mehr belegt.
+      a.hole(_drucker);
+      a.leases.close();
+      expect(a.leases.isHeld(_drucker), isFalse);
+    });
+  });
 }

@@ -131,9 +131,11 @@ class FakeBluetoothHelper implements BluetoothHelper {
     required AgentLog log,
     Iterable<FakeM110> geraete = const <FakeM110>[],
     String zustand = 'poweredOn',
+    String? zustandBeimNaechstenStart,
     Duration heartbeat = const Duration(seconds: 5),
     Duration callTimeout = const Duration(seconds: 15),
   }) : _zustand = zustand {
+    _zustandProStart = zustandBeimNaechstenStart;
     for (final geraet in geraete) {
       geraetHinzufuegen(geraet);
     }
@@ -167,6 +169,14 @@ class FakeBluetoothHelper implements BluetoothHelper {
   String _zustand;
   _Lauf? _lauf;
 
+  /// Macht `_verbinden` in der Lücke zwischen Trennung und Zustandsmeldung
+  /// zu einem `not_connected` (siehe [funkFaelltAus]).
+  bool _luecke = false;
+
+  /// Ein Zustand, der erst für den nächsten Prozessstart gilt (die Freigabe
+  /// wertet macOS nur beim Start des Prozesses aus), sonst `null`.
+  String? _zustandProStart;
+
   /// Wie oft das Hilfsprogramm gestartet wurde.
   int get starts => prozesse.length;
 
@@ -180,6 +190,11 @@ class FakeBluetoothHelper implements BluetoothHelper {
   Future<Process> start(String executable, List<String> arguments) async {
     final prozess = FakeHelperProcess(4200 + prozesse.length);
     prozesse.add(prozess);
+    final proStart = _zustandProStart;
+    if (proStart != null) {
+      _zustand = proStart;
+      _zustandProStart = null;
+    }
     if (stirbtBeimStart) {
       prozess.beenden(1);
       return prozess;
@@ -207,6 +222,7 @@ class FakeBluetoothHelper implements BluetoothHelper {
   /// des Zustands; wartende Befehle laufen, sobald er wieder feststeht.
   void setzeZustand(String zustand) {
     _zustand = zustand;
+    _luecke = false;
     final lauf = _lauf;
     if (lauf == null || !lauf.managerDa) return;
     _sende(lauf, HelperEvent(HelperEventName.state, {'state': zustand}));
@@ -228,6 +244,21 @@ class FakeBluetoothHelper implements BluetoothHelper {
       for (final befehl in wartend) {
         _ausfuehren(lauf, befehl);
       }
+    }
+  }
+
+  /// Die Freigabe ändert sich in den Systemeinstellungen: macOS wertet sie nur
+  /// beim Start des Prozesses aus. Der laufende Prozess behält seinen Zustand,
+  /// erst ein neu gestarteter meldet [zustand].
+  void aendereFreigabe(String zustand) => _zustandProStart = zustand;
+
+  /// Bluetooth am Mac geht aus, wie CoreBluetooth es meldet: erst fallen die
+  /// Verbindungen (`disconnected`), ein `connect` in dieser Lücke scheitert mit
+  /// `not_connected`, der Zustand `poweredOff` kommt erst mit [setzeZustand].
+  void funkFaelltAus() {
+    _luecke = true;
+    for (final geraet in geraete) {
+      _verbindungWeg(geraet, 'disconnected');
     }
   }
 
@@ -495,7 +526,11 @@ class FakeBluetoothHelper implements BluetoothHelper {
       return;
     }
     geraet._link = _Link()..wartend.add(id);
-    if (geraet._erreichbar) _verbunden(geraet);
+    if (_luecke) {
+      _verbindungWeg(geraet, 'peripheral is not connected');
+    } else if (geraet._erreichbar) {
+      _verbunden(geraet);
+    }
   }
 
   /// Die Verbindung steht: erst `connected`, dann die Antworten auf `connect`.

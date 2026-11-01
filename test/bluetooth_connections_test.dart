@@ -171,6 +171,53 @@ void main() {
 
   String logText() => log.file.existsSync() ? log.file.readAsStringSync() : '';
 
+  test('Bluetooth aus und wieder an, während gehalten: Trennung kommt vor '
+      'dem Zustand, danach verbindet Connect still neu', () {
+    fakeAsync((async) {
+      final t = _Aufbau(async, log);
+      t.verbinden();
+      t.abonnieren();
+      t.conns.hold(fakeM110Id);
+      t.ereignisse.clear();
+
+      t.fake.funkFaelltAus();
+      async.flushMicrotasks();
+      t.fake.setzeZustand('poweredOff');
+      async.elapse(const Duration(seconds: 4));
+      expect(t.conns.isConnected(fakeM110Id), isFalse);
+
+      t.fake.setzeZustand('poweredOn');
+      async.flushMicrotasks();
+      expect(t.conns.isConnected(fakeM110Id), isTrue);
+      expect(t.conns.generationOf(fakeM110Id), 2);
+      expect(t.m110.abonniert, isTrue);
+      expect(t.ablauf, [
+        'getrennt 1 (disconnected)',
+        'verbunden 2',
+        'meldung 2#2 02 b6 00',
+      ]);
+      t.ende();
+    });
+  });
+
+  test('Bluetooth aus und wieder an im bloßen Nachhalten: bleibt zu', () {
+    fakeAsync((async) {
+      final t = _Aufbau(async, log);
+      t.verbinden();
+      t.abonnieren();
+
+      t.fake.funkFaelltAus();
+      async.flushMicrotasks();
+      t.fake.setzeZustand('poweredOff');
+      async.elapse(const Duration(seconds: 4));
+      t.fake.setzeZustand('poweredOn');
+      async.elapse(const Duration(seconds: 4));
+      expect(t.conns.isConnected(fakeM110Id), isFalse);
+      expect(t.m110.verbunden, isFalse);
+      t.ende();
+    });
+  });
+
   test('demand verbindet einmal und verlängert danach nur', () {
     fakeAsync((async) {
       final t = _Aufbau(async, log);

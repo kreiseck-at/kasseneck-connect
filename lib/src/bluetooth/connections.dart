@@ -223,6 +223,7 @@ class BluetoothConnections {
     if (_closed || d == null || d.holds == 0) return;
     d.holds--;
     if (d.holds > 0) return;
+    d.rejoin = false;
     _touch(d);
     final effort = d.effort;
     if (effort != null && effort.waiters.isEmpty) {
@@ -390,6 +391,7 @@ class BluetoothConnections {
     d.holds = 0;
     d.linger?.cancel();
     d.linger = null;
+    d.rejoin = false;
     d.subs.clear();
     final effort = d.effort;
     final pending = _cancel(d);
@@ -498,6 +500,7 @@ class BluetoothConnections {
     _endRound(effort);
     d.effort = null;
     d.ready = true;
+    d.rejoin = false;
     final max = d.maxWrite;
     _log.info(
       'Bluetooth: ${d.id} verbunden (Verbindung ${d.generation}'
@@ -653,6 +656,17 @@ class BluetoothConnections {
         if (effort != null && effort.wake != null) _wakeUp(effort);
       }
     }
+    // macOS meldet die Trennung oft vor `poweredOff`: der Versuch in dieser
+    // Lücke scheitert mit `not_connected` und gibt auf. Ein gehaltenes Gerät
+    // ohne Versuch verbindet deshalb mit dem Funk wieder still neu.
+    if (state == 'poweredOn') {
+      for (final d in _devices.values) {
+        if (d.rejoin && d.holds > 0 && d.effort == null && !d.ready) {
+          _log.info('Bluetooth: ${d.id} wird gehalten, verbinde neu.');
+          _start(d, _Effort());
+        }
+      }
+    }
   }
 
   void _onConnected(_Device d, Map<String, Object?> data) {
@@ -700,6 +714,7 @@ class BluetoothConnections {
       'generation': d.generation,
       'reason': reason,
     });
+    d.rejoin = ours == null && d.holds > 0;
     if (ours == null && d.holds > 0 && d.effort == null && !_closed) {
       _log.info('Bluetooth: ${d.id} wird gehalten, verbinde neu.');
       _start(d, _Effort());
@@ -776,6 +791,10 @@ class _Device {
   bool episode = false;
   int holds = 0;
   Timer? linger;
+
+  /// Die gehaltene Verbindung ist ohne unser Zutun gefallen und noch nicht
+  /// wieder da: mit dem Funk (`poweredOn`) wird still neu verbunden.
+  bool rejoin = false;
 
   /// Das Hilfsprogramm hat eine Verbindung (`connected` ohne
   /// `disconnected`).

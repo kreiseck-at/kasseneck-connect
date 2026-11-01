@@ -133,6 +133,9 @@ class _KaputteAntworten implements BluetoothHelper {
   }
 
   @override
+  Future<void> refresh() => _innen.refresh();
+
+  @override
   Future<void> stop() => _innen.stop();
 }
 
@@ -1285,6 +1288,28 @@ void main() {
 
       // Suchen verbindet nichts.
       expect(t.m110.verbindungen, 0);
+      t.ende();
+    });
+  });
+
+  test('Freigabe nachträglich erteilt: GET-Zustand startet neu und zeigt '
+      'poweredOn; ohne laufendes Hilfsprogramm startet er nichts', () {
+    fakeAsync((async) {
+      final t = _Aufbau(async, temp, log);
+      t.fake.setzeZustand('unauthorized');
+      t.ok(t.bridge.summary());
+      expect(t.fake.starts, 0);
+
+      expect(t.fehler(t.bridge.scan()).code, errorBluetoothUnauthorized);
+      expect(t.fake.starts, 1);
+      t.fake.aendereFreigabe('poweredOn');
+
+      expect(t.ok(t.bridge.summary())!['state'], 'unauthorized');
+      async.elapse(const Duration(seconds: 10));
+      final stand = _verfolge(t.bridge.summary());
+      async.elapse(const Duration(seconds: 1));
+      expect(stand.wert!['state'], 'poweredOn');
+      expect(t.fake.starts, 2);
       t.ende();
     });
   });

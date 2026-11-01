@@ -409,7 +409,11 @@ Firmware-Update-Dienste bleiben immer gesperrt.
 Hilfsprogramms: `unknown` heißt, das Hilfsprogramm läuft noch nicht, weil seit
 dem Start des Agenten noch niemand Bluetooth gebraucht hat (kein Fehler);
 `starting` beim ersten Start, `helper_restarting` nach einem Absturz bis zur
-nächsten Meldung.
+nächsten Meldung. macOS wertet die Bluetooth-Freigabe nur beim Start eines
+Prozesses aus: meldet das laufende Hilfsprogramm `unauthorized`, startet Connect
+es beim nächsten Aufruf (Suche, Verbinden, `GET /v1/bluetooth`) neu, höchstens
+alle 10 Sekunden, damit eine in den Systemeinstellungen erteilte Freigabe ohne
+Neustart von Connect greift.
 `unauthorized` heißt, die Freigabe unter **Systemeinstellungen → Datenschutz &
 Sicherheit → Bluetooth** fehlt.
 

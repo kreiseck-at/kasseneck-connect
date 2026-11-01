@@ -287,6 +287,9 @@ class FakeBluetoothHelper implements BluetoothHelper {
   ]) => helper.call(op, args);
 
   @override
+  Future<void> refresh() => helper.refresh();
+
+  @override
   Future<void> stop() => helper.stop();
 
   // ---------------------------------------------------------------------------

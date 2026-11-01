@@ -32,6 +32,9 @@ const String helperStateStarting = 'starting';
 const String helperStateRestarting = 'helper_restarting';
 
 const String _unknown = 'unknown';
+
+/// Funkzustand ohne Bluetooth-Freigabe.
+const String helperStateUnauthorized = 'unauthorized';
 const String _unavailable = 'bluetooth_unavailable';
 const String _unsupported = 'bluetooth_unsupported';
 
@@ -49,6 +52,11 @@ const List<Duration> _restartPauses = [
   Duration(seconds: 10),
   Duration(seconds: 30),
 ];
+
+/// Frühestens so lange nach einem Start ersetzt der Aufpasser ein
+/// Hilfsprogramm, das `unauthorized` meldet, um eine inzwischen erteilte
+/// Freigabe zu übernehmen.
+const Duration _authRecheck = Duration(seconds: 10);
 
 /// Nach so langem ruhigem Lauf beginnt die Pause wieder bei der ersten Stufe.
 const Duration _calmAfter = Duration(seconds: 60);
@@ -97,6 +105,12 @@ abstract interface class BluetoothHelper {
   /// [BluetoothFailure]: mit dem Code des Hilfsprogramms bei einer
   /// Fehlerantwort, sonst `bluetooth_unavailable`.
   Future<Map<String, Object?>> call(String op, [Map<String, Object?> args]);
+
+  /// Prüft, ob eine geänderte Freigabe greift: meldet das laufende
+  /// Hilfsprogramm `unauthorized`, wird es (höchstens alle 10 s) ersetzt, denn
+  /// macOS wertet die Freigabe nur beim Start des Prozesses aus. Startet nie
+  /// ein Hilfsprogramm, das nicht läuft; wirft nie.
+  Future<void> refresh();
 
   /// Beendet das Hilfsprogramm; danach scheitert jeder Aufruf.
   Future<void> stop();
@@ -149,6 +163,10 @@ class ProcessBluetoothHelper implements BluetoothHelper {
   Timer? _pauseTimer;
   Completer<void>? _pauseOver;
 
+  /// Läuft nach jedem Start [_authRecheck] lang: so lange kein Ersetzen
+  /// wegen `unauthorized`.
+  Timer? _authLock;
+
   @override
   Stream<HelperEvent> get events => _events.stream;
 
@@ -161,6 +179,7 @@ class ProcessBluetoothHelper implements BluetoothHelper {
     Map<String, Object?> args = const <String, Object?>{},
   ]) {
     if (_stopped) return Future.error(_stoppedFailure);
+    _recheckAuthorization();
     final id = _nextId++;
     final pending = _Call(op);
     _calls[id] = pending;
@@ -199,9 +218,42 @@ class ProcessBluetoothHelper implements BluetoothHelper {
   }
 
   @override
+  Future<void> refresh() async {
+    if (_stopped || !_recheckAuthorization()) return;
+    try {
+      // Der neue Prozess meldet seinen Zustand mit dem ersten Befehl.
+      await call(HelperOp.state);
+    } on BluetoothFailure {
+      // Der Zustand bleibt, wie er ist.
+    }
+  }
+
+  /// Ersetzt ein laufendes Hilfsprogramm, das `unauthorized` meldet; ein
+  /// gewollter Neustart, kein Absturz (keine Pause, kein Hochzählen).
+  /// Liefert, ob ersetzt wurde.
+  bool _recheckAuthorization() {
+    final run = _run;
+    if (_state != helperStateUnauthorized ||
+        run == null ||
+        run.ended ||
+        _authLock != null) {
+      return false;
+    }
+    log.info(
+      'Bluetooth-Hilfsprogramm meldet keine Freigabe; wird neu gestartet, '
+      'falls sie inzwischen erteilt ist.',
+    );
+    run.process.kill(ProcessSignal.sigkill);
+    _ended(run, 'Neustart wegen Freigabe', planned: true);
+    return true;
+  }
+
+  @override
   Future<void> stop() async {
     if (_stopped) return;
     _stopped = true;
+    _authLock?.cancel();
+    _authLock = null;
     _pauseTimer?.cancel();
     _pauseTimer = null;
     final pauseOver = _pauseOver;
@@ -288,6 +340,8 @@ class ProcessBluetoothHelper implements BluetoothHelper {
 
     final run = _Run(process);
     _run = run;
+    _authLock?.cancel();
+    _authLock = Timer(_authRecheck, () => _authLock = null);
     _attach(run);
     log.info('Bluetooth-Hilfsprogramm gestartet.');
     return run;
@@ -346,7 +400,7 @@ class ProcessBluetoothHelper implements BluetoothHelper {
   }
 
   /// Der Prozess ist weg (Absturz, Hänger oder [stop]).
-  void _ended(_Run run, String reason) {
+  void _ended(_Run run, String reason, {bool planned = false}) {
     if (run.ended) return;
     run.ended = true;
     run.cancel();
@@ -357,6 +411,8 @@ class ProcessBluetoothHelper implements BluetoothHelper {
     final code = run.exitCode;
     if (_stopped) {
       log.info('Bluetooth-Hilfsprogramm beendet.');
+    } else if (planned) {
+      log.info('Bluetooth-Hilfsprogramm beendet ($reason).');
     } else {
       log.warn(
         'Bluetooth-Hilfsprogramm beendet ($reason'
@@ -367,7 +423,7 @@ class ProcessBluetoothHelper implements BluetoothHelper {
     for (final entry in _calls.entries.toList()) {
       if (identical(entry.value.run, run)) _fail(entry.key, failure);
     }
-    if (!_stopped) _scheduleRestart();
+    if (!_stopped && !planned) _scheduleRestart();
     for (final device in run.connected) {
       _emit(
         HelperEvent(HelperEventName.disconnected, {
@@ -571,6 +627,9 @@ class UnsupportedBluetoothHelper implements BluetoothHelper {
     _unsupported,
     'Bluetooth gibt es in Kasseneck Connect bisher nur unter macOS.',
   );
+
+  @override
+  Future<void> refresh() async {}
 
   @override
   Future<void> stop() async {}

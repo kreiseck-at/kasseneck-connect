@@ -356,6 +356,99 @@ void main() {
     });
   });
 
+  group('Freigabe in den Systemeinstellungen erteilt', () {
+    test('die nächste Suche nach der Drosselzeit startet neu und sieht '
+        'poweredOn; innerhalb der Drosselzeit kein zweiter Neustart', () {
+      fakeAsync((async) {
+        final fake = FakeBluetoothHelper(log: log, zustand: 'unauthorized');
+        final erste = _verfolge(fake.call(HelperOp.scan, {'ms': 1000}));
+        async.flushMicrotasks();
+        expect(erste.code, 'unauthorized');
+        fake.aendereFreigabe('poweredOn');
+
+        // Zu früh: der Prozess läuft weiter, die Freigabe gilt noch nicht.
+        async.elapse(const Duration(seconds: 9));
+        final zuFrueh = _verfolge(fake.call(HelperOp.scan, {'ms': 1000}));
+        async.flushMicrotasks();
+        expect(zuFrueh.code, 'unauthorized');
+        expect(fake.starts, 1);
+
+        async.elapse(const Duration(seconds: 1));
+        final suche = _verfolge(fake.call(HelperOp.scan, {'ms': 1000}));
+        async.elapse(const Duration(seconds: 2));
+        expect(suche.fehler, isNull);
+        expect(fake.starts, 2);
+        expect(fake.state, 'poweredOn');
+        expect(fake.prozesse.first.killedWith, isNotNull);
+        _stoppen(fake, async);
+      });
+    });
+
+    test('ein gewollter Neustart zählt nicht als Absturz: der nächste echte '
+        'Absturz wartet nur 1 s', () {
+      fakeAsync((async) {
+        final fake = FakeBluetoothHelper(log: log, zustand: 'unauthorized');
+        _verfolge(fake.call(HelperOp.scan, {'ms': 1000}));
+        async.flushMicrotasks();
+        fake.aendereFreigabe('poweredOn');
+        async.elapse(const Duration(seconds: 10));
+        _verfolge(fake.call(HelperOp.state));
+        async.flushMicrotasks();
+        expect(fake.starts, 2);
+
+        fake.abstuerzen();
+        async.flushMicrotasks();
+        _verfolge(fake.call(HelperOp.state));
+        async.elapse(const Duration(milliseconds: 999));
+        expect(fake.starts, 2);
+        async.elapse(const Duration(milliseconds: 1));
+        expect(fake.starts, 3);
+        _stoppen(fake, async);
+      });
+    });
+
+    test('refresh startet bei unauthorized neu, aber nur ein laufendes '
+        'Hilfsprogramm und nur gedrosselt', () {
+      fakeAsync((async) {
+        final fake = FakeBluetoothHelper(log: log, zustand: 'unauthorized');
+        // Ohne laufendes Hilfsprogramm startet refresh nichts.
+        unawaited(fake.refresh());
+        async.elapse(const Duration(seconds: 30));
+        expect(fake.starts, 0);
+
+        _verfolge(fake.call(HelperOp.state));
+        async.flushMicrotasks();
+        expect(fake.state, 'unauthorized');
+        fake.aendereFreigabe('poweredOn');
+
+        unawaited(fake.refresh());
+        async.elapse(const Duration(seconds: 5));
+        expect(fake.starts, 1);
+        expect(fake.state, 'unauthorized');
+
+        async.elapse(const Duration(seconds: 5));
+        unawaited(fake.refresh());
+        async.elapse(const Duration(seconds: 1));
+        expect(fake.starts, 2);
+        expect(fake.state, 'poweredOn');
+        _stoppen(fake, async);
+      });
+    });
+
+    test('bei poweredOff gibt es keinen Neustart', () {
+      fakeAsync((async) {
+        final fake = FakeBluetoothHelper(log: log, zustand: 'poweredOff');
+        _verfolge(fake.call(HelperOp.scan, {'ms': 1000}));
+        async.elapse(const Duration(seconds: 20));
+        unawaited(fake.refresh());
+        _verfolge(fake.call(HelperOp.state));
+        async.elapse(const Duration(seconds: 20));
+        expect(fake.starts, 1);
+        _stoppen(fake, async);
+      });
+    });
+  });
+
   test('kaputte Zeile wird verworfen, der nächste Aufruf klappt', () {
     fakeAsync((async) {
       final fake = FakeBluetoothHelper(log: log);

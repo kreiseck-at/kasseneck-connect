@@ -227,9 +227,11 @@ class BluetoothBridge {
   /// Laufzeit einer Belegung ohne Erneuerung.
   Duration get leaseTtl => _leases.ttl;
 
-  /// Zustand und zugelassene Geräte mit Verbindungsstand. Berührt Bluetooth
-  /// nicht.
+  /// Zustand und zugelassene Geräte mit Verbindungsstand. Startet kein
+  /// Hilfsprogramm; ein laufendes, das keine Freigabe meldet, wird ersetzt,
+  /// damit eine inzwischen erteilte Freigabe sichtbar wird.
   Future<Map<String, Object?>> summary() async {
+    await _helper.refresh();
     final config = await _store.load();
     return <String, Object?>{
       'state': state,

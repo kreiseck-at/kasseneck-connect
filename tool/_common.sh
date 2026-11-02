@@ -80,6 +80,42 @@ find_signing_identity() {
   printf '%s\n' "$line" | sed -e 's/^[^"]*"//' -e 's/"[^"]*$//'
 }
 
+# Ordnername des App-Pakets unter macOS. Den zeigt macOS im Bluetooth-Dialog
+# und in den Systemeinstellungen (nicht CFBundleName) — deshalb mit
+# Leerzeichen, und deshalb steht jeder Pfad, der ihn enthält, in
+# Anführungszeichen (geprüft von test/macos_bundle_test.dart).
+APP_BUNDLE_NAME="Kasseneck Connect.app"
+
+# Signiert das App-Paket $1 mit der Identität $2 (Hardened Runtime +
+# Zeitstempel, beides Pflicht für die Notarisierung).
+#
+# Die Reihenfolge ist fest: erst das Hilfsprogramm in Contents/MacOS, dann
+# das Paket. Die Paketsignatur versiegelt alles darin und setzt dafür
+# signierten Inhalt voraus; sie signiert dabei die Hauptbinary (die
+# Dart-Binary) mit `tool/entitlements-macos.plist`, ohne die sie unter
+# Hardened Runtime nicht startet. Das Hilfsprogramm (Swift) braucht keine
+# Berechtigung; die Bluetooth-Freigabe hängt am Paket.
+sign_app_bundle() {
+  local bundle="$1" identity="$2"
+  codesign --force --options runtime --timestamp \
+    --sign "$identity" "$bundle/Contents/MacOS/kasseneck-bluetooth"
+  codesign --force --options runtime --timestamp \
+    --entitlements tool/entitlements-macos.plist \
+    --sign "$identity" "$bundle"
+  codesign --verify --strict --deep --verbose=2 "$bundle"
+}
+
+# Ob das App-Paket $1 gültig und mit einer Developer-ID-Application-Identität
+# signiert ist (nicht nur ad hoc vom Linker).
+signed_with_developer_id() {
+  local bundle="$1"
+  codesign --verify --strict --deep "$bundle" 2>/dev/null || return 1
+  # grep ohne -q: es liest bis zum Ende, sonst kann codesign unter pipefail
+  # an einem geschlossenen Rohr scheitern.
+  codesign -dv --verbose=2 "$bundle" 2>&1 \
+    | grep '^Authority=Developer ID Application' >/dev/null
+}
+
 sha256_of() {
   if command -v shasum >/dev/null 2>&1; then
     shasum -a 256 "$1" | awk '{print $1}'

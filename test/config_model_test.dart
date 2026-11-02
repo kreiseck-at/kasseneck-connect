@@ -129,6 +129,39 @@ void main() {
     });
   });
 
+  group('HTTPS-Port', () {
+    test('Standard 27190, getrennt vom HTTP-Port', () {
+      expect(defaultHttpsPort, 27190);
+      expect(AgentConfig().httpsPort, 27190);
+      expect(AgentConfig.fromJson(<String, Object?>{}).httpsPort, 27190);
+    });
+
+    test('Roundtrip und copyWith', () {
+      final config = AgentConfig(httpsPort: 27192);
+      final copy = AgentConfig.fromJson(
+        readMap(jsonDecode(jsonEncode(config.toJson())))!,
+      );
+      expect(copy.httpsPort, 27192);
+      expect(copy.port, defaultAgentPort);
+      expect(config.copyWith(port: 27183).httpsPort, 27192);
+      expect(config.copyWith(httpsPort: 27191).httpsPort, 27191);
+    });
+
+    test('tolerant wie port: Unsinn ergibt den Standard', () {
+      expect(
+        AgentConfig.fromJson(<String, Object?>{'httpsPort': '27193'}).httpsPort,
+        27193,
+      );
+      for (final value in <Object?>[0, -1, 70000, 'abc', null, true]) {
+        expect(
+          AgentConfig.fromJson(<String, Object?>{'httpsPort': value}).httpsPort,
+          defaultHttpsPort,
+          reason: '$value',
+        );
+      }
+    });
+  });
+
   group('allowDevOrigins', () {
     test('ist standardmäßig aus und überlebt den Roundtrip', () {
       expect(AgentConfig().allowDevOrigins, isFalse);
@@ -146,6 +179,130 @@ void main() {
           reason: '$value',
         );
       }
+    });
+
+    group('bluetoothDevices', () {
+      const idA = '1a2b3c4d-0000-4000-8000-00805f9b34fb';
+      const idB = '9f8e7d6c-1111-4222-8333-444455556666';
+
+      test('Standard leer, unveränderlich', () {
+        final config = AgentConfig();
+        expect(config.bluetoothDevices, isEmpty);
+        expect(
+          () => config.bluetoothDevices.add(
+            BluetoothDeviceConfig(
+              id: idA,
+              name: 'x',
+              approvedAt: DateTime.utc(2026),
+            ),
+          ),
+          throwsUnsupportedError,
+        );
+      });
+
+      test('Rundlauf mit zwei Geräten', () {
+        final original = AgentConfig(
+          bluetoothDevices: <BluetoothDeviceConfig>[
+            BluetoothDeviceConfig(
+              id: idA,
+              name: 'Q199E00000',
+              approvedAt: DateTime.utc(2026, 10, 28, 9, 30),
+            ),
+            BluetoothDeviceConfig(
+              id: idB,
+              name: 'Waage Theke',
+              approvedAt: DateTime.utc(2026, 10, 29, 7),
+            ),
+          ],
+        );
+        final json = jsonDecode(jsonEncode(original.toJson()));
+        expect((json as Map)['bluetoothDevices'], hasLength(2));
+        final restored = AgentConfig.fromJson(json.cast<String, Object?>());
+        expect(restored.bluetoothDevices, hasLength(2));
+        expect(restored.bluetoothDevices[0].id, idA);
+        expect(restored.bluetoothDevices[0].name, 'Q199E00000');
+        expect(
+          restored.bluetoothDevices[0].approvedAt,
+          DateTime.utc(2026, 10, 28, 9, 30),
+        );
+        expect(restored.bluetoothDevices[1].id, idB);
+        expect(restored.bluetoothDevices[1].approvedAt.isUtc, isTrue);
+      });
+
+      test('alte config.json ohne Feld lädt mit leerer Liste', () {
+        final config = AgentConfig.fromJson(<String, Object?>{'port': 27182});
+        expect(config.bluetoothDevices, isEmpty);
+      });
+
+      test('kaputte Einträge werden übersprungen', () {
+        final config = AgentConfig.fromJson(<String, Object?>{
+          'bluetoothDevices': <Object?>[
+            <String, Object?>{
+              'id': 'kaputt',
+              'name': 'A',
+              'approvedAt': '2026-10-28T09:30:00Z',
+            },
+            <String, Object?>{'id': idA, 'name': 'B'},
+            <String, Object?>{'id': idA, 'name': 'C', 'approvedAt': 'gestern'},
+            'Unsinn',
+            <String, Object?>{
+              'id': idB.toUpperCase(),
+              'name': 'Gut',
+              'approvedAt': '2026-10-28T09:30:00Z',
+            },
+          ],
+        });
+        expect(config.bluetoothDevices, hasLength(1));
+        expect(config.bluetoothDevices.single.id, idB);
+        expect(config.bluetoothDevices.single.name, 'Gut');
+      });
+
+      test('fehlender oder leerer Name fällt auf die Kennung zurück', () {
+        final config = AgentConfig.fromJson(<String, Object?>{
+          'bluetoothDevices': <Object?>[
+            <String, Object?>{'id': idA, 'approvedAt': '2026-10-28T09:30:00Z'},
+            <String, Object?>{
+              'id': idB,
+              'name': '',
+              'approvedAt': '2026-10-28T09:30:00Z',
+            },
+          ],
+        });
+        expect(config.bluetoothDevices.map((d) => d.name), <String>[idA, idB]);
+      });
+
+      test('Kennung wird kleingeschrieben gespeichert', () {
+        final device = BluetoothDeviceConfig(
+          id: idA.toUpperCase(),
+          name: 'x',
+          approvedAt: DateTime.utc(2026),
+        );
+        expect(device.id, idA);
+        expect(device.toJson()['id'], idA);
+      });
+
+      test('copyWith ändert nur die Geräteliste', () {
+        final base = AgentConfig(
+          port: 27184,
+          tokenHashes: <String>['aa'],
+          allowDevOrigins: true,
+        );
+        final copy = base.copyWith(
+          bluetoothDevices: <BluetoothDeviceConfig>[
+            BluetoothDeviceConfig(
+              id: idA,
+              name: 'x',
+              approvedAt: DateTime.utc(2026),
+            ),
+          ],
+        );
+        expect(copy.bluetoothDevices, hasLength(1));
+        expect(copy.port, 27184);
+        expect(copy.tokenHashes, <String>['aa']);
+        expect(copy.allowDevOrigins, isTrue);
+        expect(copy.schemaVersion, 1);
+        expect(base.copyWith().bluetoothDevices, isEmpty);
+      });
     });
   });
 }

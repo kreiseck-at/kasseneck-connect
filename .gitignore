@@ -9,3 +9,7 @@ build/
 # Lokale Laufzeitdaten
 *.log
 .DS_Store
+
+# Swift-Hilfsprogramm (SwiftPM)
+native/macos/KasseneckBluetooth/.build/
+native/macos/KasseneckBluetooth/.swiftpm/

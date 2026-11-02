@@ -5,6 +5,7 @@ import 'auth.dart';
 import 'context.dart';
 import 'cors.dart';
 import 'responses.dart';
+import 'routes_bluetooth.dart';
 import 'routes_pair.dart';
 import 'routes_status.dart';
 
@@ -15,8 +16,8 @@ import 'routes_status.dart';
 /// fremde Herkunft raus, bevor irgendetwas den Token prüft oder eine Route
 /// läuft.
 ///
-/// [extraRoutes] hängt spätere Endpunkte an (Drucker, Terminal, `/v1/events`),
-/// ohne diese Datei zu ändern.
+/// [extraRoutes] hängt spätere Endpunkte an (Drucker, Terminal, `/v1/events`,
+/// Bluetooth), ohne diese Datei zu ändern.
 Handler buildHandler(
   AgentContext ctx, {
   List<RouteRegistrar> extraRoutes = const <RouteRegistrar>[],
@@ -42,6 +43,9 @@ Handler buildHandler(
   for (final register in extraRoutes) {
     register(router, ctx);
   }
+  // Ohne Brücke gibt es die Bluetooth-Pfade trotzdem – mit einer Antwort, die
+  // die Kasse versteht, statt `not_found`.
+  if (ctx.bluetooth == null) bluetoothUnsupportedRoutes()(router, ctx);
 
   return const Pipeline()
       .addMiddleware(configLoader(ctx.store))

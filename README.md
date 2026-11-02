@@ -21,6 +21,12 @@ einen Kopplungstoken.
 Später kommen das Zahlungsterminal (v1.1) und die Selbstaktualisierung (v1.2)
 dazu.
 
+Ab 1.3 ist Connect am Mac zusätzlich eine **Bluetooth-Brücke**: die Kasse
+erreicht zugelassene Bluetooth-Geräte (zuerst den Etikettendrucker) über die
+lokale API statt über Web Bluetooth, auch in Safari. Die Bytes erzeugt weiter
+die Kasse; Connect verbindet, schreibt, hält Abos und gibt das Gerät nach
+kurzer Pause wieder frei (siehe **Bluetooth-Brücke**).
+
 ## Installation
 
 Die Kasse verlinkt im Download-Abschnitt immer die **neueste** Fassung als
@@ -68,24 +74,52 @@ freigeschaltet werden müsste.
      Downloads): `xattr -d com.apple.quarantine ~/Downloads/KasseneckConnect-macos-arm64.pkg`
 
    </details>
-3. Durch den Installationsassistenten klicken. Das Paket legt die Binary unter
-   `/usr/local/kasseneck-connect/` ab, verlinkt sie nach
-   `/usr/local/bin/kasseneck-connect` (damit `kasseneck-connect doctor` und
-   `kasseneck-connect pair` ohne vollen Pfad laufen), richtet den Autostart für
-   den gerade angemeldeten Benutzer ein (LaunchAgent) und startet den Agenten
-   sofort.
-4. Der Agent öffnet beim ersten Start die Kopplungsseite im Browser — siehe
+3. Durch den Installationsassistenten klicken. Das Paket legt das App-Paket
+   `Kasseneck Connect.app` unter `/usr/local/kasseneck-connect/` ab (darin die
+   Binary des Agenten und das Bluetooth-Hilfsprogramm; kein Dock-Symbol),
+   verlinkt die Binary nach `/usr/local/bin/kasseneck-connect` (damit
+   `kasseneck-connect doctor` und `kasseneck-connect pair` ohne vollen Pfad
+   laufen), richtet den Autostart für den gerade angemeldeten Benutzer ein
+   (LaunchAgent auf die Binary im App-Paket) und startet den Agenten sofort.
+4. Gegen Ende fragt macOS einmal nach Kennwort oder Touch ID (Absender
+   „security“): damit vertraut der Mac der lokalen Zertifizierungsstelle für
+   den HTTPS-Zugang, den Safari braucht (siehe **API-Kurzreferenz**). Wer
+   abbricht oder ohne angemeldeten Benutzer installiert, holt das im Terminal
+   nach: `kasseneck-connect zertifikat-vertrauen`. Beim ersten Update von 1.2.x
+   fragt macOS einmal; bei späteren Updates ist die Stelle schon vertraut.
+5. Der Agent öffnet beim ersten Start die Kopplungsseite im Browser — siehe
    **Kopplung**.
+6. Die Bluetooth-Freigabe fragt macOS erst, wenn die Kasse zum ersten Mal ein
+   Bluetooth-Gerät sucht oder anspricht, nicht bei der Installation. Der
+   Dialog nennt „Kasseneck Connect“, zeigt das Symbol und den Text
+   „Kasseneck Connect verbindet die Kasse mit Bluetooth-Druckern wie dem
+   Etikettendrucker.“ Danach steht „Kasseneck Connect“ unter
+   **Systemeinstellungen → Datenschutz & Sicherheit → Bluetooth**.
+
+Ein Update von 1.2.x über das neue Paket behält Konfiguration, gekoppelte
+Kassen und Drucker; der Autostart zeigt danach auf die Binary im App-Paket.
 
 **Deinstallieren.** macOS-Pakete bringen keinen Deinstallierer mit; dafür gibt
 es `tool/pkg/macos/uninstall.sh` (liegt auch im Repo):
 
 ```bash
-sudo bash uninstall.sh            # Autostart, Binary, Symlink, Paketvermerk
-sudo bash uninstall.sh --purge    # zusätzlich Konfiguration und Log
+sudo bash uninstall.sh            # Autostart, Vertrauen (HTTPS), Bluetooth-Freigabe, App-Paket, Symlink, Paketvermerk
+sudo bash uninstall.sh --purge    # zusätzlich Konfiguration, Zertifikate und Log
 ```
 
-Ohne `--purge` bleiben die gekoppelten Kassen und die Drucker erhalten. Von
+Das Skript hält den Agenten an, nimmt den LaunchAgent heraus, entzieht der
+lokalen Zertifizierungsstelle das Vertrauen (macOS fragt dabei nach Kennwort
+oder Touch ID) und prüft danach nach. Aus dem Anmelde-Schlüsselbund löscht es
+sie nur mit Beleg, dass ihr nicht mehr vertraut wird: das Serverzertifikat ist
+gültig, die Prüfung wie im Agenten scheitert, und die Vertrauenseinstellungen
+des Benutzers kennen sie nicht. Sonst bleibt sie stehen, und das Skript warnt
+und nennt den Befehl, mit dem man das Vertrauen selbst entzieht. Dann setzt es
+die Bluetooth-Freigabe von „Kasseneck Connect“ zurück und löscht
+`/usr/local/kasseneck-connect` samt App-Paket. Ohne `--purge` bleiben die
+gekoppelten Kassen, die Drucker und die Zertifikatsdateien erhalten. Mit
+`--purge` geht die Konfiguration weg; fehlt der Beleg, bleibt nur
+`tls/ca-cert.pem` stehen, weil der genannte Befehl sie braucht – den Ordner
+danach von Hand löschen. Von
 Hand geht es genauso: `kasseneck-connect uninstall-autostart`, dann
 `/usr/local/kasseneck-connect` und `/usr/local/bin/kasseneck-connect` löschen
 und `sudo pkgutil --forget at.kasseneck.connect`.
@@ -163,7 +197,8 @@ kasseneck-connect <befehl>
 | `pair` | Kopplungscode für die Kasse anzeigen |
 | `install-autostart` | Autostart einrichten und Agenten starten |
 | `uninstall-autostart` | Autostart entfernen und Agenten anhalten |
-| `doctor` | Diagnose ausgeben (Version, Pfade, Ports, Drucker, Fehler) |
+| `zertifikat-vertrauen` | der lokalen Zertifizierungsstelle für HTTPS vertrauen (nur Mac; macOS fragt einmal nach Kennwort oder Touch ID) |
+| `doctor` | Diagnose ausgeben (Version, Pfade, Ports, HTTPS, Bluetooth, Drucker, Fehler) |
 | `version` | Version ausgeben |
 
 `run` läuft, bis SIGINT/SIGTERM kommt. Ist noch kein Gerät gekoppelt, erzeugt der
@@ -180,7 +215,11 @@ Was `install-autostart` je System anlegt:
 | Linux | `~/.config/systemd/user/kasseneck-connect.service`, `systemctl --user enable --now` |
 
 Der Eintrag verweist immer auf die Binary, die den Befehl ausgeführt hat
-(`Platform.resolvedExecutable`) — der Agent trägt also sich selbst ein.
+(`Platform.resolvedExecutable`) — der Agent trägt also sich selbst ein. Am Mac
+ist das die Binary im App-Paket
+(`/usr/local/kasseneck-connect/Kasseneck Connect.app/Contents/MacOS/kasseneck-connect`),
+auch wenn der Befehl über einen Symlink lief: macOS ordnet die
+Bluetooth-Freigabe dem Paket zu.
 
 ## Konfigurationspfade
 
@@ -212,6 +251,19 @@ heraus — Handarbeit in der Datei ist nicht nötig.
 Basis: `http://127.0.0.1:27182` (bei belegtem Port bis 27189 hinauf; die Kasse
 probiert die Reihe durch und erkennt den Agenten an `GET /v1/status`).
 
+Am Mac lauscht derselbe Agent zusätzlich über **HTTPS** auf
+`https://127.0.0.1:27190` (Ausweich bis 27197) — Safari lässt eine Seite unter
+`https://` nicht an `http://127.0.0.1`. Herkunft, Token und Pfade sind dieselben.
+Das Zertifikat stammt von einer eigenen Zertifizierungsstelle je Rechner
+(„Kasseneck Connect (lokal)“, nur gültig für `127.0.0.1` und `localhost`), der
+der Installer einmal vertraut; das Serverzertifikat erneuert der Agent selbst.
+Vertraut wird einmal je Rechner und Benutzer: im Installer oder später mit
+`kasseneck-connect zertifikat-vertrauen`. macOS fragt dabei nach Kennwort oder
+Touch ID, als Absender steht „security“ im Dialog. Der Agent selbst fragt nie;
+fehlt das Vertrauen, steht das in `GET /v1/status` (`tls.trusted`) und in
+`doctor`. `GET /v1/status` meldet `port` und `httpsPort`; `features` enthält
+`https`, solange der Zugang lauscht.
+
 Alle Pfade außer `GET /v1/status`, `POST /v1/pair` und `POST /v1/pair/request`
 brauchen den Kopplungstoken (`Authorization: Bearer …`) **und** eine erlaubte
 Herkunft.
@@ -222,7 +274,7 @@ WebSocket-Upgrade).
 
 | Methode | Pfad | Zweck |
 |---|---|---|
-| GET | `/v1/status` | Lebenszeichen; ohne Token Kurzform, mit Token zusätzlich Drucker und letzte Fehler |
+| GET | `/v1/status` | Lebenszeichen; ohne Token Kurzform, mit Token zusätzlich Drucker, letzte Fehler und (HTTPS) `tls: {notAfter, trusted}` |
 | POST | `/v1/pair` | `{code}` → `{token}` |
 | POST | `/v1/pair/request` | Kopplung anstoßen: neuer Code, Kopplungsseite geht lokal im Browser auf → `{ok}` (nie der Code) |
 | DELETE | `/v1/pair` | den mitgeschickten Token zurückziehen |
@@ -318,6 +370,80 @@ Bei Druckfehlern steht in `detail.reason` zusätzlich, was das Gerät gemeldet h
 (ePOS-Statuscode, Socket-Meldung) — dieselbe Angabe wie in der Logzeile, damit
 Kasse und Support nicht raten müssen. Beleginhalte stehen dort nie.
 
+### Bluetooth-Brücke (macOS)
+
+Nur am Mac und nur mit dem Hilfsprogramm im App-Paket (zum Entwickeln ohne
+Paket zeigt `KASSENECK_CONNECT_BT_HELPER` auf ein anderes); dann enthält
+`features` in `GET /v1/status` den Eintrag `bluetooth`. Woran die Kasse die Brücke
+erkennt, ist diese Fähigkeit, nicht die Versionsnummer. Ohne Brücke antwortet
+jeder Pfad unter `/v1/bluetooth` mit `bluetooth_unsupported`. Es gelten
+dieselben Regeln wie überall: Token, erlaubte Herkunft, Fehlerhülle mit
+HTTP 200.
+
+Das Hilfsprogramm (`kasseneck-bluetooth`, Swift, CoreBluetooth) startet der
+Agent erst beim ersten Bluetooth-Aufruf als Kindprozess, nie beim Start, und
+startet es nach Absturz oder Hänger neu. Ein Gerät ist erst nutzbar, wenn die
+Kasse es zugelassen hat (höchstens 16; Kennung, Name und Zeitpunkt stehen in
+der `config.json`). Dienste der Web-Bluetooth-Sperrliste (u. a. HID, FIDO) und
+Firmware-Update-Dienste bleiben immer gesperrt.
+
+| Methode | Pfad | Zweck |
+|---|---|---|
+| GET | `/v1/bluetooth` | Zustand und zugelassene Geräte mit Verbindungsstand; startet Bluetooth nie und wartet nie auf einen Neustart (ein laufendes Hilfsprogramm ohne Freigabe wird gedrosselt im Hintergrund ersetzt) |
+| POST | `/v1/bluetooth/scan` | `{durationMs?}` (1–10 s) → `devices` mit `id`, `name`, `rssi`, `services`, `approved`; nur eine Suche gleichzeitig |
+| PUT | `/v1/bluetooth/devices/{id}` | zulassen, `{name?}` |
+| DELETE | `/v1/bluetooth/devices/{id}` | vergessen: trennen und entfernen |
+| POST | `…/devices/{id}/connect` | Bedarf anmelden (verbinden bzw. verlängern) → `{connected, generation}` |
+| POST | `…/devices/{id}/release` | Bedarf vorzeitig freigeben |
+| GET | `…/devices/{id}/gatt` | Dienste und Merkmale mit Eigenschaften (Gesperrtes ausgeblendet) |
+| POST | `…/devices/{id}/read` | `{service, characteristic}` → `{data}` (Base64) |
+| POST | `…/devices/{id}/write` | `{service, characteristic, withResponse, lease, data \| packets[], generation?}` → `{written}`; je Paket ein Schreibvorgang, in Reihenfolge |
+| POST | `…/devices/{id}/subscribe`, `…/unsubscribe` | Abo eines Merkmals |
+| GET | `…/devices/{id}/notifications` | letzte Meldungen je Merkmal (höchstens 32) der laufenden Verbindung, mit `generation` |
+| POST | `…/devices/{id}/lease` | Belegung holen, `{waitMs?}` (höchstens 30 s) → `{lease, ttlMs}` |
+| POST | `…/devices/{id}/lease/renew` | `{lease}` verlängern (sonst Ablauf nach 5 s) |
+| POST | `…/devices/{id}/lease/release` | `{lease}` freigeben → `{released}`; wiederholbar |
+
+`state` in `GET /v1/bluetooth` ist der Funkzustand des Macs (`poweredOn`,
+`poweredOff`, `unauthorized`, `unsupported`, `resetting`) oder ein Zustand des
+Hilfsprogramms: `unknown` heißt, das Hilfsprogramm läuft noch nicht, weil seit
+dem Start des Agenten noch niemand Bluetooth gebraucht hat (kein Fehler);
+`starting` beim ersten Start, `helper_restarting` nach einem Absturz bis zur
+nächsten Meldung. macOS wertet die Bluetooth-Freigabe nur beim Start eines
+Prozesses aus: meldet das laufende Hilfsprogramm `unauthorized`, startet Connect
+es beim nächsten Bluetooth-Aufruf (Suche, Verbinden, Belegen, Abo, Schreiben)
+neu und wartet darauf; `GET /v1/bluetooth` stößt den Neustart nur an und
+antwortet sofort mit dem bekannten Zustand, erst die nächste Abfrage zeigt den
+neuen. Höchstens alle 10 Sekunden, damit eine in den Systemeinstellungen
+erteilte Freigabe ohne Neustart von Connect greift. `GET /v1/status` startet
+nichts neu.
+`unauthorized` heißt, die Freigabe unter **Systemeinstellungen → Datenschutz &
+Sicherheit → Bluetooth** fehlt.
+
+Connect verbindet ein zugelassenes Gerät bei Bedarf (Verbindungsaufbau
+höchstens 10 s), hält die Verbindung nach dem letzten Zugriff 60 s und gibt das
+Gerät dann frei, damit andere Geräte (z. B. die Kassen-App) es verbinden
+können. Bricht die Verbindung während eines Bedarfs ab, verbindet Connect still
+neu und stellt die Abos wieder her; jede Verbindung trägt eine neue
+`generation`. Schreiben geht nur mit gültiger Belegung; endet eine Belegung
+ohne Freigabe, setzt Connect die Verbindung zurück, damit kein halber Auftrag
+im Gerät hängt.
+
+Ereignisse über `/v1/events`: `bluetooth.state` (`{state}`), `bluetooth.device`
+(`{id, connected, generation, reason?}`) und `bluetooth.notification`
+(`{id, service, characteristic, data, generation, seq}`). Geschriebene Bytes
+kommen nie ins Log, nur Gerät, Merkmal, Länge, Dauer und Ergebnis.
+
+Fehlercodes: `bluetooth_unsupported`, `bluetooth_unauthorized`,
+`bluetooth_off`, `bluetooth_unavailable`, `bluetooth_device_unknown` (nicht
+zugelassen), `bluetooth_device_not_found`, `bluetooth_unreachable` (vielleicht
+mit einem anderen Gerät verbunden), `bluetooth_blocked`,
+`bluetooth_characteristic_unknown`, `bluetooth_operation_unsupported`,
+`bluetooth_lease_required`, `bluetooth_busy`, `bluetooth_write_too_long`,
+`bluetooth_write_failed`, `bluetooth_disconnected`,
+`bluetooth_too_many_devices`. Das Nachrichtenprotokoll zwischen Agent und
+Hilfsprogramm steht in `docs/bluetooth-protokoll.md`.
+
 ## Fehlersuche
 
 ```bash
@@ -325,7 +451,8 @@ kasseneck-connect doctor
 ```
 
 Die Diagnose nennt Version, Programmpfad, Konfigurations- und Logpfad, ob
-gekoppelt ist, auf welchem der Ports 27182–27189 ein Agent antwortet, die
+gekoppelt ist, auf welchem der Ports 27182–27189 ein Agent antwortet, am Mac
+den HTTPS-Zugang (Port, Ablauf des Zertifikats, ob ihm vertraut wird), die
 eingetragenen Drucker mit ihrem aktuellen Zustand, den Autostart-Zustand und die
 letzten Fehlerzeilen aus dem Log.
 
@@ -334,6 +461,10 @@ letzten Fehlerzeilen aus dem Log.
 | „Kein Agent erreichbar" | Läuft er? `kasseneck-connect run` im Terminal starten und die Ausgabe lesen |
 | Kasse findet den Agenten nicht | `doctor` zeigt den tatsächlichen Port; Firewall auf der Loopback-Adresse prüfen |
 | Kasse meldet „nicht gekoppelt" | `kasseneck-connect pair` und den Code neu eingeben |
+| Safari findet Connect nicht (Chrome schon) | `doctor` → HTTPS-Zeile; bei „vertraut nein“ `kasseneck-connect zertifikat-vertrauen` |
+| Bluetooth: `bluetooth_unauthorized` | **Systemeinstellungen → Datenschutz & Sicherheit → Bluetooth** → „Kasseneck Connect“ einschalten |
+| Bluetooth: `bluetooth_unreachable` | Gerät an? Hält es gerade ein anderes Gerät (Kassen-App, Handy)? Dort schließen und erneut versuchen |
+| `doctor`: „Bluetooth-Hilfsprogramm: fehlt“ | Connect neu installieren (das Hilfsprogramm liegt im App-Paket) |
 | Drucker `offline` | IP und Port prüfen (`doctor`), Gerät anpingen, `POST /v1/printers/discover` |
 | Bon kam nicht | Log ansehen: `logs/connect.log`; bei `timeout` mit `mayHavePrinted` erst am Gerät nachsehen |
 | Agent startet nach dem Neustart nicht | `doctor` → Autostart-Zeile; notfalls `install-autostart` erneut |
@@ -350,15 +481,32 @@ dart analyze
 dart format .
 ```
 
+Die Tests mit echtem `openssl` nehmen `/usr/bin/openssl` (am Mac LibreSSL, wie
+beim Kunden). `KASSENECK_TEST_OPENSSL` gibt ihnen ein anderes Programm vor, etwa
+OpenSSL aus Homebrew: `KASSENECK_TEST_OPENSSL=/opt/homebrew/bin/openssl dart test`.
+Die Linux-CI hat OpenSSL 3.0; wie das Namen schreibt (`CN = …`), zeigt am Mac
+`openssl@1.1`.
+
 Bauen:
 
 ```bash
-tool/build_macos.sh              # -> build/kasseneck-connect-macos-<arch>
+tool/build_macos.sh              # -> "build/Kasseneck Connect.app" und build/kasseneck-connect-macos-<arch>
 tool/pkg/macos/build_pkg.sh      # -> build/KasseneckConnect-<version>-macos-<arch>.pkg
 tool/build_linux.sh              # -> build/kasseneck-connect-linux-<arch>
 tool/build_linux_deb.sh          # -> build/KasseneckConnect-<version>-linux-<arch>.deb
 powershell -File tool\build_windows.ps1   # Binary + (mit Inno Setup) Installer
 ```
+
+`tool/build_macos.sh` baut die Dart-Binary, das Bluetooth-Hilfsprogramm
+(`swift build` in `native/macos/KasseneckBluetooth`, Tests mit
+`swift test --package-path native/macos/KasseneckBluetooth`) und setzt beide
+mit `tool/macos/Info.plist.in` und `tool/macos/AppIcon.icns` zum App-Paket
+zusammen. Der Ordnername `Kasseneck Connect.app` ist Absicht: macOS zeigt ihn im
+Bluetooth-Dialog und in den Systemeinstellungen. Weil er ein Leerzeichen hat,
+steht jeder Pfad dorthin in Anführungszeichen (`test/macos_bundle_test.dart`
+prüft das für die Skripte und die CI). Das Symbol ist eingecheckt;
+`python3 tool/macos/app_symbol.py` zeichnet es aus der Markengeometrie neu
+(braucht Pillow und `iconutil`, nur wer es ändert).
 
 `tool/_common.sh` hält die Namensregel und die Architekturnormalisierung
 (`x86_64`/`amd64` → `x64`, `aarch64` → `arm64`) an einer Stelle; alle
@@ -392,7 +540,9 @@ ausgelassenen Plattformen.
 Die CI (`.github/workflows/ci.yml`) fährt bei jedem Push und jedem Pull Request
 `dart format --set-exit-if-changed`, `dart analyze --fatal-infos` und
 `dart test`, danach die Build-Matrix (macOS arm64/x64, Windows, Linux) und legt
-die Ergebnisse als Artefakte ab. Ein GitHub Release legt die CI **nicht** an
+die Ergebnisse als Artefakte ab. Im macOS-Lauf kommen `swift test` für das
+Hilfsprogramm, eine Startprobe der Binary im App-Paket und `plutil -lint` der
+Info.plist dazu. Ein GitHub Release legt die CI **nicht** an
 — das bleibt `tool/release.sh` von Hand vorbehalten.
 
 ### Signierung & Notarisierung
@@ -420,6 +570,14 @@ Erst `com.apple.security.cs.allow-unsigned-executable-memory` macht sie wieder
 startfähig; `allow-jit` allein genügt nicht. Beide Build-Skripte machen nach
 dem Signieren deshalb eine Startprobe.
 
+Das App-Paket wird in fester Reihenfolge signiert (`sign_app_bundle` in
+`tool/_common.sh`): zuerst das Hilfsprogramm
+`Contents/MacOS/kasseneck-bluetooth` (Hardened Runtime, ohne Berechtigungen),
+dann das Paket mit `tool/entitlements-macos.plist` — das signiert die
+Dart-Binary als Hauptprogramm und versiegelt Info.plist, Symbol und
+Hilfsprogramm. `build_pkg.sh` übernimmt ein schon mit Developer ID signiertes
+App-Paket unverändert.
+
 Für die Notarisierung braucht `notarytool` einmalig ein Schlüsselbund-Profil
 (Vorgabename `kasseneck-connect`, anders über `KASSENECK_NOTARY_PROFILE`).
 Das Kennwort ist ein **app-spezifisches Kennwort** der Apple-ID
@@ -434,8 +592,8 @@ Der Ablauf für ein Release:
 
 ```bash
 rm -rf build
-tool/build_macos.sh              # signiert die Binary (Hardened Runtime + Zeitstempel)
-tool/pkg/macos/build_pkg.sh      # signiert die Nutzlast und das Paket
+tool/build_macos.sh              # signiert Binary und App-Paket (Hardened Runtime + Zeitstempel)
+tool/pkg/macos/build_pkg.sh      # übernimmt das signierte App-Paket, signiert das .pkg
 tool/notarize_macos.sh build/KasseneckConnect-<version>-macos-<arch>.pkg
 tool/release.sh                  # holt eine fehlende Notarisierung selbst nach
 ```
@@ -451,7 +609,9 @@ Paket dann nur zum Testen, beim Kunden blockt Gatekeeper es.
 Prüfen lässt sich das Ergebnis von Hand:
 
 ```bash
-codesign -dv --verbose=4 build/kasseneck-connect-macos-arm64   # Authority-Zeilen
+codesign -dv --verbose=4 "build/Kasseneck Connect.app"        # Authority-Zeilen
+codesign --verify --strict --deep "build/Kasseneck Connect.app"
+pkgutil --payload-files build/KasseneckConnect-*.pkg | grep 'Kasseneck Connect.app/Contents/MacOS'  # beide Programme
 pkgutil --check-signature build/KasseneckConnect-*.pkg
 xcrun stapler validate build/KasseneckConnect-*.pkg
 spctl -a -vv -t install build/KasseneckConnect-*.pkg           # Urteil von Gatekeeper
@@ -464,6 +624,30 @@ Entwicklungsrechner signiert und notarisiert entstanden ist.
 
 Windows- und Linux-Artefakte bleiben vorerst unsigniert (siehe die Hinweise
 bei der Installation).
+
+### Entwicklerwerkzeuge
+
+`tool/scan_debug.dart` zeigt, welche Netze die Druckersuche abklopft.
+`tool/bluetooth_probe.dart` spricht die lokale Bluetooth-API wie die Kasse und
+zeigt Bytes nur als Hex (Gerätetest am Drucker, nicht gegen echte Geräte in
+Tests):
+
+```bash
+dart run tool/bluetooth_probe.dart koppeln <code> --token-datei ~/.connect-token
+dart run tool/bluetooth_probe.dart --token-datei ~/.connect-token scan
+dart run tool/bluetooth_probe.dart --token-datei ~/.connect-token approve <id>
+dart run tool/bluetooth_probe.dart --token-datei ~/.connect-token print <id> beleg.bytes.hex [--paket 180] [--ohne-antwort] [--warten 5]
+dart run tool/bluetooth_probe.dart --token-datei ~/.connect-token watch <id>
+```
+
+Standard ist HTTPS über den Port aus `GET /v1/status`; `--http` bleibt bei
+reinem HTTP, `--port` legt den HTTP-Port fest. `print` belegt das Gerät, hält
+die Belegung, abonniert `ff00`/`ff03`, sendet die Pakete und gibt alle Meldungen
+mit Zeit seit dem Start aus. `--abbrechen-nach <n>` (und Strg-C) beenden den
+Prozess ohne Freigabe – so lässt sich das Zurücksetzen der Belegung nach 5 s
+prüfen. Der Token steht nie auf der Ausgabe. Das Werkzeug schickt die Herkunft
+der Kasse mit: für lokale Programme ist allein der Token die Schranke, die
+Herkunftsliste schützt nur vor fremden Webseiten im Browser.
 
 ### Kasse lokal gegen den Agenten entwickeln
 

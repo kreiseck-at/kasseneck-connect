@@ -5,11 +5,17 @@
 /// oder ältere `config.json` den Agenten nicht am Start hindert.
 library;
 
+import '../bluetooth/uuids.dart';
+
 /// Aktuelle Schemaversion der `config.json`.
 const int currentSchemaVersion = 1;
 
 /// Standardport der lokalen API.
 const int defaultAgentPort = 27182;
+
+/// Standardport des HTTPS-Zugangs (Ausweich bis 27197). Eigene Portreihe,
+/// damit HTTP auf 27182 ff. für bestehende Kassen unverändert bleibt.
+const int defaultHttpsPort = 27190;
 
 /// Standard-Update-Kanal.
 const String defaultUpdateChannel = 'stable';
@@ -157,6 +163,52 @@ class TerminalConfig {
   String toString() => 'TerminalConfig($kind, $host:$port)';
 }
 
+/// Ein vom Kunden zugelassenes Bluetooth-Gerät (Waage, Lesegerät …).
+///
+/// Nur zugelassene Geräte darf die Kasse über die Brücke ansprechen; die
+/// Kennung ist die CoreBluetooth-UUID des Geräts auf diesem Rechner.
+class BluetoothDeviceConfig {
+  BluetoothDeviceConfig({
+    required String id,
+    required this.name,
+    required this.approvedAt,
+  }) : id = id.toLowerCase();
+
+  /// CoreBluetooth-Kennung, immer klein geschrieben.
+  final String id;
+
+  /// Name aus dem Scan; fehlt er, steht hier die Kennung.
+  final String name;
+
+  /// Zeitpunkt der Zulassung.
+  final DateTime approvedAt;
+
+  Map<String, Object?> toJson() => <String, Object?>{
+    'id': id,
+    'name': name,
+    'approvedAt': approvedAt.toUtc().toIso8601String(),
+  };
+
+  /// Liest einen Eintrag; `null` bei ungültiger Kennung oder fehlendem bzw.
+  /// kaputtem Zeitpunkt (der Eintrag wird dann beim Laden übersprungen).
+  static BluetoothDeviceConfig? fromJson(Map<String, Object?> json) {
+    final id = readString(json['id']);
+    if (id == null || !isValidDeviceId(id)) return null;
+    final approvedAt = readDateTime(json['approvedAt']);
+    if (approvedAt == null) return null;
+    final name = readString(json['name']);
+    return BluetoothDeviceConfig(
+      id: id,
+      // Unbenannte Geräte melden im Scan keinen Namen.
+      name: (name == null || name.isEmpty) ? id.toLowerCase() : name,
+      approvedAt: approvedAt.toUtc(),
+    );
+  }
+
+  @override
+  String toString() => 'BluetoothDeviceConfig($id, $name)';
+}
+
 /// Offener Kopplungsvorgang: Code, Ablauf, Fehlversuche, Sperre.
 ///
 /// Der Code steht im Klartext in der Datei — er ist sechsstellig, zehn Minuten
@@ -233,21 +285,30 @@ class AgentConfig {
   AgentConfig({
     this.schemaVersion = currentSchemaVersion,
     this.port = defaultAgentPort,
+    this.httpsPort = defaultHttpsPort,
     List<String>? tokenHashes,
     List<PrinterConfig>? printers,
     this.terminal,
     this.updateChannel = defaultUpdateChannel,
     this.pairing = PairingState.none,
     this.allowDevOrigins = false,
+    List<BluetoothDeviceConfig>? bluetoothDevices,
   }) : tokenHashes = List<String>.unmodifiable(tokenHashes ?? const <String>[]),
        printers = List<PrinterConfig>.unmodifiable(
          printers ?? const <PrinterConfig>[],
+       ),
+       bluetoothDevices = List<BluetoothDeviceConfig>.unmodifiable(
+         bluetoothDevices ?? const <BluetoothDeviceConfig>[],
        );
 
   final int schemaVersion;
 
   /// Port der lokalen API (Standard 27182, Fallback 27183–27189).
   final int port;
+
+  /// Port des HTTPS-Zugangs (Standard 27190, Fallback 27191–27197); der
+  /// Agent merkt sich hier, wo er zuletzt lauschte.
+  final int httpsPort;
 
   /// SHA-256-Hashes der ausgegebenen Tokens — Klartext-Tokens werden nie gespeichert.
   final List<String> tokenHashes;
@@ -268,9 +329,13 @@ class AgentConfig {
   /// Webseite den Agenten ansprechen.
   final bool allowDevOrigins;
 
+  /// Zugelassene Bluetooth-Geräte (Obergrenze prüft die Brücke, nicht das Modell).
+  final List<BluetoothDeviceConfig> bluetoothDevices;
+
   AgentConfig copyWith({
     int? schemaVersion,
     int? port,
+    int? httpsPort,
     List<String>? tokenHashes,
     List<PrinterConfig>? printers,
     TerminalConfig? terminal,
@@ -278,28 +343,33 @@ class AgentConfig {
     String? updateChannel,
     PairingState? pairing,
     bool? allowDevOrigins,
+    List<BluetoothDeviceConfig>? bluetoothDevices,
   }) {
     return AgentConfig(
       schemaVersion: schemaVersion ?? this.schemaVersion,
       port: port ?? this.port,
+      httpsPort: httpsPort ?? this.httpsPort,
       tokenHashes: tokenHashes ?? this.tokenHashes,
       printers: printers ?? this.printers,
       terminal: clearTerminal ? null : (terminal ?? this.terminal),
       updateChannel: updateChannel ?? this.updateChannel,
       pairing: pairing ?? this.pairing,
       allowDevOrigins: allowDevOrigins ?? this.allowDevOrigins,
+      bluetoothDevices: bluetoothDevices ?? this.bluetoothDevices,
     );
   }
 
   Map<String, Object?> toJson() => <String, Object?>{
     'schemaVersion': schemaVersion,
     'port': port,
+    'httpsPort': httpsPort,
     'tokenHashes': tokenHashes,
     'printers': printers.map((p) => p.toJson()).toList(),
     'terminal': terminal?.toJson(),
     'updateChannel': updateChannel,
     if (!pairing.isEmpty) 'pairing': pairing.toJson(),
     'allowDevOrigins': allowDevOrigins,
+    'bluetoothDevices': bluetoothDevices.map((d) => d.toJson()).toList(),
   };
 
   static AgentConfig fromJson(Map<String, Object?> json) {
@@ -315,6 +385,7 @@ class AgentConfig {
       // der Datei gelesen wäre er ein Fehler und ergäbe bei jedem Start einen
       // anderen Port, den die Kasse nicht findet.
       port: _readPort(json['port']),
+      httpsPort: _readPort(json['httpsPort'], fallback: defaultHttpsPort),
       tokenHashes: readStringList(json['tokenHashes']),
       printers: readMapList(
         json['printers'],
@@ -323,19 +394,23 @@ class AgentConfig {
           ? null
           : TerminalConfig.fromJson(terminalJson),
       updateChannel: readString(json['updateChannel']) ?? defaultUpdateChannel,
+      bluetoothDevices: readMapList(
+        json['bluetoothDevices'],
+      ).map(BluetoothDeviceConfig.fromJson).nonNulls.toList(),
     );
   }
 
   @override
   String toString() =>
-      'AgentConfig(v$schemaVersion, port $port, ${tokenHashes.length} Token, '
+      'AgentConfig(v$schemaVersion, port $port, https $httpsPort, '
+      '${tokenHashes.length} Token, '
       '${printers.length} Drucker)';
 }
 
-/// Liest den Port aus der Datei; 0 oder Unsinn ergibt den Standardport.
-int _readPort(Object? value) {
+/// Liest einen Port aus der Datei; 0 oder Unsinn ergibt [fallback].
+int _readPort(Object? value, {int fallback = defaultAgentPort}) {
   final port = readInt(value);
-  if (port == null || port <= 0 || port > 65535) return defaultAgentPort;
+  if (port == null || port <= 0 || port > 65535) return fallback;
   return port;
 }
 

@@ -3,12 +3,17 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'agent.dart';
+import 'api/routes_status.dart';
 import 'autostart/autostart.dart';
+import 'bluetooth/helper.dart';
 import 'config/model.dart';
 import 'config/paths.dart';
 import 'config/store.dart';
 import 'log/logger.dart';
 import 'printers/registry.dart';
+import 'process_runner.dart';
+import 'tls/certificates.dart';
+import 'tls/trust.dart';
 import 'version.dart';
 
 /// Fragt `GET /v1/status` an einem Port ab; `null` heißt „dort antwortet
@@ -40,6 +45,31 @@ class DoctorPort {
   bool get paired => status?['paired'] == true;
 
   int? get uptimeSeconds => status?['uptimeSeconds'] as int?;
+
+  /// Was der Agent kann (`features`); ältere Agenten melden nichts.
+  List<String> get features => readStringList(status?['features']);
+
+  /// Port des HTTPS-Zugangs; `null`, wenn er nicht lauscht (oder der Agent
+  /// älter ist).
+  int? get httpsPort => readInt(status?['httpsPort']);
+}
+
+/// Stand der Zertifikate für HTTPS, so wie die Diagnose ihn nachsieht.
+class DoctorTls {
+  const DoctorTls({
+    required this.certificateExists,
+    required this.notAfter,
+    required this.trusted,
+  });
+
+  /// `server-cert.pem` liegt im Datenordner.
+  final bool certificateExists;
+
+  /// Ablauf des Serverzertifikats; `null`, wenn es fehlt oder unlesbar ist.
+  final DateTime? notAfter;
+
+  /// Ob macOS der lokalen Zertifizierungsstelle vertraut.
+  final bool trusted;
 }
 
 /// Alles, was die Diagnose zusammengetragen hat.
@@ -57,6 +87,8 @@ class DoctorReport {
     required this.autostartInstalled,
     required this.autostartTarget,
     required this.lastErrors,
+    this.bluetoothHelper,
+    this.tls,
   });
 
   final String version;
@@ -84,6 +116,14 @@ class DoctorReport {
   /// Die letzten Fehlerzeilen aus der Logdatei.
   final List<String> lastErrors;
 
+  /// Pfad zum Bluetooth-Hilfsprogramm; `null`, wenn es fehlt (außerhalb von
+  /// macOS immer).
+  final String? bluetoothHelper;
+
+  /// Zertifikate für HTTPS; `null` außerhalb von macOS (dort gibt es den
+  /// Zugang noch nicht).
+  final DoctorTls? tls;
+
   bool get paired => tokenCount > 0;
 
   /// Der Port, an dem tatsächlich ein Agent antwortet.
@@ -101,6 +141,17 @@ class DoctorReport {
 /// Kopplungstoken. Sie sieht deshalb nur die Kurzform von `GET /v1/status`,
 /// liest die Fehler aus der Logdatei statt aus dem Ringpuffer des laufenden
 /// Agenten und fragt die Drucker selbst ab, statt den Agenten zu fragen.
+///
+/// Bluetooth fasst sie dagegen nie selbst an: das Hilfsprogramm wird nur im
+/// Dateisystem gesucht ([findBluetoothHelper]), nie gestartet – sonst fragte
+/// macOS im Namen des Terminals nach der Bluetooth-Freigabe. Ob der Agent
+/// Bluetooth anbietet, steht in seinem Status (`features`).
+///
+/// Die Zertifikate für HTTPS sieht sie am Mac nur nach: Ablauf über
+/// `openssl`, Vertrauen über `security verify-cert` — sie legt keine an und
+/// trägt kein Vertrauen ein ([runProcess] bzw. [startProcess] ersetzen beides
+/// im Test).
+/// [environment] ersetzt in Tests die Umgebung des Prozesses.
 Future<DoctorReport> collectDoctorReport({
   required ConfigPaths paths,
   StatusProbe? probe,
@@ -108,6 +159,9 @@ Future<DoctorReport> collectDoctorReport({
   Autostart? autostart,
   String? operatingSystem,
   String? executable,
+  Map<String, String>? environment,
+  ProcessRunner? runProcess,
+  ProcessStarter? startProcess,
 }) async {
   final store = ConfigStore(paths);
   final config = await store.load();
@@ -130,9 +184,21 @@ Future<DoctorReport> collectDoctorReport({
         log: AgentLog(paths.logDirectory, minimumLevel: LogLevel.error),
       ).summaries(probe: true);
 
+  final os = operatingSystem ?? Platform.operatingSystem;
+  final tls = os == 'macos'
+      ? await _inspectTls(
+          paths,
+          runProcess ?? Process.run,
+          startProcess ??
+              (runProcess == null
+                  ? Process.start
+                  : processStarterFrom(runProcess)),
+        )
+      : null;
+
   return DoctorReport(
     version: agentVersion,
-    operatingSystem: operatingSystem ?? Platform.operatingSystem,
+    operatingSystem: os,
     executable: executable ?? Platform.resolvedExecutable,
     configFile: paths.configFile.path,
     logFile: AgentLog.fileIn(paths.logDirectory).path,
@@ -143,6 +209,41 @@ Future<DoctorReport> collectDoctorReport({
     autostartInstalled: await resolvedAutostart.isInstalled(),
     autostartTarget: resolvedAutostart.target,
     lastErrors: readRecentErrors(paths.logDirectory),
+    bluetoothHelper: findBluetoothHelper(
+      environment: environment,
+      operatingSystem: operatingSystem,
+      executable: executable,
+    ),
+    tls: tls,
+  );
+}
+
+/// Liest Ablauf und Vertrauen der vorhandenen Zertifikate, ohne etwas
+/// anzulegen. Ohne Zertifikat wird gar nichts aufgerufen.
+Future<DoctorTls> _inspectTls(
+  ConfigPaths paths,
+  ProcessRunner run,
+  ProcessStarter start,
+) async {
+  final certificates = LocalCertificates(
+    directory: paths.directory,
+    run: run,
+    log: AgentLog(paths.logDirectory, minimumLevel: LogLevel.error),
+  );
+  final exists = certificates.serverCertFile.existsSync();
+  final notAfter = exists ? await certificates.readServerNotAfter() : null;
+  final trusted =
+      exists &&
+      certificates.caCertFile.existsSync() &&
+      await isLocalCaTrusted(
+        certificates.caCertFile.path,
+        start: start,
+        serverCertPath: certificates.serverCertFile.path,
+      );
+  return DoctorTls(
+    certificateExists: exists,
+    notAfter: notAfter,
+    trusted: trusted,
   );
 }
 
@@ -230,6 +331,7 @@ String formatDoctorReport(DoctorReport report) {
       );
     }
   }
+  _writeHttps(buffer, report, running);
 
   buffer
     ..writeln()
@@ -243,6 +345,29 @@ String formatDoctorReport(DoctorReport report) {
         '${printer['host']}:${printer['port']})  — ${printer['state']}',
       );
     }
+  }
+
+  buffer
+    ..writeln()
+    ..writeln('Bluetooth');
+  final helper = report.bluetoothHelper;
+  if (helper != null) {
+    buffer.writeln('  Bluetooth-Hilfsprogramm: vorhanden ($helper)');
+  } else if (report.operatingSystem == 'macos') {
+    buffer.writeln(
+      '  Bluetooth-Hilfsprogramm: fehlt — Kasseneck Connect neu installieren',
+    );
+  } else {
+    buffer.writeln(
+      '  Bluetooth-Hilfsprogramm: fehlt (Bluetooth gibt es bisher nur am Mac)',
+    );
+  }
+  if (running != null) {
+    buffer.writeln(
+      running.features.contains(featureBluetooth)
+          ? '  Agent: mit Bluetooth'
+          : '  Agent: ohne Bluetooth',
+    );
   }
 
   buffer
@@ -264,4 +389,34 @@ String formatDoctorReport(DoctorReport report) {
   }
 
   return buffer.toString();
+}
+
+/// Die Zeile „HTTPS: Port …, Zertifikat gültig bis …, vertraut ja/nein“.
+void _writeHttps(
+  StringBuffer buffer,
+  DoctorReport report,
+  DoctorPort? running,
+) {
+  final tls = report.tls;
+  if (tls == null) {
+    buffer.writeln('  HTTPS: gibt es bisher nur am Mac');
+    return;
+  }
+  final httpsPort = running?.httpsPort;
+  final notAfter = tls.notAfter;
+  final port = httpsPort == null ? 'aus' : 'Port $httpsPort';
+  final certificate = !tls.certificateExists
+      ? 'kein Zertifikat'
+      : notAfter == null
+      ? 'Zertifikat unlesbar'
+      : 'Zertifikat gültig bis ${notAfter.toUtc().toIso8601String().substring(0, 10)}';
+  buffer.writeln(
+    '  HTTPS: $port, $certificate, vertraut ${tls.trusted ? 'ja' : 'nein'}',
+  );
+  if (!tls.trusted) {
+    buffer.writeln(
+      '  Ohne Vertrauen erreicht Safari Connect nicht: '
+      '`kasseneck-connect zertifikat-vertrauen`',
+    );
+  }
 }

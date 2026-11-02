@@ -130,6 +130,52 @@ void main() {
       expect(await autostart.isInstalled(), isTrue);
     });
 
+    test('LaunchAgent zeigt auf die Binary im App-Paket', () async {
+      // Aufbau wie nach der Installation: Symlink im PATH → Symlink im
+      // Installationsordner → Binary im Paket (Ordnername mit Leerzeichen).
+      final ordner = Directory(p.join(temp.path, 'kasseneck-connect'));
+      final imPaket = File(
+        p.join(
+          ordner.path,
+          'Kasseneck Connect.app',
+          'Contents',
+          'MacOS',
+          'kasseneck-connect',
+        ),
+      )..createSync(recursive: true);
+      final imOrdner = Link(p.join(ordner.path, 'kasseneck-connect'))
+        ..createSync(
+          p.join(
+            'Kasseneck Connect.app',
+            'Contents',
+            'MacOS',
+            'kasseneck-connect',
+          ),
+        );
+      final imPfad = Link(p.join(temp.path, 'bin', 'kasseneck-connect'))
+        ..createSync(imOrdner.path, recursive: true);
+
+      final result = await macos(executable: imPfad.path).install();
+
+      expect(result.ok, isTrue, reason: result.detail);
+      final plist = File(
+        p.join(
+          home.path,
+          'Library',
+          'LaunchAgents',
+          'at.kasseneck.connect.plist',
+        ),
+      ).readAsStringSync();
+      final programm = RegExp(
+        r'<key>ProgramArguments</key>\s*<array>\s*<string>([^<]*)</string>',
+      ).firstMatch(plist)?.group(1);
+      expect(
+        programm,
+        endsWith('Kasseneck Connect.app/Contents/MacOS/kasseneck-connect'),
+      );
+      expect(programm, imPaket.resolveSymbolicLinksSync());
+    }, testOn: '!windows');
+
     test('wirft eine alte Fassung vor dem Laden hinaus', () async {
       await macos().install();
       final order = runner.lines.where((line) => line.startsWith('launchctl'));

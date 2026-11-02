@@ -10,6 +10,9 @@ import 'config/store.dart';
 import 'doctor.dart';
 import 'log/logger.dart';
 import 'pairing/pairing.dart';
+import 'process_runner.dart';
+import 'tls/certificates.dart';
+import 'tls/trust.dart';
 import 'version.dart';
 
 /// Exit-Code für falsche Verwendung (unbekannter Befehl, fehlende Option).
@@ -24,6 +27,7 @@ const List<String> agentCommands = <String>[
   'pair',
   'install-autostart',
   'uninstall-autostart',
+  'zertifikat-vertrauen',
   'doctor',
   'version',
 ];
@@ -48,9 +52,11 @@ ArgParser buildArgParser() {
 ///
 /// Alle benannten Parameter außer [out]/[err] sind **Nahtstellen für Tests**:
 /// Datenverzeichnis, Ersatz für das Warten auf SIGINT/SIGTERM, Wunschport,
-/// Browser, Autostart-Weg sowie die beiden Abfragen der Diagnose. Ohne sie
-/// entscheidet das laufende System — kein Test startet ein echtes `launchctl`
-/// und keiner fragt echte Drucker.
+/// Browser, Autostart-Weg, die beiden Abfragen der Diagnose, Betriebssystem,
+/// Umgebung (`HOME`) und der Programmstart für `openssl`/`security` (Runner,
+/// dazu der Starter für Aufrufe mit Zeitgrenze). Ohne sie
+/// entscheidet das laufende System — kein Test startet ein echtes
+/// `launchctl`, keiner fragt echte Drucker oder den echten Schlüsselbund.
 Future<int> runCli(
   List<String> arguments, {
   StringSink? out,
@@ -62,6 +68,10 @@ Future<int> runCli(
   Autostart? autostart,
   StatusProbe? statusProbe,
   PrinterStates? printerStates,
+  String? operatingSystem,
+  Map<String, String>? environment,
+  ProcessRunner? runProcess,
+  ProcessStarter? startProcess,
 }) async {
   final stdoutSink = out ?? stdout;
   final stderrSink = err ?? stderr;
@@ -95,6 +105,13 @@ Future<int> runCli(
   }
 
   final resolvedPaths = paths ?? ConfigPaths.forPlatform();
+  final os = operatingSystem ?? Platform.operatingSystem;
+  final run = runProcess ?? Process.run;
+  // Aufrufe, die hängen können, laufen mit Zeitgrenze über einen Starter.
+  // Reicht ein Test nur einen Runner herein, laufen sie über ihn.
+  final start =
+      startProcess ??
+      (runProcess == null ? Process.start : processStarterFrom(runProcess));
 
   switch (command) {
     case 'version':
@@ -108,6 +125,9 @@ Future<int> runCli(
         awaitShutdown: awaitShutdown,
         preferredPort: preferredPort,
         openBrowser: openBrowser,
+        https: os == 'macos',
+        runProcess: run,
+        startProcess: start,
       );
     case 'pair':
       return _printPairingCode(resolvedPaths, stdoutSink);
@@ -127,6 +147,16 @@ Future<int> runCli(
         autostart: autostart,
         install: false,
       );
+    case 'zertifikat-vertrauen':
+      return _trustLocalCertificate(
+        resolvedPaths,
+        stdoutSink,
+        stderrSink,
+        operatingSystem: os,
+        environment: environment ?? Platform.environment,
+        runProcess: run,
+        startProcess: start,
+      );
     case 'doctor':
       return _printDoctorReport(
         resolvedPaths,
@@ -134,6 +164,9 @@ Future<int> runCli(
         autostart: autostart,
         statusProbe: statusProbe,
         printerStates: printerStates,
+        operatingSystem: operatingSystem,
+        runProcess: run,
+        startProcess: start,
       );
   }
 
@@ -162,6 +195,94 @@ Future<int> _changeAutostart(
   return exitCodeFailed;
 }
 
+/// `zertifikat-vertrauen` — der lokalen Zertifizierungsstelle einmal im
+/// Anmelde-Schlüsselbund vertrauen, damit Safari den HTTPS-Zugang annimmt.
+///
+/// Läuft bei der Installation (postinstall, als angemeldeter Benutzer) und
+/// von Hand. Fehlen die Zertifikate, entstehen sie hier — mit eigener
+/// [LocalCertificates]-Instanz; die Sperrdatei ordnet das mit einem
+/// gleichzeitig startenden Agenten. Ist die Stelle schon vertraut, fragt
+/// macOS nicht noch einmal.
+Future<int> _trustLocalCertificate(
+  ConfigPaths paths,
+  StringSink out,
+  StringSink err, {
+  required String operatingSystem,
+  required Map<String, String> environment,
+  required ProcessRunner runProcess,
+  required ProcessStarter startProcess,
+}) async {
+  const retry = 'Erneut versuchen: kasseneck-connect zertifikat-vertrauen';
+  if (operatingSystem != 'macos') {
+    err.writeln('Den HTTPS-Zugang gibt es bisher nur am Mac.');
+    return exitCodeFailed;
+  }
+  final home = environment['HOME'];
+  if (home == null || home.isEmpty) {
+    err.writeln(
+      'HOME ist nicht gesetzt — der Anmelde-Schlüsselbund lässt sich nicht '
+      'finden.',
+    );
+    return exitCodeFailed;
+  }
+
+  final log = AgentLog(paths.logDirectory);
+  final TlsFiles files;
+  try {
+    files = await LocalCertificates(
+      directory: paths.directory,
+      run: runProcess,
+      log: log,
+    ).ensure();
+  } on Exception catch (e) {
+    // openssl fehlt oder scheitert (TlsCertificateException), oder der
+    // Datenordner ist nicht beschreibbar.
+    log.error('Zertifikate für HTTPS ließen sich nicht anlegen', e);
+    err
+      ..writeln('Die Zertifikate für HTTPS ließen sich nicht anlegen: $e')
+      ..writeln(retry);
+    return exitCodeFailed;
+  }
+
+  final before = await isLocalCaTrusted(
+    files.caCertPath,
+    start: startProcess,
+    serverCertPath: files.serverCertPath,
+  );
+  if (!before) {
+    out.writeln(
+      'macOS fragt gleich nach dem Kennwort oder Touch ID (Absender '
+      '„security“), um der lokalen Zertifizierungsstelle „$localCaName“ zu '
+      'vertrauen.',
+    );
+  }
+  final trusted = await trustLocalCa(
+    files.caCertPath,
+    start: startProcess,
+    home: home,
+    serverCertPath: files.serverCertPath,
+  );
+  if (!trusted) {
+    log.warn('HTTPS: Vertrauen in die lokale Zertifizierungsstelle fehlt.');
+    err
+      ..writeln(
+        'Der lokalen Zertifizierungsstelle ließ sich nicht vertrauen — '
+        'abgebrochen oder abgelehnt. Ohne Vertrauen erreicht Safari Connect '
+        'nicht.',
+      )
+      ..writeln(retry);
+    return exitCodeFailed;
+  }
+  log.info('HTTPS: der lokalen Zertifizierungsstelle wird vertraut.');
+  out.writeln(
+    before
+        ? 'Der lokalen Zertifizierungsstelle wird bereits vertraut.'
+        : 'Der lokalen Zertifizierungsstelle wird jetzt vertraut '
+              '(Anmelde-Schlüsselbund).',
+  );
+  return 0;
+}
+
 /// `doctor` — Zustand des Rechners für den Support.
 Future<int> _printDoctorReport(
   ConfigPaths paths,
@@ -169,12 +290,18 @@ Future<int> _printDoctorReport(
   Autostart? autostart,
   StatusProbe? statusProbe,
   PrinterStates? printerStates,
+  String? operatingSystem,
+  ProcessRunner? runProcess,
+  ProcessStarter? startProcess,
 }) async {
   final report = await collectDoctorReport(
     paths: paths,
     probe: statusProbe,
     printerStates: printerStates,
     autostart: autostart,
+    operatingSystem: operatingSystem,
+    runProcess: runProcess,
+    startProcess: startProcess,
   );
   out.write(formatDoctorReport(report));
   return 0;
@@ -200,6 +327,9 @@ Future<int> _runAgent(
   Future<void> Function()? awaitShutdown,
   int? preferredPort,
   bool? openBrowser,
+  required bool https,
+  required ProcessRunner runProcess,
+  required ProcessStarter startProcess,
 }) {
   final log = AgentLog(paths.logDirectory);
   final done = Completer<int>();
@@ -216,6 +346,9 @@ Future<int> _runAgent(
           awaitShutdown: awaitShutdown,
           preferredPort: preferredPort,
           openBrowser: openBrowser,
+          https: https,
+          runProcess: runProcess,
+          startProcess: startProcess,
         );
       } on Object catch (e) {
         // Der Ablauf selbst ist gescheitert — das beendet den Befehl.
@@ -244,6 +377,9 @@ Future<int> _serveAgent(
   Future<void> Function()? awaitShutdown,
   int? preferredPort,
   bool? openBrowser,
+  required bool https,
+  required ProcessRunner runProcess,
+  required ProcessStarter startProcess,
 }) async {
   final store = ConfigStore(paths);
   final config = await store.load();
@@ -254,6 +390,11 @@ Future<int> _serveAgent(
     // Ohne ausdrückliche Angabe entscheidet die Umgebung: im Testlauf und auf
     // Servern ist `KASSENECK_CONNECT_NO_BROWSER=1` gesetzt.
     openBrowser: openBrowser ?? (Platform.environment[noBrowserEnvVar] != '1'),
+    // HTTPS bisher nur am Mac (Windows und Linux mit ihrer Bluetooth-Etappe).
+    https: https,
+    preferredHttpsPort: config.httpsPort,
+    runProcess: runProcess,
+    startProcess: startProcess,
   );
 
   try {
@@ -265,6 +406,10 @@ Future<int> _serveAgent(
   }
 
   out.writeln('Lokale API: http://127.0.0.1:${agent.port}');
+  final httpsPort = agent.httpsPort;
+  if (httpsPort != null) {
+    out.writeln('Lokale API über HTTPS: https://127.0.0.1:$httpsPort');
+  }
   final pending = (await store.load()).pairing.code;
   if (pending != null) {
     out.writeln('Kopplungscode: $pending (10 Minuten gültig)');
@@ -326,6 +471,10 @@ void _writeUsage(StringSink sink, ArgParser parser) {
     ..writeln('  pair                 Kopplungscode für die Kasse anzeigen.')
     ..writeln('  install-autostart    Autostart einrichten.')
     ..writeln('  uninstall-autostart  Autostart entfernen.')
+    ..writeln(
+      '  zertifikat-vertrauen Der lokalen Zertifizierungsstelle für HTTPS '
+      'vertrauen (Mac).',
+    )
     ..writeln('  doctor               Diagnose ausgeben.')
     ..writeln('  version              Version ausgeben.')
     ..writeln()

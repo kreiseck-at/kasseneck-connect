@@ -111,7 +111,7 @@ class MacosAutostart implements Autostart {
       await paths.logDirectory.create(recursive: true);
       await plistFile.writeAsString(
         launchAgentPlist(
-          executable: executable,
+          executable: _launchTarget,
           logDirectory: paths.logDirectory,
         ),
       );
@@ -185,6 +185,21 @@ class MacosAutostart implements Autostart {
       );
     }
     return const AutostartResult.success('Autostart entfernt.');
+  }
+
+  /// Was der LaunchAgent startet: [executable] mit aufgelösten Symlinks.
+  ///
+  /// Ab 1.3 liegt die Binary im App-Paket, `/usr/local/bin/kasseneck-connect`
+  /// und `/usr/local/kasseneck-connect/kasseneck-connect` zeigen nur hinein.
+  /// launchd soll die Binary im Paket starten: macOS ordnet die
+  /// Bluetooth-Freigabe dem Paket zu, und das Hilfsprogramm liegt daneben.
+  /// Lässt sich der Pfad nicht auflösen, bleibt er, wie er ist.
+  String get _launchTarget {
+    try {
+      return File(executable).resolveSymbolicLinksSync();
+    } on FileSystemException {
+      return executable;
+    }
   }
 
   /// Numerische Kennung des angemeldeten Benutzers für `gui/<uid>`.

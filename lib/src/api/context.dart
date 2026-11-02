@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:shelf_router/shelf_router.dart';
 
+import '../bluetooth/bridge.dart';
 import '../config/model.dart';
 import '../config/store.dart';
 import '../events/bus.dart';
@@ -17,6 +18,10 @@ typedef RouteRegistrar = void Function(Router router, AgentContext context);
 
 /// Liefert die Druckerliste für `GET /v1/status` (Etappe A3).
 typedef PrinterSummaries = FutureOr<List<Map<String, Object?>>> Function();
+
+/// Liefert den Zertifikatsstand des HTTPS-Zugangs für die Langform des
+/// Status (`tls`), `null` ohne Zertifikat.
+typedef TlsSummary = Future<Map<String, Object?>?> Function();
 
 /// Gemeinsamer Zustand aller Endpunkte.
 ///
@@ -35,6 +40,7 @@ class AgentContext {
     PrinterSummaries? printers,
     EventBus? events,
     this.environment,
+    this.bluetooth,
   }) : clock = clock ?? DateTime.now,
        events = events ?? EventBus(),
        printers = printers ?? _noPrinters {
@@ -56,6 +62,14 @@ class AgentContext {
   /// Binden, weil erst dann feststeht, welcher Port frei war.
   int port;
 
+  /// Port des HTTPS-Zugangs, `null`, solange er nicht lauscht (außerhalb von
+  /// macOS immer). [Agent] setzt ihn nach jedem Binden und nimmt ihn weg,
+  /// sobald der Zugang schließt — daran hängt `features: https`.
+  int? httpsPort;
+
+  /// Zertifikatsstand für die Langform des Status; `null` ohne HTTPS.
+  TlsSummary? tls;
+
   /// Kopplung: Code erzeugen, prüfen, Token ausgeben und widerrufen.
   late final Pairing pairing;
 
@@ -74,6 +88,12 @@ class AgentContext {
   /// entscheidet im Test der Test darüber, ob ein Browser aufginge — und nicht
   /// die Umgebung des Rechners, auf dem er läuft.
   final Map<String, String>? environment;
+
+  /// Bluetooth-Brücke des Agenten, `null` ohne Bluetooth (z. B. in Tests).
+  ///
+  /// `GET /v1/status` liest daraus `features` und den Bluetooth-Zustand; ohne
+  /// Brücke antworten alle Bluetooth-Pfade `bluetooth_unsupported`.
+  final BluetoothBridge? bluetooth;
 
   /// Zeitpunkt der letzten Kopplungsanforderung über `POST /v1/pair/request`.
   ///

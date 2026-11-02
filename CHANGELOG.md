@@ -5,6 +5,11 @@ Alle nennenswerten Änderungen an Kasseneck Connect. Die Versionsnummer folgt
 `lib/src/version.dart` und wird über `GET /v1/status` sowie im Update-Feed
 gemeldet.
 
+## 1.4.1 — 2026-11-02
+
+- Keine Änderung am Verhalten. Versionsschritt, an dem die Aktualisierung auf
+  einen Klick aus der Kasse (ab 1.4.0) am Gerät erprobt wird.
+
 ## 1.4.0 — 2026-11-02
 
 - **Aktualisieren auf einen Klick (macOS):** `GET /v1/update` nennt die

@@ -34,7 +34,9 @@ jobs:
         run: |
           uname -a
           nproc
-          for i in 1 2 3 4 5 6; do
+          dart run tool/port_probe.dart
+          dart run tool/port_probe.dart
+          for i in 1 2; do
             dart test --reporter expanded > lauf.txt 2>&1 && echo "lauf $i: gruen" || echo "lauf $i: rot"
             grep -E "DIAG|\[E\]|Which: threw" lauf.txt || true
           done

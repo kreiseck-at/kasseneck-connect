@@ -682,7 +682,8 @@ void _mitEchtemOpenssl() {
         ]);
         expect(stelle.exitCode, 0, reason: '${stelle.stderr}');
         final st = '${stelle.stdout}';
-        expect(st, contains('Subject: CN=Kasseneck Connect (lokal)'));
+        expect(st, _namenszeile('Subject', localCaName));
+        expect(st, _namenszeile('Issuer', localCaName));
         expect(st, contains('prime256v1'));
         expect(st, contains('ecdsa-with-SHA256'));
         expect(st, contains('X509v3 Basic Constraints: critical'));
@@ -706,8 +707,8 @@ void _mitEchtemOpenssl() {
         ]);
         expect(server.exitCode, 0, reason: '${server.stderr}');
         final se = '${server.stdout}';
-        expect(se, contains('Issuer: CN=Kasseneck Connect (lokal)'));
-        expect(se, contains('Subject: CN=localhost'));
+        expect(se, _namenszeile('Issuer', localCaName));
+        expect(se, _namenszeile('Subject', 'localhost'));
         expect(se, contains('prime256v1'));
         expect(se, contains('X509v3 Basic Constraints: critical'));
         expect(se, contains('CA:FALSE'));
@@ -1127,6 +1128,13 @@ String _version(String openssl) {
     return '?';
   }
 }
+
+/// Die ganze Zeile `<feld>: CN=<cn>` aus `openssl x509 -text`. Ohne
+/// `-nameopt` schreiben LibreSSL und neuere OpenSSL `CN=…`, OpenSSL 1.1.1 und
+/// 3.0 (die Linux-CI) `CN = …` — beides gilt, ein längerer Name nicht.
+Matcher _namenszeile(String feld, String cn) => matches(
+  RegExp('^ *$feld: CN(=| = )${RegExp.escape(cn)}\\r?\$', multiLine: true),
+);
 
 final RegExp _datumZeile = RegExp(
   r'^(notBefore|notAfter)=([A-Z][a-z]{2}) +(\d{1,2}) (\d{2}):(\d{2}):(\d{2}) (\d{4}) GMT$',

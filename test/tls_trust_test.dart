@@ -292,14 +292,18 @@ void main() {
         ]);
         expect(entzogen, alt);
         // Vorher nachgewiesen, dass es eine Stelle von Connect ist — an
-        // derselben Datei.
+        // derselben Datei. `-nameopt RFC2253`: sonst schreibt OpenSSL 1.1.1
+        // und 3.0 `CN = …`, und die alte Stelle bliebe vertraut.
         final pruefung = opensslAufrufe().single;
-        expect(pruefung.arguments.take(4), <String>[
+        expect(pruefung.arguments.take(6), <String>[
           'x509',
           '-noout',
           '-text',
+          '-nameopt',
+          'RFC2253',
           '-in',
         ]);
+        expect(pruefung.arguments, hasLength(7));
         // Die Datei mit der alten Stelle bleibt nicht liegen.
         final remove = fake.calls.singleWhere(
           (c) => c.arguments.first == 'remove-trusted-cert',
@@ -445,7 +449,7 @@ void main() {
   });
 
   group('matchesLocalCa', () {
-    test('die Stelle in der Schreibweise von LibreSSL und OpenSSL 3', () {
+    test('die Stelle, wie openssl sie mit -nameopt RFC2253 beschreibt', () {
       expect(matchesLocalCa(_x509Text()), isTrue);
       expect(matchesLocalCa(_x509Text().replaceAll('\n', '\r\n')), isTrue);
     });
@@ -474,9 +478,11 @@ void main() {
         expect(matchesLocalCa(text), isFalse, reason: grund);
       }
     });
+  });
 
+  group('isLocalCaCertificate', () {
     test('echtes openssl ($testOpenssl): eigene Stelle ja, Serverzertifikat '
-        'und fremde gleichnamige Stelle nein', () async {
+        'und fremde gleichnamige Stellen nein', () async {
       final echt = FakeProcessRunner()
         ..echt.addAll(<String>{testOpenssl, 'chmod'});
       final dateien = await LocalCertificates(
@@ -486,63 +492,117 @@ void main() {
         openssl: testOpenssl,
       ).ensure();
 
-      Future<String> text(String pfad) async {
+      /// Fragt wie `trustLocalCa` über [isLocalCaCertificate] — und verlangt
+      /// vorher, dass openssl die Datei mit denselben Optionen liest: ein
+      /// „nein“ soll am Inhalt liegen, nicht an einem gescheiterten Aufruf.
+      Future<bool> vonConnect(String pfad) async {
         final r = await Process.run(testOpenssl, <String>[
           'x509',
           '-noout',
           '-text',
+          '-nameopt',
+          'RFC2253',
           '-in',
           pfad,
         ]);
         expect(r.exitCode, 0, reason: '${r.stderr}');
-        return '${r.stdout}';
+        return isLocalCaCertificate(
+          pfad,
+          start: echt.starter,
+          openssl: testOpenssl,
+        );
       }
 
-      expect(matchesLocalCa(await text(dateien.caCertPath)), isTrue);
-      expect(matchesLocalCa(await text(dateien.serverCertPath)), isFalse);
+      /// Eine selbst ausgestellte Stelle mit Inhaber [subj] und den
+      /// Erweiterungen [erweiterungen] (Zeilen einer openssl-Konfiguration).
+      Future<String> fremdeStelle(
+        String name,
+        String subj,
+        String erweiterungen,
+      ) async {
+        final cnf = File(p.join(temp.path, '$name.cnf'))
+          ..writeAsStringSync(
+            '[req]\ndistinguished_name = dn\n\n[dn]\n\n[fremd]\n'
+            '$erweiterungen',
+          );
+        final schluessel = p.join(temp.path, '$name-key.pem');
+        final zert = p.join(temp.path, '$name-cert.pem');
+        for (final schritt in <List<String>>[
+          <String>[
+            'ecparam',
+            '-name',
+            'prime256v1',
+            '-genkey',
+            '-noout',
+            '-out',
+            schluessel,
+          ],
+          <String>[
+            'req',
+            '-new',
+            '-x509',
+            '-key',
+            schluessel,
+            '-out',
+            zert,
+            '-days',
+            '30',
+            '-subj',
+            subj,
+            '-config',
+            cnf.path,
+            '-extensions',
+            'fremd',
+          ],
+        ]) {
+          final r = await Process.run(testOpenssl, schritt);
+          expect(r.exitCode, 0, reason: '${schritt.first}: ${r.stderr}');
+        }
+        return zert;
+      }
+
+      expect(await vonConnect(dateien.caCertPath), isTrue);
+      expect(await vonConnect(dateien.serverCertPath), isFalse);
 
       // Gleicher Name, CA:TRUE, selbst ausgestellt — aber ohne unsere
       // Namensbeschränkung.
-      final cnf = File(p.join(temp.path, 'fremd.cnf'))
-        ..writeAsStringSync(
-          '[req]\ndistinguished_name = dn\n\n[dn]\n\n[fremd]\n'
-          'basicConstraints = critical, CA:TRUE\n'
-          'keyUsage = critical, keyCertSign\n',
-        );
-      final schluessel = p.join(temp.path, 'fremd-key.pem');
-      final zert = p.join(temp.path, 'fremd-cert.pem');
-      for (final schritt in <List<String>>[
-        <String>[
-          'ecparam',
-          '-name',
-          'prime256v1',
-          '-genkey',
-          '-noout',
-          '-out',
-          schluessel,
-        ],
-        <String>[
-          'req',
-          '-new',
-          '-x509',
-          '-key',
-          schluessel,
-          '-out',
-          zert,
-          '-days',
-          '30',
-          '-subj',
-          '/CN=$localCaName',
-          '-config',
-          cnf.path,
-          '-extensions',
-          'fremd',
-        ],
-      ]) {
-        final r = await Process.run(testOpenssl, schritt);
-        expect(r.exitCode, 0, reason: '${schritt.first}: ${r.stderr}');
-      }
-      expect(matchesLocalCa(await text(zert)), isFalse);
+      expect(
+        await vonConnect(
+          await fremdeStelle(
+            'ohne-beschraenkung',
+            '/CN=$localCaName',
+            'basicConstraints = critical, CA:TRUE\n'
+                'keyUsage = critical, keyCertSign\n',
+          ),
+        ),
+        isFalse,
+      );
+
+      // Unsere Erweiterungen: mit genau unserem Namen zählt die Stelle
+      // (nachgewiesen wird an den Eigenschaften, nicht am Schlüssel), mit
+      // einem Namensteil mehr nicht — in RFC 2253 steht er mit Komma in
+      // derselben Zeile.
+      const unsere =
+          'basicConstraints = critical, CA:TRUE, pathlen:0\n'
+          'keyUsage = critical, keyCertSign, cRLSign\n'
+          'nameConstraints = critical, '
+          'permitted;IP:127.0.0.1/255.255.255.255, permitted;DNS:localhost\n';
+      expect(
+        await vonConnect(
+          await fremdeStelle('gleicher-name', '/CN=$localCaName', unsere),
+        ),
+        isTrue,
+      );
+      expect(
+        await vonConnect(
+          await fremdeStelle(
+            'laengerer-name',
+            '/O=Fremd/CN=$localCaName',
+            unsere,
+          ),
+        ),
+        isFalse,
+      );
     }, skip: ohneTestOpenssl);
   });
 

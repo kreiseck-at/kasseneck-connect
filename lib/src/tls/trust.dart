@@ -73,12 +73,12 @@ Future<bool> isLocalCaTrusted(
 /// Vorher verliert jede ältere Stelle von Connect ihr Vertrauen: eine neu
 /// erzeugte Stelle heißt wie die alte, und vertraut sein soll immer höchstens
 /// eine. Als Stelle von Connect zählt dabei nur, was es nachweislich ist
-/// ([matchesLocalCa]): die Suche nach dem Namen trifft jede Bezeichnung, die
-/// ihn nur enthält, und ein fremdes Zertifikat (auch eines mit „Nie
-/// vertrauen“) bleibt unberührt. Lässt sich das Vertrauen nicht entziehen
-/// (Frage abgebrochen), wird auch die neue Stelle nicht eingetragen. Ist die
-/// aktuelle Stelle schon vertraut, fragt macOS nicht noch einmal — der
-/// Installer ruft das bei jedem Update auf.
+/// ([isLocalCaCertificate]): die Suche nach dem Namen trifft jede
+/// Bezeichnung, die ihn nur enthält, und ein fremdes Zertifikat (auch eines
+/// mit „Nie vertrauen“) bleibt unberührt. Lässt sich das Vertrauen nicht
+/// entziehen (Frage abgebrochen), wird auch die neue Stelle nicht
+/// eingetragen. Ist die aktuelle Stelle schon vertraut, fragt macOS nicht
+/// noch einmal — der Installer ruft das bei jedem Update auf.
 ///
 /// `true`, wenn die Stelle danach vertraut ist bzw. das Eintragen gelang.
 /// Antwortet der Benutzer nicht binnen [promptTimeout], wird die Frage
@@ -114,7 +114,13 @@ Future<bool> trustLocalCa(
     for (final other in others) {
       if (!trusted.contains(other.sha1)) continue;
       final removed = await _withPemFile(other.pem, (path) async {
-        if (!await _isLocalCa(path, start, openssl, queryTimeout)) return true;
+        final ours = await isLocalCaCertificate(
+          path,
+          start: start,
+          openssl: openssl,
+          timeout: queryTimeout,
+        );
+        if (!ours) return true;
         return untrustLocalCa(path, start: start, timeout: promptTimeout);
       });
       if (!removed) return false;
@@ -159,14 +165,19 @@ Future<bool> untrustLocalCa(
   return result?.exitCode == 0;
 }
 
-/// Ob die Ausgabe von `openssl x509 -noout -text` eine Stelle von Connect
-/// beschreibt: Inhaber **und** Aussteller genau `CN=Kasseneck Connect
-/// (lokal)` (selbst ausgestellt), `CA:TRUE` und genau unsere
-/// Namensbeschränkung (erlaubt nur `IP:127.0.0.1/255.255.255.255` und
-/// `DNS:localhost`, nichts ausgeschlossen).
+/// Ob die Ausgabe von `openssl x509 -noout -text -nameopt RFC2253`
+/// ([isLocalCaCertificate]) eine Stelle von Connect beschreibt: Inhaber
+/// **und** Aussteller genau `CN=Kasseneck Connect (lokal)` (selbst
+/// ausgestellt), `CA:TRUE` und genau unsere Namensbeschränkung (erlaubt nur
+/// `IP:127.0.0.1/255.255.255.255` und `DNS:localhost`, nichts
+/// ausgeschlossen).
 ///
 /// Gelesen wird `-text`, weil LibreSSL 3.3 (`/usr/bin/openssl` am Mac) kein
-/// `-ext` kennt; diese Zeilen schreiben LibreSSL und OpenSSL 3 gleich.
+/// `-ext` kennt. Die Erweiterungen schreiben LibreSSL und OpenSSL gleich, die
+/// Namen nur mit `-nameopt RFC2253`: ohne schreibt OpenSSL 1.1.1 und 3.0
+/// `CN = …`, LibreSSL und neuere OpenSSL `CN=…`. In RFC 2253 stehen mehrere
+/// Namensteile mit Komma in einer Zeile, Sonderzeichen maskiert — ein
+/// längerer Name gleicht dem unseren also nie.
 bool matchesLocalCa(String x509Text) {
   final lines = x509Text
       .split('\n')
@@ -211,20 +222,23 @@ bool matchesLocalCa(String x509Text) {
       permitted.contains('DNS:localhost');
 }
 
-/// Ob das Zertifikat in [path] nachweislich eine Stelle von Connect ist.
-/// Lässt es sich nicht lesen (kein openssl, unlesbar), zählt es nicht dazu.
-Future<bool> _isLocalCa(
-  String path,
-  ProcessStarter start,
-  String openssl,
-  Duration timeout,
-) async {
+/// Ob das Zertifikat in [certPath] nachweislich eine Stelle von Connect ist
+/// ([matchesLocalCa]). Lässt es sich nicht lesen (kein openssl, unlesbar,
+/// keine Antwort binnen [timeout]), zählt es nicht dazu.
+Future<bool> isLocalCaCertificate(
+  String certPath, {
+  required ProcessStarter start,
+  String openssl = '/usr/bin/openssl',
+  Duration timeout = trustQueryTimeout,
+}) async {
   final result = await runWithTimeout(start, openssl, <String>[
     'x509',
     '-noout',
     '-text',
+    '-nameopt',
+    'RFC2253',
     '-in',
-    path,
+    certPath,
   ], timeout);
   return result != null &&
       result.exitCode == 0 &&

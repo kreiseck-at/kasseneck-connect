@@ -844,7 +844,7 @@ void main() {
       expect(fake.starts, 0);
 
       final status = await _send(agent.port, 'GET', '/v1/status');
-      expect(status.json['features'], ['bluetooth']);
+      expect(status.json['features'], ['bluetooth', 'update']);
       final bluetooth = status.json['bluetooth']! as Map<String, Object?>;
       expect(bluetooth['state'], 'unknown');
       expect(
@@ -854,7 +854,7 @@ void main() {
           '/v1/status',
           withToken: false,
         )).json['features'],
-        ['bluetooth'],
+        ['bluetooth', 'update'],
       );
       expect((await _send(agent.port, 'GET', '/v1/bluetooth')).ok, isTrue);
       final zugelassen = await _send(
@@ -909,7 +909,7 @@ void main() {
 
         final status = await _send(agent.port, 'GET', '/v1/status');
         expect(status.ok, isTrue, reason: status.body);
-        expect(status.json['features'], ['bluetooth']);
+        expect(status.json['features'], ['bluetooth', 'update']);
         final bluetooth = status.json['bluetooth']! as Map<String, Object?>;
         expect(bluetooth['state'], helperStateRestarting);
         final geraet = (bluetooth['devices']! as List).single as Map;

@@ -64,3 +64,15 @@ String versionedDownloadName(String platformKey, String version) {
 /// `strip_version` in `tool/_common.sh`.
 String latestDownloadName(String versionedName, String version) =>
     versionedName.replaceFirst('-$version-', '-');
+
+/// Plattformschlüssel des laufenden Rechners (wie in `latest.json`), `null`
+/// für eine Plattform ohne Auslieferung.
+///
+/// [abi] im Format von `Abi.current()` (`macos_arm64`, `windows_x64` …).
+String? currentPlatformKey({required String abi}) => switch (abi) {
+  'macos_arm64' => 'darwin-arm64',
+  'macos_x64' => 'darwin-x64',
+  'windows_x64' => 'windows-x64',
+  'linux_x64' => 'linux-x64',
+  _ => null,
+};

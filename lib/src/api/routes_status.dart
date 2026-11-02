@@ -16,6 +16,10 @@ const String featureBluetooth = 'bluetooth';
 /// Fähigkeit in `features`: der HTTPS-Zugang lauscht (Port in `httpsPort`).
 const String featureHttps = 'https';
 
+/// Fähigkeit in `features`: es gibt `/v1/update`. Ob der Ein-Klick auf
+/// diesem System geht, sagt dort `oneClick`.
+const String featureUpdate = 'update';
+
 /// Was dieser Agent kann (`features` im Status).
 ///
 /// Daran erkennt die Kasse, ob sie einen Weg anbieten darf – nicht an der
@@ -25,6 +29,7 @@ const String featureHttps = 'https';
 List<String> agentFeatures(AgentContext ctx) => <String>[
   if (ctx.bluetooth?.available ?? false) featureBluetooth,
   if (ctx.httpsPort != null) featureHttps,
+  if (ctx.updater != null) featureUpdate,
 ];
 
 /// `GET /v1/status` — Lebenszeichen des Agenten.

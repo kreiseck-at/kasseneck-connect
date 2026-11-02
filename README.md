@@ -287,6 +287,8 @@ WebSocket-Upgrade).
 | POST | `/v1/printers/{id}/test` | Testseite mit den Bytes aus dem Rumpf |
 | POST | `/v1/print` | `{printerId, jobId, bytes}` (base64, bis 4 MB) |
 | WS | `/v1/events` | Ereignisstrom (siehe unten) |
+| GET | `/v1/update` | `{current, latest, available, platform, size, oneClick}` – neueste Version aus `latest.json` (höchstens alle 6 h abgerufen, wartet nie länger als ~1 s) |
+| POST | `/v1/update` | Aktualisieren auf einen Klick (nur macOS, `oneClick`): lädt, prüft und öffnet den Installer → `{started: true}`, Fortschritt als Ereignis |
 
 Beim Anlegen (`PUT /v1/printers` oder `PUT /v1/printers/neu`) vergibt der Agent
 die ID — die Kasse denkt sich keine aus. Zeigt dabei schon ein Drucker auf
@@ -342,6 +344,12 @@ auffallen.
 {"type": "print.failed",  "printerId": "p_ab12cd34", "jobId": "beleg-43", "code": "printer_offline", "message": "…"}
 ```
 
+Bei einer Aktualisierung (`POST /v1/update`) kommen dazu `update.progress`
+(`{version, phase: download|check|ready, percent}`), `update.failed`
+(`{version, code, message}`) und – unmittelbar bevor sich der Installer öffnet –
+`agent.restarting` (`{reason: "update", version}`): Der Installer beendet und
+startet Connect neu, die Verbindung ist danach kurz weg.
+
 Der Strom hat **keinen Puffer**: wer nicht zuhört, verpasst das Ereignis. Der
 belastbare Zustand steht in `GET /v1/status`; die Ereignisse sind nur die
 schnelle Benachrichtigung obendrauf.
@@ -361,6 +369,14 @@ schnelle Benachrichtigung obendrauf.
 | `pair_locked` | zu viele Fehlversuche, 60 s Sperre |
 | `printer_unknown` | diese Drucker-ID kennt der Agent nicht |
 | `printer_offline` | keine Verbindung zum Gerät |
+| `update_unsupported` | auf diesem System gibt es den Ein-Klick nicht (nur Download) |
+| `update_not_available` | es gibt keine neuere Version |
+| `update_busy` | eine Aktualisierung läuft bereits |
+| `update_download_failed` | das Paket ließ sich nicht laden (Ereignis) |
+| `update_checksum_mismatch` | Größe oder SHA-256 stimmen nicht mit `latest.json` (Ereignis) |
+| `update_signature_invalid` | keine gültige, notarisierte Signatur von Post Now e.U. (Ereignis) |
+| `update_not_newer` | das geladene Paket ist nicht neuer (Ereignis) |
+| `update_open_failed` | der Installer ließ sich nicht öffnen (Ereignis) |
 | `timeout` | keine Bestätigung in der Zeit; mit `detail.mayHavePrinted = true` ist offen, ob der Bon lief |
 | `refused` | das Gerät lehnt ab (kein Papier, Deckel offen) |
 | `print_in_progress` | derselbe Auftrag läuft gerade noch |
@@ -443,6 +459,20 @@ mit einem anderen Gerät verbunden), `bluetooth_blocked`,
 `bluetooth_write_failed`, `bluetooth_disconnected`,
 `bluetooth_too_many_devices`. Das Nachrichtenprotokoll zwischen Agent und
 Hilfsprogramm steht in `docs/bluetooth-protokoll.md`.
+
+## Aktualisieren
+
+Ab 1.4.0 aktualisiert sich Connect am Mac auf einen Klick aus der Kasse: Die
+Kasse ruft `POST /v1/update`, Connect lädt das Paket der neuesten Version von
+GitHub (nur `kreiseck-at/kasseneck-connect`, Adresse und Version kommen allein
+aus `latest.json`), prüft Größe und SHA-256 und mit `pkgutil` und `spctl`, dass
+es mit einer „Developer ID Installer“-Identität des Teams `6KMT4H4CNE` signiert
+und von Apple notarisiert ist, und öffnet erst dann den Installer. Bestätigen
+und das Kennwort bzw. Touch ID gibt der Mensch ein; still installiert wird nie.
+Kopplung, Drucker, Zertifikate und Bluetooth-Freigabe bleiben erhalten.
+Windows und Linux: `GET /v1/update` nennt die neueste Version, aktualisiert
+wird über den Download. Geladene Pakete liegen unter `updates/` im
+Konfigurationsordner und werden nach 24 Stunden entfernt.
 
 ## Fehlersuche
 

@@ -435,6 +435,49 @@ void main() {
       });
     });
 
+    test('Log: nur der erste geplante Neustart je unauthorized-Phase ist '
+        'eine Info-Zeile', () {
+      fakeAsync((async) {
+        final fake = FakeBluetoothHelper(log: log, zustand: 'unauthorized');
+        _verfolge(fake.call(HelperOp.state));
+        async.flushMicrotasks();
+
+        // Drei Neustarts in derselben Phase.
+        for (var i = 0; i < 3; i++) {
+          async.elapse(const Duration(seconds: 10));
+          unawaited(fake.refresh());
+          async.elapse(const Duration(seconds: 1));
+        }
+        expect(fake.starts, 4);
+        expect(
+          RegExp('Bluetooth ohne Freigabe').allMatches(logText()),
+          hasLength(1),
+        );
+        expect(
+          RegExp('Neustart wegen Freigabe').allMatches(logText()),
+          hasLength(1),
+        );
+        expect(
+          RegExp('Hilfsprogramm gestartet').allMatches(logText()),
+          hasLength(1),
+        );
+
+        // Anderer Zustand beendet die Phase; die nächste beginnt wieder mit Info.
+        fake.setzeZustand('poweredOn');
+        async.flushMicrotasks();
+        fake.setzeZustand('unauthorized');
+        async.flushMicrotasks();
+        async.elapse(const Duration(seconds: 10));
+        unawaited(fake.refresh());
+        async.elapse(const Duration(seconds: 1));
+        expect(
+          RegExp('Bluetooth ohne Freigabe').allMatches(logText()),
+          hasLength(2),
+        );
+        _stoppen(fake, async);
+      });
+    });
+
     test('bei poweredOff gibt es keinen Neustart', () {
       fakeAsync((async) {
         final fake = FakeBluetoothHelper(log: log, zustand: 'poweredOff');

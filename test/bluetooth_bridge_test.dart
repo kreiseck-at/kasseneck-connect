@@ -1292,24 +1292,58 @@ void main() {
     });
   });
 
-  test('Freigabe nachträglich erteilt: GET-Zustand startet neu und zeigt '
-      'poweredOn; ohne laufendes Hilfsprogramm startet er nichts', () {
+  test('Freigabe nachträglich erteilt: GET /v1/bluetooth stößt den Neustart '
+      'an, die nächste Abfrage zeigt poweredOn; ohne laufendes '
+      'Hilfsprogramm startet er nichts', () {
     fakeAsync((async) {
       final t = _Aufbau(async, temp, log);
       t.fake.setzeZustand('unauthorized');
-      t.ok(t.bridge.summary());
+      t.ok(t.bridge.summary(refresh: true));
       expect(t.fake.starts, 0);
 
       expect(t.fehler(t.bridge.scan()).code, errorBluetoothUnauthorized);
       expect(t.fake.starts, 1);
       t.fake.aendereFreigabe('poweredOn');
 
-      expect(t.ok(t.bridge.summary())!['state'], 'unauthorized');
+      expect(t.ok(t.bridge.summary(refresh: true))!['state'], 'unauthorized');
       async.elapse(const Duration(seconds: 10));
-      final stand = _verfolge(t.bridge.summary());
+      // Die Antwort kommt mit dem bekannten Zustand, der Neustart läuft
+      // nebenher.
+      expect(t.ok(t.bridge.summary(refresh: true))!['state'], 'unauthorized');
       async.elapse(const Duration(seconds: 1));
-      expect(stand.wert!['state'], 'poweredOn');
       expect(t.fake.starts, 2);
+      expect(t.ok(t.bridge.summary(refresh: true))!['state'], 'poweredOn');
+      t.ende();
+    });
+  });
+
+  test('Zustandsabfrage wartet nie auf den Neustart, auch wenn der neue '
+      'Prozess hängt', () {
+    fakeAsync((async) {
+      final t = _Aufbau(async, temp, log);
+      t.fake.setzeZustand('unauthorized');
+      expect(t.fehler(t.bridge.scan()).code, errorBluetoothUnauthorized);
+      async.elapse(const Duration(seconds: 10));
+      t.fake.haengtBeimStart = true;
+
+      final stand = _verfolge(t.bridge.summary(refresh: true));
+      async.flushMicrotasks();
+      expect(stand.fertig, isTrue);
+      expect(stand.wert!['state'], 'unauthorized');
+      expect(t.fake.starts, 2);
+      t.ende();
+    });
+  });
+
+  test('summary ohne refresh (GET /v1/status) startet nichts neu', () {
+    fakeAsync((async) {
+      final t = _Aufbau(async, temp, log);
+      t.fake.setzeZustand('unauthorized');
+      expect(t.fehler(t.bridge.scan()).code, errorBluetoothUnauthorized);
+      async.elapse(const Duration(seconds: 30));
+      expect(t.ok(t.bridge.summary())!['state'], 'unauthorized');
+      async.elapse(const Duration(seconds: 30));
+      expect(t.fake.starts, 1);
       t.ende();
     });
   });

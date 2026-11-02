@@ -47,7 +47,8 @@ RouteRegistrar bluetoothRoutes({required BluetoothBridge bridge}) {
     router
       ..get(
         '/v1/bluetooth',
-        (Request r) => _guard(() async => okJson(await bridge.summary())),
+        (Request r) =>
+            _guard(() async => okJson(await bridge.summary(refresh: true))),
       )
       ..post('/v1/bluetooth/scan', (Request r) => _handleScan(bridge, r))
       ..put(device, (Request r, String id) => _handleApprove(bridge, r, id))

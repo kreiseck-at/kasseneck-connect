@@ -36,8 +36,9 @@ List<String> agentFeatures(AgentContext ctx) => <String>[
 /// etwas über die Geräte zu verraten.
 /// Mit gültigem Token zusätzlich Drucker, die letzten Fehler, mit HTTPS der
 /// Zertifikatsstand (`tls`: Ablauf, ob vertraut) und – mit Brücke – der
-/// Bluetooth-Zustand samt zugelassenen Geräten. Der startet Bluetooth nie:
-/// die Kasse fragt den Status bei jedem Laden.
+/// Bluetooth-Zustand samt zugelassenen Geräten. Der startet Bluetooth nie,
+/// wartet auf keinen Neustart und stößt auch keinen an: die Kasse fragt den
+/// Status bei jedem Laden.
 Future<Response> handleStatus(AgentContext ctx, Request request) async {
   final config = configOf(request);
   final body = <String, Object?>{

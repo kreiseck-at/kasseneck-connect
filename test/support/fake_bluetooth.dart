@@ -166,6 +166,9 @@ class FakeBluetoothHelper implements BluetoothHelper {
   /// Jeder neue Prozess stirbt sofort wieder (Neustart-Sturm nachstellen).
   bool stirbtBeimStart = false;
 
+  /// Jeder neue Prozess lebt, antwortet aber auf nichts (wie [haengen]).
+  bool haengtBeimStart = false;
+
   String _zustand;
   _Lauf? _lauf;
 
@@ -199,7 +202,7 @@ class FakeBluetoothHelper implements BluetoothHelper {
       prozess.beenden(1);
       return prozess;
     }
-    final lauf = _Lauf(prozess);
+    final lauf = _Lauf(prozess)..haengt = haengtBeimStart;
     _lauf = lauf;
     prozess
       ..onZeile = ((zeile) => _zeile(lauf, zeile))

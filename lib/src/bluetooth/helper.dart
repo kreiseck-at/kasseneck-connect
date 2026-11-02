@@ -31,10 +31,10 @@ const String helperStateStarting = 'starting';
 /// Zustand meldet.
 const String helperStateRestarting = 'helper_restarting';
 
-const String _unknown = 'unknown';
-
 /// Funkzustand ohne Bluetooth-Freigabe.
 const String helperStateUnauthorized = 'unauthorized';
+
+const String _unknown = 'unknown';
 const String _unavailable = 'bluetooth_unavailable';
 const String _unsupported = 'bluetooth_unsupported';
 
@@ -167,6 +167,10 @@ class ProcessBluetoothHelper implements BluetoothHelper {
   /// wegen `unauthorized`.
   Timer? _authLock;
 
+  /// In dieser `unauthorized`-Phase wurde der Neustart schon als Info
+  /// protokolliert; ein anderer Zustand beendet die Phase.
+  bool _authPhaseLogged = false;
+
   @override
   Stream<HelperEvent> get events => _events.stream;
 
@@ -239,12 +243,20 @@ class ProcessBluetoothHelper implements BluetoothHelper {
         _authLock != null) {
       return false;
     }
-    log.info(
-      'Bluetooth-Hilfsprogramm meldet keine Freigabe; wird neu gestartet, '
-      'falls sie inzwischen erteilt ist.',
-    );
+    // Je unauthorized-Phase nur der erste Neustart als Info; sonst füllte eine
+    // dauerhaft verweigerte Freigabe das Log.
+    final first = !_authPhaseLogged;
+    _authPhaseLogged = true;
+    final message =
+        'Bluetooth ohne Freigabe – Hilfsprogramm wird neu gestartet, damit '
+        'eine erteilte Freigabe greift.';
+    if (first) {
+      log.info(message);
+    } else {
+      log.debug(message);
+    }
     run.process.kill(ProcessSignal.sigkill);
-    _ended(run, 'Neustart wegen Freigabe', planned: true);
+    _ended(run, 'Neustart wegen Freigabe', planned: true, quiet: !first);
     return true;
   }
 
@@ -343,7 +355,12 @@ class ProcessBluetoothHelper implements BluetoothHelper {
     _authLock?.cancel();
     _authLock = Timer(_authRecheck, () => _authLock = null);
     _attach(run);
-    log.info('Bluetooth-Hilfsprogramm gestartet.');
+    final message = 'Bluetooth-Hilfsprogramm gestartet.';
+    if (_authPhaseLogged) {
+      log.debug(message);
+    } else {
+      log.info(message);
+    }
     return run;
   }
 
@@ -400,7 +417,12 @@ class ProcessBluetoothHelper implements BluetoothHelper {
   }
 
   /// Der Prozess ist weg (Absturz, Hänger oder [stop]).
-  void _ended(_Run run, String reason, {bool planned = false}) {
+  void _ended(
+    _Run run,
+    String reason, {
+    bool planned = false,
+    bool quiet = false,
+  }) {
     if (run.ended) return;
     run.ended = true;
     run.cancel();
@@ -412,7 +434,12 @@ class ProcessBluetoothHelper implements BluetoothHelper {
     if (_stopped) {
       log.info('Bluetooth-Hilfsprogramm beendet.');
     } else if (planned) {
-      log.info('Bluetooth-Hilfsprogramm beendet ($reason).');
+      final message = 'Bluetooth-Hilfsprogramm beendet ($reason).';
+      if (quiet) {
+        log.debug(message);
+      } else {
+        log.info(message);
+      }
     } else {
       log.warn(
         'Bluetooth-Hilfsprogramm beendet ($reason'
@@ -515,7 +542,10 @@ class ProcessBluetoothHelper implements BluetoothHelper {
     switch (event.event) {
       case HelperEventName.state:
         final state = event.data['state'];
-        if (state is String) _state = state;
+        if (state is String) {
+          _state = state;
+          if (state != helperStateUnauthorized) _authPhaseLogged = false;
+        }
       case HelperEventName.connected when device is String:
         run.connected.add(device);
       case HelperEventName.disconnected when device is String:
@@ -545,6 +575,7 @@ class ProcessBluetoothHelper implements BluetoothHelper {
   void _setState(String state) {
     if (_state == state) return;
     _state = state;
+    if (state != helperStateUnauthorized) _authPhaseLogged = false;
     _emit(HelperEvent(HelperEventName.state, {'state': state}));
   }
 

@@ -160,7 +160,7 @@ BluetoothFailure _failure(String code, {Object? detail}) =>
 ///   oder Kennungen ergeben eine [FormatException] (Sache der Route).
 ///
 /// Bluetooth startet erst mit dem ersten Zugriff auf ein Gerät bzw. mit der
-/// ersten Suche; [summary] berührt es nie (`/v1/status` fragt sie bei jedem
+/// ersten Suche; [summary] startet es nie (`/v1/status` fragt sie bei jedem
 /// Laden der Kasse).
 class BluetoothBridge {
   /// [connections] und [leases] sind für Tests austauschbar. Wer [leases]
@@ -228,10 +228,16 @@ class BluetoothBridge {
   Duration get leaseTtl => _leases.ttl;
 
   /// Zustand und zugelassene Geräte mit Verbindungsstand. Startet kein
-  /// Hilfsprogramm; ein laufendes, das keine Freigabe meldet, wird ersetzt,
-  /// damit eine inzwischen erteilte Freigabe sichtbar wird.
-  Future<Map<String, Object?>> summary() async {
-    await _helper.refresh();
+  /// Hilfsprogramm und wartet nie auf eines.
+  ///
+  /// Mit [refresh] (nur `GET /v1/bluetooth`) wird ein laufendes
+  /// Hilfsprogramm, das keine Freigabe meldet, gedrosselt ersetzt, damit eine
+  /// inzwischen erteilte Freigabe sichtbar wird – der Neustart läuft nebenher,
+  /// die Antwort zeigt den bekannten Zustand, erst die nächste den neuen.
+  /// `GET /v1/status` ruft ohne [refresh] auf und lässt das Hilfsprogramm in
+  /// Ruhe.
+  Future<Map<String, Object?>> summary({bool refresh = false}) async {
+    if (refresh) unawaited(_helper.refresh());
     final config = await _store.load();
     return <String, Object?>{
       'state': state,

@@ -7,6 +7,7 @@ import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
 import 'support/fake_process_runner.dart';
+import 'support/port_zu.dart';
 
 const String _openssl = '/usr/bin/openssl';
 const String _security = '/usr/bin/security';
@@ -45,53 +46,26 @@ void main() {
           ..set('authorization', 'Bearer $token');
       }
       final response = await request.close();
-      return response.transform(utf8.decoder).join();
+      return await response.transform(utf8.decoder).join();
     } finally {
       client.close(force: true);
     }
   }
 
-  Future<String> ssAusgabe(List<String> args) async {
-    if (!Platform.isLinux) return '';
-    final r = await Process.run('ss', args);
-    return '${r.stdout}${r.stderr}'.trim().replaceAll('\n', ' | ');
-  }
+  test('get liest den Rumpf ganz, auch wenn er später kommt', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(() => server.close(force: true));
+    server.listen((request) async {
+      request.response.headers.contentType = ContentType.json;
+      request.response.write('{"ok"');
+      await request.response.flush();
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      request.response.write(':true}');
+      await request.response.close();
+    });
 
-  Future<String> lauscher(int port) =>
-      ssAusgabe(<String>['-ltnpeH', 'sport', '=', ':$port']);
-
-  Future<String> alle(int port) => ssAusgabe(<String>[
-    '-tanpeH',
-    '(',
-    'sport',
-    '=',
-    ':$port',
-    'or',
-    'dport',
-    '=',
-    ':$port',
-    ')',
-  ]);
-
-  Future<void> pruefeZu(String name, int port, String vorher) async {
-    Object? fehler;
-    try {
-      await get(port, '/v1/status');
-      fehler = 'antwortet nach stop';
-    } on SocketException {
-      fehler = null;
-    } on Object catch (e) {
-      fehler = e;
-    }
-    final nachher = await lauscher(port);
-    if (fehler != null || nachher.isNotEmpty) {
-      print('DIAG [$name] port=$port fehler=$fehler');
-      print('DIAG [$name] vorher=$vorher');
-      print('DIAG [$name] nachher=$nachher');
-      print('DIAG [$name] alle=${await alle(port)}');
-    }
-    if (fehler != null) fail('$fehler');
-  }
+    expect(await get(server.port, '/v1/status'), '{"ok":true}');
+  });
 
   test('start bindet auf 127.0.0.1 und antwortet auf /v1/status', () async {
     final agent = makeAgent();
@@ -152,10 +126,9 @@ void main() {
     final agent = makeAgent();
     await agent.start();
     final port = agent.port;
-    final vorher = await lauscher(port);
     await agent.stop();
 
-    await pruefeZu('stop schliesst', port, vorher);
+    await erwartePortZu(() => get(port, '/v1/status'));
   });
 
   test('der Agent bringt die Drucker-Endpunkte mit', () async {
@@ -277,14 +250,13 @@ void main() {
     final port = agent.port;
     expect(port, greaterThan(0));
 
-    final vorher = await lauscher(port);
     final started = DateTime.now();
     await agent.stop();
     final needed = DateTime.now().difference(started);
 
-    await pruefeZu('haengend', port, vorher);
     expect(needed, lessThan(gracefulStopTimeout + const Duration(seconds: 2)));
     expect(log.file.readAsStringSync(), contains('Agent angehalten.'));
+    await erwartePortZu(() => get(port, '/v1/status'));
   });
   group('HTTPS', () {
     // Echte Zertifikate brauchen echtes openssl; ohne wird übersprungen.
@@ -787,10 +759,7 @@ void main() {
       await agent.stop();
 
       expect(agent.httpsPort, isNull);
-      await expectLater(
-        https(port, '/v1/status'),
-        throwsA(isA<SocketException>()),
-      );
+      await erwartePortZu(() => https(port, '/v1/status'));
     }, skip: ohneOpenssl);
 
     test(

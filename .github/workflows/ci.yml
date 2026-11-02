@@ -32,13 +32,12 @@ jobs:
         # Test „ohne Token wird die Kopplungsseite geöffnet" prüft genau das
         # Öffnen, die Variable würde ihn aushebeln.
         run: |
-          uname -a
-          nproc
-          dart run tool/port_probe.dart
-          dart run tool/port_probe.dart
-          for i in 1 2; do
-            dart test --reporter expanded > lauf.txt 2>&1 && echo "lauf $i: gruen" || echo "lauf $i: rot"
-            grep -E "DIAG|\[E\]|Which: threw" lauf.txt || true
+          uname -r
+          for i in 1 2 3 4; do
+            dart test --reporter expanded > lauf.txt 2>&1 && echo "voll $i: gruen" || { echo "voll $i: rot"; grep -E "\[E\]|Which: threw|nicht frei" lauf.txt || true; }
+          done
+          for i in $(seq 1 10); do
+            dart test -j 2 test/agent_test.dart test/spawn_last_test.dart --reporter expanded > last.txt 2>&1 && echo "last $i: gruen" || { echo "last $i: rot"; grep -E "\[E\]|Which: threw|nicht frei" last.txt || true; }
           done
 
   build:

@@ -51,6 +51,48 @@ void main() {
     }
   }
 
+  Future<String> ssAusgabe(List<String> args) async {
+    if (!Platform.isLinux) return '';
+    final r = await Process.run('ss', args);
+    return '${r.stdout}${r.stderr}'.trim().replaceAll('\n', ' | ');
+  }
+
+  Future<String> lauscher(int port) =>
+      ssAusgabe(<String>['-ltnpeH', 'sport', '=', ':$port']);
+
+  Future<String> alle(int port) => ssAusgabe(<String>[
+    '-tanpeH',
+    '(',
+    'sport',
+    '=',
+    ':$port',
+    'or',
+    'dport',
+    '=',
+    ':$port',
+    ')',
+  ]);
+
+  Future<void> pruefeZu(String name, int port, String vorher) async {
+    Object? fehler;
+    try {
+      await get(port, '/v1/status');
+      fehler = 'antwortet nach stop';
+    } on SocketException {
+      fehler = null;
+    } on Object catch (e) {
+      fehler = e;
+    }
+    final nachher = await lauscher(port);
+    if (fehler != null || nachher.isNotEmpty) {
+      print('DIAG [$name] port=$port fehler=$fehler');
+      print('DIAG [$name] vorher=$vorher');
+      print('DIAG [$name] nachher=$nachher');
+      print('DIAG [$name] alle=${await alle(port)}');
+    }
+    if (fehler != null) fail('$fehler');
+  }
+
   test('start bindet auf 127.0.0.1 und antwortet auf /v1/status', () async {
     final agent = makeAgent();
     await agent.start();
@@ -110,9 +152,10 @@ void main() {
     final agent = makeAgent();
     await agent.start();
     final port = agent.port;
+    final vorher = await lauscher(port);
     await agent.stop();
 
-    await expectLater(get(port, '/v1/status'), throwsA(isA<SocketException>()));
+    await pruefeZu('stop schliesst', port, vorher);
   });
 
   test('der Agent bringt die Drucker-Endpunkte mit', () async {
@@ -234,13 +277,14 @@ void main() {
     final port = agent.port;
     expect(port, greaterThan(0));
 
+    final vorher = await lauscher(port);
     final started = DateTime.now();
     await agent.stop();
     final needed = DateTime.now().difference(started);
 
+    await pruefeZu('haengend', port, vorher);
     expect(needed, lessThan(gracefulStopTimeout + const Duration(seconds: 2)));
     expect(log.file.readAsStringSync(), contains('Agent angehalten.'));
-    await expectLater(get(port, '/v1/status'), throwsA(isA<SocketException>()));
   });
   group('HTTPS', () {
     // Echte Zertifikate brauchen echtes openssl; ohne wird übersprungen.

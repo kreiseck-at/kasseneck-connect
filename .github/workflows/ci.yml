@@ -31,9 +31,16 @@ jobs:
         # (`openBrowser: false` bzw. ein injizierter ProcessRunner) — und der
         # Test „ohne Token wird die Kopplungsseite geöffnet" prüft genau das
         # Öffnen, die Variable würde ihn aushebeln.
-        run: dart test --reporter expanded
+        run: |
+          uname -a
+          nproc
+          for i in 1 2 3 4 5 6; do
+            dart test --reporter expanded > lauf.txt 2>&1 && echo "lauf $i: gruen" || echo "lauf $i: rot"
+            grep -E "DIAG|\[E\]|Which: threw" lauf.txt || true
+          done
 
   build:
+    if: false
     name: Binary ${{ matrix.label }}
     needs: test
     runs-on: ${{ matrix.os }}

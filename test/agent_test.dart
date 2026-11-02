@@ -685,20 +685,55 @@ void main() {
 
       final ende = DateTime.now().add(const Duration(seconds: 20));
       List<int>? vorgelegt;
+      // Ein Fehler beim Neubinden ist erlaubt — scheitert aber jeder Versuch,
+      // soll die Meldung sagen, woran, statt nur „null“.
+      IOException? letzterFehler;
       while (DateTime.now().isBefore(ende)) {
         await Future<void>.delayed(const Duration(milliseconds: 100));
         final datei = File(tlsDatei('server-cert.pem'));
         if (!datei.existsSync()) continue;
         try {
           vorgelegt = (await https(port, '/v1/status')).zertifikat;
-        } on IOException {
+        } on IOException catch (fehler) {
+          letzterFehler = fehler;
           continue; // gerade beim Neubinden
         }
         if (!_gleich(vorgelegt, vorher)) break;
       }
-      expect(vorgelegt, isNotNull);
-      expect(vorgelegt, isNot(vorher));
+      expect(vorgelegt, isNotNull, reason: 'zuletzt: $letzterFehler');
+      expect(vorgelegt, isNot(vorher), reason: 'zuletzt: $letzterFehler');
       expect(vorgelegt, serverZertifikat());
+    }, skip: ohneOpenssl);
+
+    test('Gegenprobe: der Testclient lehnt die Kette einer fremden Stelle '
+        'ab', () async {
+      final zertifikate = _UmlenkbareZertifikate(
+        directory: temp,
+        run: runner.runner,
+        log: log,
+      );
+      final agent = httpsAgent(certificates: zertifikate);
+      await agent.start();
+      addTearDown(agent.stop);
+      final port = agent.httpsPort!;
+      expect((await https(port, '/v1/status')).status, 200);
+
+      // Ein ganzer zweiter Satz mit eigener Stelle: der Zugang bindet neu und
+      // legt dessen Kette vor. Der Client traut weiter nur der ersten Stelle.
+      final anders = Directory.systemTemp.createTempSync('connect-agent-');
+      addTearDown(() => anders.deleteSync(recursive: true));
+      zertifikate.umlenken = await LocalCertificates(
+        directory: anders,
+        run: runner.runner,
+        log: log,
+      ).ensure();
+      await agent.checkTls();
+      expect(agent.httpsPort, port);
+
+      await expectLater(
+        https(port, '/v1/status'),
+        throwsA(isA<HandshakeException>()),
+      );
     }, skip: ohneOpenssl);
 
     test('stop schließt auch den HTTPS-Zugang', () async {
@@ -762,27 +797,31 @@ class _Antwort {
   final List<int> zertifikat;
 }
 
-/// HTTPS-Client, der genau der Test-Stelle bzw. dem Serverzertifikat im
-/// Ordner [tls] traut — der Schlüsselbund des Rechners bleibt unberührt.
+/// HTTPS-Client, dessen einziger Anker die Test-Stelle im Ordner [tls] ist —
+/// der Schlüsselbund des Rechners bleibt unberührt. Geprüft wird die Kette,
+/// die der Zugang vorlegt (Blatt, dahinter die Stelle), bis zu diesem Anker.
 ///
 /// Unter macOS prüft Dart mit der Vertrauensprüfung des Systems (wie Safari),
-/// hier mit der Test-Stelle als einzigem Anker. Unter Linux lehnt BoringSSL
-/// jede Kette dieser Stelle ab („unsupported name constraint type“, wegen der
-/// IP-Namensbeschränkung); dort nimmt der Client nur das Zertifikat an, das
-/// Byte für Byte in `server-cert.pem` steht.
+/// samt Namensbeschränkung. BoringSSL (Dart unter Linux) baut und prüft die
+/// Kette ebenso bis zur Stelle, kennt aber keine IP-Namensbeschränkung und
+/// meldet deshalb am Blatt „unsupported name constraint type“. Nur dort lässt
+/// der Client nach, und nur für das Zertifikat, das Byte für Byte in
+/// `server-cert.pem` steht. Jede andere Abweichung bleibt ein Fehler — eine
+/// Stelle in der Kette, die nicht der Anker ist, kommt als „self signed
+/// certificate in certificate chain“ mit der Stelle im Rückruf, nicht dem
+/// Blatt. Die Namensbeschränkung selbst prüfen die Tests mit echtem openssl.
 HttpClient _httpsClient(Directory tls) {
-  if (Platform.isMacOS) {
-    return HttpClient(
-      context: SecurityContext(withTrustedRoots: false)
-        ..setTrustedCertificates(p.join(tls.path, 'ca-cert.pem')),
-    );
-  }
-  final erwartet = _der(
+  final client = HttpClient(
+    context: SecurityContext(withTrustedRoots: false)
+      ..setTrustedCertificates(p.join(tls.path, 'ca-cert.pem')),
+  );
+  if (Platform.isMacOS) return client;
+  final blatt = _der(
     File(p.join(tls.path, 'server-cert.pem')).readAsStringSync(),
   );
-  return HttpClient(context: SecurityContext(withTrustedRoots: false))
+  return client
     ..badCertificateCallback = (zertifikat, host, port) =>
-        host == '127.0.0.1' && _gleich(zertifikat.der, erwartet);
+        host == '127.0.0.1' && _gleich(zertifikat.der, blatt);
 }
 
 List<int> _der(String pem) => base64.decode(

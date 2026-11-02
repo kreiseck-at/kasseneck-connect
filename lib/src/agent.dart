@@ -24,6 +24,7 @@ import 'process_runner.dart';
 import 'terminal/warmhalten.dart';
 import 'tls/certificates.dart';
 import 'tls/trust.dart';
+import 'update/system_info.dart';
 import 'version.dart';
 
 /// Wie viele Ports der Agent ab dem Wunschport durchprobiert
@@ -47,6 +48,9 @@ const Duration trustCacheDuration = Duration(minutes: 1);
 ///
 /// Gebunden wird ausschließlich die Loopback-Adresse — aus dem LAN ist der
 /// Agent damit gar nicht erreichbar.
+/// So lange dürfen `sw_vers`/`uname` für die Systemangaben brauchen.
+const Duration _systemInfoTimeout = Duration(seconds: 3);
+
 class Agent {
   Agent({
     required this.store,
@@ -129,6 +133,9 @@ class Agent {
   /// Aufruf wird beendet. Ohne eigenen Starter, aber mit eigenem Runner
   /// (Tests) läuft er über den Runner — nie am System vorbei.
   final ProcessStarter _startProcess;
+
+  /// Systemangaben ändern sich im Lauf nicht; einmal gelesen genügt.
+  Future<SystemInfo>? _systemInfo;
 
   /// Genau eine Instanz je Agent: sie hält die Sperrdatei der Zertifikate.
   /// Ein zweiter Prozess (`zertifikat-vertrauen`) hat seine eigene; die
@@ -224,6 +231,17 @@ class Agent {
       printers: registry.summaries,
       environment: _environment,
       bluetooth: bluetooth,
+    );
+    ctx.systemInfo = () => _systemInfo ??= readSystemInfo(
+      run: (executable, arguments) async =>
+          await runWithTimeout(
+            _startProcess,
+            executable,
+            arguments,
+            _systemInfoTimeout,
+          ) ??
+          ProcessResult(0, 1, '', ''),
+      environment: _environment,
     );
     _context = ctx;
     _warmhalter = TerminalWarmhalter(store: store, log: log);

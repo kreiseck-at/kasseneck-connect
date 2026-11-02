@@ -8,6 +8,7 @@ import '../config/store.dart';
 import '../events/bus.dart';
 import '../log/logger.dart';
 import '../pairing/pairing.dart';
+import '../update/system_info.dart';
 
 /// Baut zusätzliche Routen in den Router des Agenten ein.
 ///
@@ -22,6 +23,10 @@ typedef PrinterSummaries = FutureOr<List<Map<String, Object?>>> Function();
 /// Liefert den Zertifikatsstand des HTTPS-Zugangs für die Langform des
 /// Status (`tls`), `null` ohne Zertifikat.
 typedef TlsSummary = Future<Map<String, Object?>?> Function();
+
+/// Liefert Betriebssystem, Systemversion und Prozessor für die Langform des
+/// Status.
+typedef SystemInfoReader = Future<SystemInfo> Function();
 
 /// Gemeinsamer Zustand aller Endpunkte.
 ///
@@ -69,6 +74,10 @@ class AgentContext {
 
   /// Zertifikatsstand für die Langform des Status; `null` ohne HTTPS.
   TlsSummary? tls;
+
+  /// Systemversion und Prozessor für die Langform des Status; `null` lässt
+  /// die beiden Felder weg. [Agent] setzt es beim Start.
+  SystemInfoReader? systemInfo;
 
   /// Kopplung: Code erzeugen, prüfen, Token ausgeben und widerrufen.
   late final Pairing pairing;

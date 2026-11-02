@@ -34,7 +34,8 @@ List<String> agentFeatures(AgentContext ctx) => <String>[
 /// schon gekoppelt ist, wie lange der Agent läuft und was er kann
 /// (`features`). Damit findet die Kasse den Agenten über die Portreihe, ohne
 /// etwas über die Geräte zu verraten.
-/// Mit gültigem Token zusätzlich Drucker, die letzten Fehler, mit HTTPS der
+/// Mit gültigem Token zusätzlich Systemversion und Prozessor (`osVersion`,
+/// `arch`), Drucker, die letzten Fehler, mit HTTPS der
 /// Zertifikatsstand (`tls`: Ablauf, ob vertraut) und – mit Brücke – der
 /// Bluetooth-Zustand samt zugelassenen Geräten. Der startet Bluetooth nie,
 /// wartet auf keinen Neustart und stößt auch keinen an: die Kasse fragt den
@@ -58,6 +59,11 @@ Future<Response> handleStatus(AgentContext ctx, Request request) async {
         : errors;
     body['printers'] = await ctx.printers();
     body['lastErrors'] = recent.map((entry) => entry.toJson()).toList();
+    final system = await ctx.systemInfo?.call();
+    if (system != null) {
+      body['osVersion'] = system.osVersion;
+      body['arch'] = system.arch;
+    }
     final tls = await ctx.tls?.call();
     if (tls != null) body['tls'] = tls;
     final bluetooth = ctx.bluetooth;

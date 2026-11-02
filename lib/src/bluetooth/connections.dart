@@ -644,6 +644,7 @@ class BluetoothConnections {
   }
 
   void _onState(String state) {
+    if (_closed) return;
     if (state != _lastState) {
       _lastState = state;
       _events.publish(eventBluetoothState, <String, Object?>{'state': state});

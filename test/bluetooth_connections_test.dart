@@ -700,6 +700,29 @@ void main() {
     });
   });
 
+  test('gehalten, nach poweredOn weiter unerreichbar: genau ein '
+      'Verbindungsversuch, kein Dauerversuch', () {
+    fakeAsync((async) {
+      final t = _Aufbau(async, log);
+      t.verbinden();
+      t.conns.hold(fakeM110Id);
+      t.fake.setzeZustand('poweredOff');
+      async.flushMicrotasks();
+      t.m110.ausserReichweite = true;
+      async.flushMicrotasks();
+      final versuche = t.connects;
+
+      t.fake.setzeZustand('poweredOn');
+      async.elapse(const Duration(seconds: 30));
+      expect(t.connects, versuche + 1);
+      expect(t.conns.isConnected(fakeM110Id), isFalse);
+
+      async.elapse(const Duration(minutes: 2));
+      expect(t.connects, versuche + 1);
+      t.ende();
+    });
+  });
+
   test('release beendet den Bedarf sofort: trennt, verwirft Abos, ein '
       'wartendes demand scheitert', () {
     fakeAsync((async) {

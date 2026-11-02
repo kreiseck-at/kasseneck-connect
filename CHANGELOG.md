@@ -5,7 +5,7 @@ Alle nennenswerten Änderungen an Kasseneck Connect. Die Versionsnummer folgt
 `lib/src/version.dart` und wird über `GET /v1/status` sowie im Update-Feed
 gemeldet.
 
-## 1.3.0 — 2026-10-29
+## 1.3.0 — 2026-11-02
 
 - **Bluetooth-Brücke (macOS):** die Kasse erreicht Bluetooth-Geräte, allen
   voran den Etikettendrucker, über die lokale API statt über Web Bluetooth —
@@ -18,7 +18,7 @@ gemeldet.
   nach, verbindet während eines Bedarfs still neu samt Abos und setzt die
   Verbindung zurück, wenn eine Belegung ohne Freigabe endet. Geschriebene
   Bytes kommen nie ins Log. `GET /v1/status` meldet die Fähigkeit in
-  `features` (`bluetooth`), `doctor` zeigt Hilfsprogramm und Zustand.
+  `features` (`bluetooth`), `doctor` zeigt das Hilfsprogramm und ob der Agent Bluetooth kann.
 - **Bluetooth-Hilfsprogramm:** ein kleines Swift-Programm (CoreBluetooth)
   spricht Bluetooth, die Logik bleibt im Agenten. Der Agent startet es erst
   beim ersten Bluetooth-Aufruf, überwacht es und startet es nach Absturz oder
@@ -37,7 +37,10 @@ gemeldet.
   startet die Binary im Paket, `/usr/local/bin/kasseneck-connect` zeigt
   hinein. macOS fragt die Bluetooth-Freigabe beim ersten Bluetooth-Zugriff
   im Namen von „Kasseneck Connect“. Ein Update von 1.2.x behält
-  Konfiguration, Kopplungen und Drucker. Mindestens macOS 12.
+  Konfiguration, Kopplungen und Drucker; beim ersten Update von 1.2.x fragt
+  macOS einmal nach Kennwort oder Touch ID (Vertrauen in die lokale
+  Zertifizierungsstelle), bei späteren Updates nicht mehr. Mindestens
+  macOS 14.
 - **Deinstallieren:** `uninstall.sh` entfernt zusätzlich das App-Paket, das
   Vertrauen in die lokale Zertifizierungsstelle und die Bluetooth-Freigabe.
 

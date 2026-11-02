@@ -45,7 +45,7 @@ void main() {
         'CFBundleVersion': '@VERSION@',
         'CFBundleIconFile': 'AppIcon',
         'CFBundleInfoDictionaryVersion': '6.0',
-        'LSMinimumSystemVersion': '12.0',
+        'LSMinimumSystemVersion': '14.0',
         'LSUIElement': 'true',
         'NSBluetoothAlwaysUsageDescription': _bluetoothText,
       });

@@ -85,8 +85,8 @@ freigeschaltet werden müsste.
    „security“): damit vertraut der Mac der lokalen Zertifizierungsstelle für
    den HTTPS-Zugang, den Safari braucht (siehe **API-Kurzreferenz**). Wer
    abbricht oder ohne angemeldeten Benutzer installiert, holt das im Terminal
-   nach: `kasseneck-connect zertifikat-vertrauen`. Bei einem Update ist die
-   Stelle schon vertraut, dann kommt keine Frage.
+   nach: `kasseneck-connect zertifikat-vertrauen`. Beim ersten Update von 1.2.x
+   fragt macOS einmal; bei späteren Updates ist die Stelle schon vertraut.
 5. Der Agent öffnet beim ersten Start die Kopplungsseite im Browser — siehe
    **Kopplung**.
 6. Die Bluetooth-Freigabe fragt macOS erst, wenn die Kasse zum ersten Mal ein
@@ -389,7 +389,7 @@ Firmware-Update-Dienste bleiben immer gesperrt.
 
 | Methode | Pfad | Zweck |
 |---|---|---|
-| GET | `/v1/bluetooth` | Zustand und zugelassene Geräte mit Verbindungsstand; berührt Bluetooth nicht |
+| GET | `/v1/bluetooth` | Zustand und zugelassene Geräte mit Verbindungsstand; startet Bluetooth nie und wartet nie auf einen Neustart (ein laufendes Hilfsprogramm ohne Freigabe wird gedrosselt im Hintergrund ersetzt) |
 | POST | `/v1/bluetooth/scan` | `{durationMs?}` (1–10 s) → `devices` mit `id`, `name`, `rssi`, `services`, `approved`; nur eine Suche gleichzeitig |
 | PUT | `/v1/bluetooth/devices/{id}` | zulassen, `{name?}` |
 | DELETE | `/v1/bluetooth/devices/{id}` | vergessen: trennen und entfernen |
@@ -411,9 +411,12 @@ dem Start des Agenten noch niemand Bluetooth gebraucht hat (kein Fehler);
 `starting` beim ersten Start, `helper_restarting` nach einem Absturz bis zur
 nächsten Meldung. macOS wertet die Bluetooth-Freigabe nur beim Start eines
 Prozesses aus: meldet das laufende Hilfsprogramm `unauthorized`, startet Connect
-es beim nächsten Aufruf (Suche, Verbinden, `GET /v1/bluetooth`) neu, höchstens
-alle 10 Sekunden, damit eine in den Systemeinstellungen erteilte Freigabe ohne
-Neustart von Connect greift.
+es beim nächsten Bluetooth-Aufruf (Suche, Verbinden, Belegen, Abo, Schreiben)
+neu und wartet darauf; `GET /v1/bluetooth` stößt den Neustart nur an und
+antwortet sofort mit dem bekannten Zustand, erst die nächste Abfrage zeigt den
+neuen. Höchstens alle 10 Sekunden, damit eine in den Systemeinstellungen
+erteilte Freigabe ohne Neustart von Connect greift. `GET /v1/status` startet
+nichts neu.
 `unauthorized` heißt, die Freigabe unter **Systemeinstellungen → Datenschutz &
 Sicherheit → Bluetooth** fehlt.
 
@@ -636,7 +639,9 @@ reinem HTTP, `--port` legt den HTTP-Port fest. `print` belegt das Gerät, hält
 die Belegung, abonniert `ff00`/`ff03`, sendet die Pakete und gibt alle Meldungen
 mit Zeit seit dem Start aus. `--abbrechen-nach <n>` (und Strg-C) beenden den
 Prozess ohne Freigabe – so lässt sich das Zurücksetzen der Belegung nach 5 s
-prüfen. Der Token steht nie auf der Ausgabe.
+prüfen. Der Token steht nie auf der Ausgabe. Das Werkzeug schickt die Herkunft
+der Kasse mit: für lokale Programme ist allein der Token die Schranke, die
+Herkunftsliste schützt nur vor fremden Webseiten im Browser.
 
 ### Kasse lokal gegen den Agenten entwickeln
 

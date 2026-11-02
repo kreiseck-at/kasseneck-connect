@@ -29,6 +29,10 @@ class ScriptedDriver implements PrinterDriver {
   /// Verzögerung je Versuch — für die Prüfung der Reihenfolge.
   Duration delay = Duration.zero;
 
+  /// Hält jeden Versuch an, bis der Test sie freigibt — für Prüfungen, die
+  /// nicht von der Wanduhr abhängen dürfen.
+  Completer<void>? gate;
+
   /// Protokoll der Ein- und Austritte, um Verschachtelung zu erkennen.
   final List<String> trace = <String>[];
 
@@ -41,6 +45,7 @@ class ScriptedDriver implements PrinterDriver {
     trace.add('start:$index');
     if (hang) return Completer<void>().future;
     if (delay > Duration.zero) await Future<void>.delayed(delay);
+    if (gate != null) await gate!.future;
     final failure = index < _script.length ? _script[index] : null;
     trace.add('end:$index');
     if (failure != null) throw failure;
@@ -170,7 +175,9 @@ void main() {
   });
 
   test('verschiedene Drucker blockieren einander nicht', () async {
-    final slow = ScriptedDriver()..delay = const Duration(milliseconds: 120);
+    // a bleibt angehalten, bis b fertig ist – unabhängig davon, wie schnell
+    // der Rechner gerade ist.
+    final slow = ScriptedDriver()..gate = Completer<void>();
     final quick = ScriptedDriver();
     final (_, queue) = await build(<String, ScriptedDriver>{
       'a': slow,
@@ -182,7 +189,9 @@ void main() {
 
     expect(second.ok, isTrue);
     expect(slow.trace, <String>['start:0'], reason: 'a läuft noch');
+    slow.gate!.complete();
     await first;
+    expect(slow.trace, <String>['start:0', 'end:0']);
   });
 
   test('derselbe jobId druckt im Zeitfenster kein zweites Mal', () async {

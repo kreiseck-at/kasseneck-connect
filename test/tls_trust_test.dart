@@ -8,8 +8,11 @@ import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
 import 'support/fake_process_runner.dart';
+import 'support/test_openssl.dart';
 
 const String _security = '/usr/bin/security';
+
+/// Wo `trustLocalCa` openssl erwartet (Attrappe).
 const String _openssl = '/usr/bin/openssl';
 
 void main() {
@@ -472,20 +475,19 @@ void main() {
       }
     });
 
-    final openssl = File(_openssl).existsSync() ? null : 'kein $_openssl';
-
-    test('echtes openssl: eigene Stelle ja, Serverzertifikat und fremde '
-        'gleichnamige Stelle nein', () async {
+    test('echtes openssl ($testOpenssl): eigene Stelle ja, Serverzertifikat '
+        'und fremde gleichnamige Stelle nein', () async {
       final echt = FakeProcessRunner()
-        ..echt.addAll(<String>{_openssl, 'chmod'});
+        ..echt.addAll(<String>{testOpenssl, 'chmod'});
       final dateien = await LocalCertificates(
         directory: temp,
         run: echt.runner,
         log: AgentLog(Directory(p.join(temp.path, 'logs'))),
+        openssl: testOpenssl,
       ).ensure();
 
       Future<String> text(String pfad) async {
-        final r = await Process.run(_openssl, <String>[
+        final r = await Process.run(testOpenssl, <String>[
           'x509',
           '-noout',
           '-text',
@@ -537,11 +539,11 @@ void main() {
           'fremd',
         ],
       ]) {
-        final r = await Process.run(_openssl, schritt);
+        final r = await Process.run(testOpenssl, schritt);
         expect(r.exitCode, 0, reason: '${schritt.first}: ${r.stderr}');
       }
       expect(matchesLocalCa(await text(zert)), isFalse);
-    }, skip: openssl);
+    }, skip: ohneTestOpenssl);
   });
 
   test('loginKeychainPath', () {

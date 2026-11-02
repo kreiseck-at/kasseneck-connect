@@ -481,6 +481,12 @@ dart analyze
 dart format .
 ```
 
+Die Tests mit echtem `openssl` nehmen `/usr/bin/openssl` (am Mac LibreSSL, wie
+beim Kunden). `KASSENECK_TEST_OPENSSL` gibt ihnen ein anderes Programm vor, etwa
+OpenSSL aus Homebrew: `KASSENECK_TEST_OPENSSL=/opt/homebrew/bin/openssl dart test`.
+Die Linux-CI hat OpenSSL 3.0; wie das Namen schreibt (`CN = …`), zeigt am Mac
+`openssl@1.1`.
+
 Bauen:
 
 ```bash

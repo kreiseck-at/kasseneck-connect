@@ -10,6 +10,7 @@ import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
 import 'support/fake_process_runner.dart';
+import 'support/test_openssl.dart';
 
 /// Pfad, unter dem die Attrappe `openssl` erwartet.
 const String _openssl = '/usr/bin/openssl';
@@ -1092,8 +1093,11 @@ void _mitEchtemOpenssl() {
 /// Die `openssl`-Varianten dieses Rechners: `/usr/bin/openssl` (macOS:
 /// LibreSSL, so wie beim Kunden) und das erste `openssl` auf dem PATH, sofern
 /// es ein anderes Programm ist (OpenSSL 3; in der CI unter Linux meist
-/// dasselbe wie `/usr/bin/openssl`).
+/// dasselbe wie `/usr/bin/openssl`). Mit `KASSENECK_TEST_OPENSSL` genau das
+/// vorgegebene Programm.
 List<String> _opensslVarianten() {
+  final vorgabe = vorgegebenesOpenssl;
+  if (vorgabe != null) return <String>[vorgabe];
   final gefunden = <String>[];
   final gesehen = <String>{};
   void nimm(String pfad) {

@@ -170,4 +170,23 @@ void main() {
       );
     });
   });
+
+  test('currentPlatformKey ordnet die ABI dem Feed-Schlüssel zu', () {
+    expect(currentPlatformKey(abi: 'macos_arm64'), 'darwin-arm64');
+    expect(currentPlatformKey(abi: 'macos_x64'), 'darwin-x64');
+    expect(currentPlatformKey(abi: 'windows_x64'), 'windows-x64');
+    expect(currentPlatformKey(abi: 'linux_x64'), 'linux-x64');
+    expect(currentPlatformKey(abi: 'linux_arm64'), isNull);
+    for (final key in downloadLatestNames.keys) {
+      expect(
+        <String>[
+          'macos_arm64',
+          'macos_x64',
+          'windows_x64',
+          'linux_x64',
+        ].map((abi) => currentPlatformKey(abi: abi)),
+        contains(key),
+      );
+    }
+  });
 }

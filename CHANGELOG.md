@@ -5,6 +5,18 @@ Alle nennenswerten Änderungen an Kasseneck Connect. Die Versionsnummer folgt
 `lib/src/version.dart` und wird über `GET /v1/status` sowie im Update-Feed
 gemeldet.
 
+## 1.4.0 — 2026-11-02
+
+- **Aktualisieren auf einen Klick (macOS):** `GET /v1/update` nennt die
+  neueste Version aus `latest.json` (höchstens alle 6 Stunden abgerufen, die
+  Antwort wartet nie länger als ~1 s), `POST /v1/update` lädt das Paket,
+  prüft Größe, SHA-256, Signatur des Teams `6KMT4H4CNE` und Notarisierung und
+  öffnet den Installer; Fortschritt als `update.progress`, Fehler als
+  `update.failed`, vor dem Öffnen `agent.restarting`. Neue Fähigkeit `update`
+  in `features`. Windows und Linux: nur Anzeige, Aktualisieren per Download.
+- **Systemangaben im Status:** mit Token zusätzlich `osVersion` und `arch`
+  (für den Bestand in Kasseneck: welche Connect-Version auf welchem System).
+
 ## 1.3.0 — 2026-11-02
 
 - **Bluetooth-Brücke (macOS):** die Kasse erreicht Bluetooth-Geräte, allen

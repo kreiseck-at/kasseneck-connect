@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:math';
 
 import 'package:kasseneck_connect/kasseneck_connect.dart';
+import 'package:kasseneck_connect/src/update/system_info.dart';
 import 'package:path/path.dart' as p;
 import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'package:test/test.dart';
@@ -288,6 +289,35 @@ void main() {
         'Drucker nicht erreichbar: timeout',
       );
     });
+
+    test('status: Systemversion und Prozessor nur mit Token', () async {
+      final token = await pair();
+      ctx.systemInfo = () async =>
+          const SystemInfo(os: 'macos', osVersion: '26.5.1', arch: 'arm64');
+
+      final kurz = await send('GET', '/v1/status', origin: kasse);
+      expect(kurz.json.containsKey('osVersion'), isFalse);
+      expect(kurz.json.containsKey('arch'), isFalse);
+
+      final lang = await send('GET', '/v1/status', origin: kasse, token: token);
+      expect(lang.json['osVersion'], '26.5.1');
+      expect(lang.json['arch'], 'arm64');
+    });
+
+    test(
+      'status: ohne Systemangaben fehlen die Felder auch mit Token',
+      () async {
+        final token = await pair();
+        final lang = await send(
+          'GET',
+          '/v1/status',
+          origin: kasse,
+          token: token,
+        );
+        expect(lang.json.containsKey('osVersion'), isFalse);
+        expect(lang.json.containsKey('arch'), isFalse);
+      },
+    );
 
     test('mit falschem Token bleibt es bei der Kurzform', () async {
       await pair();

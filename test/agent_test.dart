@@ -7,6 +7,7 @@ import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
 import 'support/fake_process_runner.dart';
+import 'support/port_zu.dart';
 
 const String _openssl = '/usr/bin/openssl';
 const String _security = '/usr/bin/security';
@@ -45,11 +46,26 @@ void main() {
           ..set('authorization', 'Bearer $token');
       }
       final response = await request.close();
-      return response.transform(utf8.decoder).join();
+      return await response.transform(utf8.decoder).join();
     } finally {
       client.close(force: true);
     }
   }
+
+  test('get liest den Rumpf ganz, auch wenn er später kommt', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(() => server.close(force: true));
+    server.listen((request) async {
+      request.response.headers.contentType = ContentType.json;
+      request.response.write('{"ok"');
+      await request.response.flush();
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      request.response.write(':true}');
+      await request.response.close();
+    });
+
+    expect(await get(server.port, '/v1/status'), '{"ok":true}');
+  });
 
   test('start bindet auf 127.0.0.1 und antwortet auf /v1/status', () async {
     final agent = makeAgent();
@@ -112,7 +128,7 @@ void main() {
     final port = agent.port;
     await agent.stop();
 
-    await expectLater(get(port, '/v1/status'), throwsA(isA<SocketException>()));
+    await erwartePortZu(() => get(port, '/v1/status'));
   });
 
   test('der Agent bringt die Drucker-Endpunkte mit', () async {
@@ -240,7 +256,7 @@ void main() {
 
     expect(needed, lessThan(gracefulStopTimeout + const Duration(seconds: 2)));
     expect(log.file.readAsStringSync(), contains('Agent angehalten.'));
-    await expectLater(get(port, '/v1/status'), throwsA(isA<SocketException>()));
+    await erwartePortZu(() => get(port, '/v1/status'));
   });
   group('HTTPS', () {
     // Echte Zertifikate brauchen echtes openssl; ohne wird übersprungen.
@@ -743,10 +759,7 @@ void main() {
       await agent.stop();
 
       expect(agent.httpsPort, isNull);
-      await expectLater(
-        https(port, '/v1/status'),
-        throwsA(isA<SocketException>()),
-      );
+      await erwartePortZu(() => https(port, '/v1/status'));
     }, skip: ohneOpenssl);
 
     test(

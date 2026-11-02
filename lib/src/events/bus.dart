@@ -9,10 +9,19 @@ const String eventPrintFailed = 'print.failed';
 /// Ereignis: der bekannte Zustand eines Druckers hat sich geändert.
 const String eventPrinterState = 'printer.state';
 
-/// Ereignis: der Agent hält gleich an und kommt über den Autostart zurück
-/// (ab v1.2 beim Selbstaustausch — die Kasse soll dann kurz keinen Druck
-/// erwarten).
+/// Ereignis: der Agent hält gleich an und kommt über den Autostart zurück —
+/// gesendet, bevor sich der Installer einer Aktualisierung öffnet
+/// (`{reason: 'update', version}`); die Kasse soll dann kurz keinen Druck
+/// erwarten.
 const String eventAgentRestarting = 'agent.restarting';
+
+/// Ereignis: Fortschritt einer Aktualisierung
+/// (`{version, phase: download|check|ready, percent}`).
+const String eventUpdateProgress = 'update.progress';
+
+/// Ereignis: eine Aktualisierung ist gescheitert (`{version, code, message}`);
+/// geöffnet wurde dann nichts.
+const String eventUpdateFailed = 'update.failed';
 
 /// Ereignis: der Bluetooth-Zustand hat sich geändert (`{state}`, auch
 /// `starting` und `helper_restarting`).

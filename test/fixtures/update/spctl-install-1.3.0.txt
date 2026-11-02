@@ -1,0 +1,3 @@
+/tmp/KasseneckConnect-1.3.0-macos-arm64.pkg: accepted
+source=Notarized Developer ID
+origin=Developer ID Installer: POST NOW e.U. (6KMT4H4CNE)

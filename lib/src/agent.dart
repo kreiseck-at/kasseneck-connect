@@ -1,6 +1,8 @@
 import 'dart:async';
+import 'dart:ffi' show Abi;
 import 'dart:io';
 
+import 'package:path/path.dart' as p;
 import 'package:shelf/shelf.dart';
 import 'package:shelf/shelf_io.dart' as shelf_io;
 
@@ -9,11 +11,13 @@ import 'api/routes_bluetooth.dart';
 import 'api/routes_events.dart';
 import 'api/routes_printers.dart';
 import 'api/routes_terminal.dart';
+import 'api/routes_update.dart';
 import 'api/server.dart';
 import 'bluetooth/bridge.dart';
 import 'bluetooth/helper.dart';
 import 'config/model.dart';
 import 'config/store.dart';
+import 'downloads.dart';
 import 'events/bus.dart';
 import 'log/logger.dart';
 import 'pairing/pairing.dart';
@@ -24,6 +28,9 @@ import 'process_runner.dart';
 import 'terminal/warmhalten.dart';
 import 'tls/certificates.dart';
 import 'tls/trust.dart';
+import 'update/feed.dart';
+import 'update/system_info.dart';
+import 'update/updater.dart';
 import 'version.dart';
 
 /// Wie viele Ports der Agent ab dem Wunschport durchprobiert
@@ -47,6 +54,13 @@ const Duration trustCacheDuration = Duration(minutes: 1);
 ///
 /// Gebunden wird ausschließlich die Loopback-Adresse — aus dem LAN ist der
 /// Agent damit gar nicht erreichbar.
+/// So lange dürfen `sw_vers`/`uname` für die Systemangaben brauchen.
+const Duration _systemInfoTimeout = Duration(seconds: 3);
+
+/// So lange dürfen `pkgutil`, `spctl` und `open` bei einer Aktualisierung
+/// brauchen (`spctl` fragt unter Umständen bei Apple nach).
+const Duration _updateCheckTimeout = Duration(minutes: 2);
+
 class Agent {
   Agent({
     required this.store,
@@ -129,6 +143,9 @@ class Agent {
   /// Aufruf wird beendet. Ohne eigenen Starter, aber mit eigenem Runner
   /// (Tests) läuft er über den Runner — nie am System vorbei.
   final ProcessStarter _startProcess;
+
+  /// Systemangaben ändern sich im Lauf nicht; einmal gelesen genügt.
+  Future<SystemInfo>? _systemInfo;
 
   /// Genau eine Instanz je Agent: sie hält die Sperrdatei der Zertifikate.
   /// Ein zweiter Prozess (`zertifikat-vertrauen`) hat seine eigene; die
@@ -225,6 +242,38 @@ class Agent {
       environment: _environment,
       bluetooth: bluetooth,
     );
+    ctx.systemInfo = () => _systemInfo ??= readSystemInfo(
+      run: (executable, arguments) async =>
+          await runWithTimeout(
+            _startProcess,
+            executable,
+            arguments,
+            _systemInfoTimeout,
+          ) ??
+          ProcessResult(0, 1, '', ''),
+      environment: _environment,
+    );
+    final platformKey = currentPlatformKey(abi: Abi.current().toString());
+    if (platformKey != null) {
+      final updater = ConnectUpdater(
+        feed: UpdateFeed(fetch: httpFeedFetch(), clock: _clock),
+        download: httpDownloader(),
+        run: (executable, arguments) async =>
+            await runWithTimeout(
+              _startProcess,
+              executable,
+              arguments,
+              _updateCheckTimeout,
+            ) ??
+            ProcessResult(0, 1, '', ''),
+        events: bus,
+        cacheDir: Directory(p.join(store.paths.directory.path, 'updates')),
+        platformKey: platformKey,
+        clock: _clock,
+      );
+      ctx.updater = updater;
+      unawaited(updater.cleanup());
+    }
     _context = ctx;
     _warmhalter = TerminalWarmhalter(store: store, log: log);
     _warmhalter!.startAus(await store.load());
@@ -237,6 +286,7 @@ class Agent {
         discovery: _discovery ?? PrinterDiscovery(log: log),
       ),
       bluetoothRoutes(bridge: bluetooth),
+      updateRoutes(),
       ..._extraRoutes,
     ];
 

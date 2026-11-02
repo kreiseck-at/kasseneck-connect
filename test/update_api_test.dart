@@ -159,6 +159,8 @@ void main() {
       'platform': 'darwin-arm64',
       'size': paket.length,
       'oneClick': true,
+      'progress': null,
+      'lastError': null,
     });
   });
 

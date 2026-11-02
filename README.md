@@ -287,7 +287,7 @@ WebSocket-Upgrade).
 | POST | `/v1/printers/{id}/test` | Testseite mit den Bytes aus dem Rumpf |
 | POST | `/v1/print` | `{printerId, jobId, bytes}` (base64, bis 4 MB) |
 | WS | `/v1/events` | Ereignisstrom (siehe unten) |
-| GET | `/v1/update` | `{current, latest, available, platform, size, oneClick}` – neueste Version aus `latest.json` (höchstens alle 6 h abgerufen, wartet nie länger als ~1 s) |
+| GET | `/v1/update` | `{current, latest, available, platform, size, oneClick, progress, lastError}` – neueste Version aus `latest.json` (höchstens alle 6 h abgerufen, wartet nie länger als ~1 s); `progress` (`{version, phase, percent}`) und `lastError` (`{version, code, message}`) zum Abfragen statt Zuhören |
 | POST | `/v1/update` | Aktualisieren auf einen Klick (nur macOS, `oneClick`): lädt, prüft und öffnet den Installer → `{started: true}`, Fortschritt als Ereignis |
 
 Beim Anlegen (`PUT /v1/printers` oder `PUT /v1/printers/neu`) vergibt der Agent

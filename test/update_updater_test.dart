@@ -104,6 +104,8 @@ void main() {
       'platform': 'darwin-arm64',
       'size': paket.length,
       'oneClick': true,
+      'progress': null,
+      'lastError': null,
     });
   });
 
@@ -255,6 +257,53 @@ void main() {
     expect(info.latest, isNull);
     expect(info.available, isFalse);
   });
+
+  test('info zeigt den Fortschritt während der Aktualisierung', () async {
+    final hold = Completer<void>();
+    final u = updater(
+      download: (url, target, onProgress) async {
+        onProgress(paket.length ~/ 2, paket.length);
+        await hold.future;
+        await target.writeAsBytes(paket);
+      },
+    );
+    expect((await u.info()).toJson()['progress'], isNull);
+    await u.start();
+    // Das Anlegen des Ordners ist echtes Datei-IO: warten, bis der Download läuft.
+    for (
+      var i = 0;
+      i < 100 && (await u.info()).progress?['percent'] != 50;
+      i++
+    ) {
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+    final laufend = (await u.info()).toJson();
+    expect(laufend['progress'], <String, Object?>{
+      'version': '1.4.1',
+      'phase': 'download',
+      'percent': 50,
+    });
+    hold.complete();
+    await settle(u);
+    expect((await u.info()).toJson()['progress'], <String, Object?>{
+      'version': '1.4.1',
+      'phase': 'ready',
+      'percent': 100,
+    });
+    expect((await u.info()).toJson()['lastError'], isNull);
+  });
+
+  test(
+    'info nennt den letzten Fehler, bis die nächste Aktualisierung startet',
+    () async {
+      final u = updater(feed: feedJson(sha: '0' * 64));
+      await u.start();
+      await settle(u);
+      final nachher = (await u.info()).toJson();
+      expect(nachher['progress'], isNull);
+      expect((nachher['lastError'] as Map)['code'], 'update_checksum_mismatch');
+    },
+  );
 
   test('cleanup löscht Pakete älter als 24 Stunden', () async {
     final alt = File('${cache.path}/alt.pkg')..writeAsStringSync('x');

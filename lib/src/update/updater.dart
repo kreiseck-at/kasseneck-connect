@@ -62,6 +62,8 @@ class UpdateInfo {
     required this.platform,
     required this.size,
     required this.oneClick,
+    this.progress,
+    this.lastError,
   });
 
   final String current;
@@ -71,6 +73,15 @@ class UpdateInfo {
   final int? size;
   final bool oneClick;
 
+  /// Laufende bzw. zuletzt erreichte Phase (`{version, phase, percent}`),
+  /// `null` ohne Aktualisierung in diesem Lauf von Connect. Die Kasse fragt
+  /// das ab, statt den Ereignisstrom zu hören.
+  final Map<String, Object?>? progress;
+
+  /// Letzter Fehler (`{version, code, message}`), bis eine neue
+  /// Aktualisierung startet.
+  final Map<String, Object?>? lastError;
+
   Map<String, Object?> toJson() => <String, Object?>{
     'current': current,
     'latest': latest,
@@ -78,6 +89,8 @@ class UpdateInfo {
     'platform': platform,
     'size': size,
     'oneClick': oneClick,
+    'progress': progress,
+    'lastError': lastError,
   };
 }
 
@@ -124,6 +137,8 @@ class ConnectUpdater {
   final String current;
 
   Future<void>? _running;
+  Map<String, Object?>? _progress;
+  Map<String, Object?>? _lastError;
 
   /// Ob eine Aktualisierung läuft.
   bool get busy => _running != null;
@@ -143,6 +158,8 @@ class ConnectUpdater {
       platform: platformKey,
       size: entry?.size,
       oneClick: oneClick,
+      progress: _progress,
+      lastError: _lastError,
     );
   }
 
@@ -174,6 +191,8 @@ class ConnectUpdater {
         'Die Aktualisierung läuft bereits.',
       );
     }
+    _lastError = null;
+    _progress = null;
     _running = _perform(entry).whenComplete(() => _running = null);
   }
 
@@ -185,7 +204,7 @@ class ConnectUpdater {
       await cacheDir.create(recursive: true);
       if (target.existsSync()) await target.delete();
 
-      _progress(entry, 'download', 0);
+      _melde(entry, 'download', 0);
       var lastPercent = 0;
       try {
         await _download(entry.url, target, (received, total) {
@@ -195,7 +214,7 @@ class ConnectUpdater {
               : (received * 100 ~/ size).clamp(0, 100);
           if (percent >= lastPercent + 10 || percent == 100) {
             lastPercent = percent;
-            _progress(entry, 'download', percent);
+            _melde(entry, 'download', percent);
           }
         });
       } on Object {
@@ -205,7 +224,7 @@ class ConnectUpdater {
         );
       }
 
-      _progress(entry, 'check', 100);
+      _melde(entry, 'check', 100);
       final length = target.existsSync() ? await target.length() : -1;
       final digest = length == entry.size
           ? (await sha256.bind(target.openRead()).first).toString()
@@ -229,7 +248,7 @@ class ConnectUpdater {
         );
       }
 
-      _progress(entry, 'ready', 100);
+      _melde(entry, 'ready', 100);
       _events.publish(eventAgentRestarting, <String, Object?>{
         'reason': 'update',
         'version': entry.version,
@@ -258,20 +277,24 @@ class ConnectUpdater {
           // Aufräumen beim nächsten Start.
         }
       }
-      _events.publish(eventUpdateFailed, <String, Object?>{
+      _progress = null;
+      _lastError = <String, Object?>{
         'version': entry.version,
         'code': failure.code,
         'message': failure.message,
-      });
+      };
+      _events.publish(eventUpdateFailed, _lastError!);
     }
   }
 
-  void _progress(FeedEntry entry, String phase, int percent) =>
-      _events.publish(eventUpdateProgress, <String, Object?>{
-        'version': entry.version,
-        'phase': phase,
-        'percent': percent,
-      });
+  void _melde(FeedEntry entry, String phase, int percent) {
+    _progress = <String, Object?>{
+      'version': entry.version,
+      'phase': phase,
+      'percent': percent,
+    };
+    _events.publish(eventUpdateProgress, _progress!);
+  }
 
   /// Entfernt geladene Pakete, die älter als 24 Stunden sind. Wirft nie.
   Future<void> cleanup() async {

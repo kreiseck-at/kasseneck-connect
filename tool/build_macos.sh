@@ -12,7 +12,7 @@
 #
 # `dart compile exe` kann nicht für eine fremde Architektur bauen: Apple
 # Silicon liefert arm64, ein Intel-Mac x64. Für beide Architekturen braucht es
-# zwei Läufe auf zwei Rechnern (in der CI: macos-14 und macos-13).
+# zwei Läufe auf zwei Rechnern (die CI baut nur arm64 auf macos-15).
 #
 # Signiert wird, sobald der Schlüsselbund eine Developer-ID-Application-
 # Identität hergibt (`KASSENECK_SIGN_APP` sticht die Suche). Ohne Zertifikat —
@@ -71,6 +71,7 @@ if [ -n "$SIGN_APP" ]; then
     --sign "$SIGN_APP" "$OUT"
   codesign --verify --strict --verbose=2 "$OUT"
   sign_app_bundle "$APP" "$SIGN_APP"
+  warn_app_cert_expiry "$APP"
 else
   echo "Warnung: keine Developer-ID-Application-Identität gefunden — Binary und App-Paket bleiben unsigniert." >&2
 fi

@@ -4,6 +4,7 @@ library;
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:kasseneck_connect/kasseneck_connect.dart' show printerServices;
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
@@ -30,6 +31,9 @@ const String _imPaket =
 const String _bluetoothText =
     'Kasseneck Connect verbindet die Kasse mit Bluetooth-Druckern wie dem '
     'Etikettendrucker.';
+const String _netzText =
+    'Kasseneck Connect verbindet die Kasse mit Bondruckern und dem '
+    'Kartenterminal im lokalen Netzwerk.';
 
 void main() {
   group('Info.plist', () {
@@ -48,7 +52,25 @@ void main() {
         'LSMinimumSystemVersion': '14.0',
         'LSUIElement': 'true',
         'NSBluetoothAlwaysUsageDescription': _bluetoothText,
+        'NSLocalNetworkUsageDescription': _netzText,
       });
+    });
+
+    test('NSBonjourServices nennt genau die Dienste der Druckersuche', () {
+      final text = _vorlage.readAsStringSync();
+      final liste = RegExp(
+        r'<key>NSBonjourServices</key>\s*<array>(.*?)</array>',
+        dotAll: true,
+      ).firstMatch(text);
+      expect(liste, isNotNull);
+      final dienste = RegExp(
+        r'<string>([^<]*)</string>',
+      ).allMatches(liste!.group(1)!).map((m) => m.group(1)).toList();
+      expect(dienste, <String>[
+        for (final dienst in printerServices)
+          dienst.substring(0, dienst.length - '.local'.length),
+      ]);
+      expect(printerServices.every((d) => d.endsWith('._tcp.local')), isTrue);
     });
 
     test('mit eingesetzter Version eine gültige Plist (plutil)', () async {
@@ -63,6 +85,8 @@ void main() {
       expect(lint.exitCode, 0, reason: '${lint.stdout}${lint.stderr}');
       for (final (schluessel, wert) in <(String, String)>[
         ('NSBluetoothAlwaysUsageDescription', _bluetoothText),
+        ('NSLocalNetworkUsageDescription', _netzText),
+        ('NSBonjourServices.0', '_printer._tcp'),
         ('CFBundleVersion', '9.8.7'),
         ('LSUIElement', 'true'),
       ]) {

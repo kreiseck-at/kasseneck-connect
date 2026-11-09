@@ -39,6 +39,7 @@ export 'src/doctor.dart';
 export 'src/downloads.dart';
 export 'src/events/bus.dart';
 export 'src/log/logger.dart';
+export 'src/lokales_netz.dart';
 export 'src/pairing/pairing.dart';
 export 'src/printers/discovery.dart';
 export 'src/printers/driver.dart';

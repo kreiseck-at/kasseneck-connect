@@ -95,6 +95,14 @@ freigeschaltet werden müsste.
    „Kasseneck Connect verbindet die Kasse mit Bluetooth-Druckern wie dem
    Etikettendrucker.“ Danach steht „Kasseneck Connect“ unter
    **Systemeinstellungen → Datenschutz & Sicherheit → Bluetooth**.
+7. Ab macOS 15 fragt macOS beim ersten Zugriff auf Drucker oder
+   Kartenterminal nach dem **lokalen Netzwerk** („Kasseneck Connect verbindet
+   die Kasse mit Bondruckern und dem Kartenterminal im lokalen Netzwerk.“).
+   Erlauben. Solange der Dialog offen ist, kann der erste Versuch schon
+   scheitern – danach einfach wiederholen. Die Freigabe steht unter
+   **Systemeinstellungen → Datenschutz & Sicherheit → Lokales Netzwerk**.
+   Fehlt sie, scheitert jede Verbindung mit „No route to host“; die Meldung an
+   die Kasse nennt dann diesen Weg.
 
 Ein Update von 1.2.x über das neue Paket behält Konfiguration, gekoppelte
 Kassen und Drucker; der Autostart zeigt danach auf die Binary im App-Paket.
@@ -238,6 +246,14 @@ er auf `%ProgramData%\KasseneckConnect` aus.
 
 Darin: `config.json` (Port, Token-Hashes, Drucker, Terminal, Update-Kanal; atomar
 geschrieben, Rechte 600) und `logs/connect.log` (täglich rotierend, 7 Dateien).
+Neben der `config.json` liegt `config.json.bak`, die Fassung vor dem letzten
+Speichern. Ist die `config.json` einmal unbrauchbar (kein JSON, leer, nicht
+lesbar), legt Connect sie unverändert als `config.json.defekt-<UTC-Zeitstempel>`
+ab, meldet das als Fehler im Log und arbeitet mit `config.json.bak` weiter;
+erst ohne brauchbare Sicherung startet er ohne Kopplungen und Drucker. Die
+kaputte Datei ersetzt erst das nächste Speichern – nachdem sie aufbewahrt ist.
+Wer die `config.json` zum Zurücksetzen löscht, muss `config.json.bak`
+mitlöschen.
 Auf macOS liegen daneben `logs/launchd.out.log` und `logs/launchd.err.log` —
 dorthin schreibt der LaunchAgent, wenn der Agent so früh stirbt, dass er sein
 eigenes Log nicht mehr erreicht. Die Umgebungsvariable
@@ -386,6 +402,43 @@ Bei Druckfehlern steht in `detail.reason` zusätzlich, was das Gerät gemeldet h
 (ePOS-Statuscode, Socket-Meldung) — dieselbe Angabe wie in der Logzeile, damit
 Kasse und Support nicht raten müssen. Beleginhalte stehen dort nie.
 
+### Kartenterminal (Hobex HPS)
+
+Die Kasse spricht das Hobex-Terminal über Connect an (JSON-REST auf Port 8080
+im Kassen-Netz); Host, Port und TID schickt sie bei jedem Aufruf mit. Connect
+reicht die Antwort des Terminals unverändert als `hps` durch – eine abgelehnte
+Zahlung ist `ok: true` mit `responseCode != "0"`, kein Fehler.
+
+| Methode | Pfad | Zweck |
+|---|---|---|
+| POST | `/v1/terminal/test` | `{host, port?, tid?}` – Erreichbarkeit; ohne TID die nebenwirkungsfreie Probe |
+| POST | `/v1/terminal/discover` | `{}` – Terminals im Kassen-Netz suchen |
+| POST | `/v1/terminal/diagnosis` | `{host, port?, tid}` |
+| POST | `/v1/terminal/payment` | `{host, port?, tid, amountCents, transactionId, tipCents?, reference?, currency?, language?}` – blockiert bis zum Ende des Kartenflows (Antwortfrist 4 min) |
+| POST | `/v1/terminal/refund` | `{host, port?, tid, amountCents, transactionId, originalTransactionId, reference?, currency?, language?}` – Gutschrift, ebenfalls ein Kartenfluss |
+| POST | `/v1/terminal/status` | `{host, port?, tid, transactionId}` – Stand einer Transaktion |
+| POST | `/v1/terminal/abort` | `{host, port?, tid, transactionId}` – Abbruch, solange keine Karte durchgezogen ist |
+| POST | `/v1/terminal/cancel` | `{host, port?, tid, transactionId, amountCents, currency?, language?}` – Aufhebung einer Zahlung |
+
+Transportfehler und was sie über den Ausgang sagen:
+
+| Code | Bedeutung |
+|---|---|
+| `terminal_unreachable` | keine Verbindung zum Terminal (abgelehnt, keine Route oder kein Aufbau in 10 s) – **nachweislich nichts gesendet**, ein neuer Versuch ist gefahrlos |
+| `terminal_offline` | die Verbindung stand und ist abgerissen – Ausgang offen |
+| `timeout` | das Terminal hat nicht rechtzeitig geantwortet – Ausgang offen |
+| `terminal_error` | das Terminal meldet einen Fehler oder antwortet nicht im HPS-Format; nennt es einen HTTP-Status, steht er in `detail.terminalHttpStatus` (`409` = beschäftigt, nichts belastet) |
+
+Der Verbindungsaufbau hat bei jedem Aufruf höchstens 10 Sekunden, auch bei
+Zahlung und Gutschrift; deren lange Frist gilt erst für die Antwort. Zahlung
+und Gutschrift wiederholt Connect nie von selbst. Bis 1.4.1 kam auch ohne
+Verbindung `terminal_offline` – eine Kasse, die beide Fassungen bedient, liest
+nur `terminal_unreachable` als „nichts gesendet“.
+
+Nach dem ersten erfolgreichen Kontakt hält Connect das Terminal wach (alle
+45 s ein TCP-Verbindungsaufbau ohne Daten), damit sein WLAN nicht einschläft;
+das Ziel steht in der `config.json` und gilt auch nach einem Neustart.
+
 ### Bluetooth-Brücke (macOS)
 
 Nur am Mac und nur mit dem Hilfsprogramm im App-Paket (zum Entwickeln ohne
@@ -496,6 +549,8 @@ letzten Fehlerzeilen aus dem Log.
 | Bluetooth: `bluetooth_unreachable` | Gerät an? Hält es gerade ein anderes Gerät (Kassen-App, Handy)? Dort schließen und erneut versuchen |
 | `doctor`: „Bluetooth-Hilfsprogramm: fehlt“ | Connect neu installieren (das Hilfsprogramm liegt im App-Paket) |
 | Drucker `offline` | IP und Port prüfen (`doctor`), Gerät anpingen, `POST /v1/printers/discover` |
+| Mac: Drucker oder Terminal „nicht erreichbar“, Meldung nennt „Lokales Netzwerk“ | **Systemeinstellungen → Datenschutz & Sicherheit → Lokales Netzwerk** → „Kasseneck Connect“ einschalten. `doctor` im Terminal braucht die Freigabe nicht – zeigt es den Drucker `online`, die Kasse aber nicht, fehlt sie |
+| Terminal: `terminal_unreachable` | Es ging nichts ans Terminal. Terminal an? Im selben Netz wie der Rechner? IP am Terminal ablesen oder `POST /v1/terminal/discover` |
 | Bon kam nicht | Log ansehen: `logs/connect.log`; bei `timeout` mit `mayHavePrinted` erst am Gerät nachsehen |
 | Agent startet nach dem Neustart nicht | `doctor` → Autostart-Zeile; notfalls `install-autostart` erneut |
 
@@ -628,13 +683,29 @@ tool/notarize_macos.sh build/KasseneckConnect-<version>-macos-<arch>.pkg
 tool/release.sh                  # holt eine fehlende Notarisierung selbst nach
 ```
 
-`tool/release.sh` prüft jedes macOS-Paket vor dem Hochladen: unsigniert →
-laute Warnung, signiert und schon gestapelt → übersprungen, signiert ohne
-Ticket → `tool/notarize_macos.sh`. Das muss vor den unversionierten Kopien
-passieren, weil `stapler` die Datei verändert und die Prüfsumme in
-`latest.json` das fertige Paket meinen muss. Fehlt das Schlüsselbund-Profil,
-warnt der Lauf deutlich und veröffentlicht trotzdem — brauchbar ist so ein
-Paket dann nur zum Testen, beim Kunden blockt Gatekeeper es.
+`tool/release.sh` prüft jedes macOS-Paket vor dem Hochladen genau so wie
+Connect vor dem Ein-Klick-Update (`lib/src/update/mac_package.dart`): mit
+„Developer ID Installer“ des Teams `6KMT4H4CNE` signiert, Kette bis „Apple
+Root CA“, von Gatekeeper als „Notarized Developer ID“ angenommen. Fehlt nur das
+Ticket, reicht es das Paket über `tool/notarize_macos.sh` ein – vor den
+unversionierten Kopien, weil `stapler` die Datei verändert und die Prüfsumme in
+`latest.json` das fertige Paket meinen muss. Alles andere bricht ab, auch im
+Probelauf und ohne Schalter dagegen: unsigniert, fremdes Team, kein
+`notarytool`-Profil, Notarisierung gescheitert, kein Ticket, Gatekeeper lehnt
+ab, kein `xcrun`. Veröffentlicht wird dann nichts.
+
+`tool/pkg/macos/build_pkg.sh` bricht ohne Developer-ID-Installer-Identität
+gleich zu Beginn ab und ebenso, wenn das App-Paket in der Nutzlast keine
+gültige Developer-ID-Application-Signatur trägt oder die fertige Paketsignatur
+die Prüfung oben (ohne Notarisierung) nicht besteht. Unter dem
+Auslieferungsnamen steht so nie ein ungeprüftes Paket.
+
+Läuft eines der Signierzertifikate (Blatt oder Zwischenstelle) in weniger als
+60 Tagen ab, warnen `build_macos.sh`, `build_pkg.sh` und `release.sh` laut
+(Frist über `KASSENECK_CERT_WARN_DAYS`). Das heutige Paar läuft am 01.02.2027
+ab, die Warnung kommt also ab dem 04.12.2026. Ein Ablauf bricht nichts ab:
+ein schon signiertes Paket bleibt dank Zeitstempel gültig, nur neu signieren
+geht nicht mehr.
 
 Prüfen lässt sich das Ergebnis von Hand:
 
@@ -647,10 +718,13 @@ xcrun stapler validate build/KasseneckConnect-*.pkg
 spctl -a -vv -t install build/KasseneckConnect-*.pkg           # Urteil von Gatekeeper
 ```
 
-Auf den CI-Runnern liegt kein Zertifikat. Die Build-Skripte warnen dort und
-bauen unsigniert weiter — die CI-Artefakte sind Bauprobe, kein
-Auslieferungsstand. Ausgeliefert wird ausschließlich, was auf dem
-Entwicklungsrechner signiert und notarisiert entstanden ist.
+Auf den CI-Runnern liegt kein Zertifikat. Dort läuft
+`tool/pkg/macos/build_pkg.sh --testbau`: das Paket darf unsigniert bleiben,
+heißt aber `KasseneckConnect-<version>-macos-<arch>-testbau.pkg` – diesen
+Namen sucht `tool/release.sh` nie. `tool/build_macos.sh` warnt ohne Zertifikat
+nur. Die CI-Artefakte sind Bauprobe, kein Auslieferungsstand. Ausgeliefert
+wird ausschließlich, was auf dem Entwicklungsrechner signiert und notarisiert
+entstanden ist.
 
 Windows- und Linux-Artefakte bleiben vorerst unsigniert (siehe die Hinweise
 bei der Installation).

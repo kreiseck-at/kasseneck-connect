@@ -5,6 +5,39 @@ Alle nennenswerten Änderungen an Kasseneck Connect. Die Versionsnummer folgt
 `lib/src/version.dart` und wird über `GET /v1/status` sowie im Update-Feed
 gemeldet.
 
+## Unveröffentlicht
+
+- **Terminal: „nichts gesendet“ ist jetzt erkennbar.** Kommt keine Verbindung
+  zum Terminal zustande (abgelehnt, keine Route, kein Aufbau in 10 s), meldet
+  Connect den neuen Code `terminal_unreachable`: die Anfrage hat das Terminal
+  nachweislich nicht erreicht. `terminal_offline` heißt nur noch „Verbindung
+  stand und ist abgerissen“ (Ausgang offen), `timeout` und `terminal_error`
+  bleiben, wie sie waren. Der Verbindungsaufbau hat bei jedem Aufruf ein
+  eigenes Limit von 10 s – eine falsche Terminal-IP blockierte eine Zahlung
+  bisher bis zu 4 Minuten. Der Weckversuch der Probe greift auch bei
+  `terminal_unreachable`; Zahlung und Gutschrift wiederholt Connect weiterhin
+  nie. Ein Proxy aus der Umgebung gilt für das Terminal nicht mehr.
+- **Konfiguration geht nicht mehr verloren.** Jedes Speichern behält die
+  vorige gute Fassung als `config.json.bak`. Eine unbrauchbare `config.json`
+  (kein JSON, leer, nicht lesbar) legt Connect einmalig als
+  `config.json.defekt-<UTC-Zeitstempel>` ab (Rechte 600), meldet sie als
+  Fehler und nimmt die Sicherung. Bisher fiel er still auf die
+  Standardkonfiguration zurück, und das nächste Speichern überschrieb
+  Kopplungen und Drucker endgültig.
+- **macOS „Lokales Netzwerk“:** `Kasseneck Connect.app` trägt jetzt
+  `NSLocalNetworkUsageDescription` (Text im Freigabe-Dialog) und die
+  Druckerdienste in `NSBonjourServices`. Scheitert eine Verbindung zu Drucker
+  oder Terminal am Mac mit „No route to host“, nennt die Meldung den Weg zur
+  Freigabe; die Codes bleiben (`printer_offline`, `terminal_unreachable`).
+  `detail.reason` nennt bei Druckfehlern zusätzlich den Betriebssystem-Fehler.
+- **Release nur signiert und notarisiert:** `tool/release.sh` bricht bei einem
+  macOS-Paket ohne Developer-ID-Signatur des Teams, ohne Notarisierung oder
+  ohne Zusage von Gatekeeper ab (bisher: Warnung und trotzdem veröffentlicht);
+  es prüft wie der Agent vor dem Ein-Klick-Update. `build_pkg.sh` bricht ohne
+  beide Signaturen ab; die CI baut mit `--testbau` (Name `…-testbau.pkg`, nie
+  veröffentlicht). Alle drei Skripte warnen, wenn ein Signierzertifikat in
+  weniger als 60 Tagen abläuft.
+
 ## 1.4.1 — 2026-11-02
 
 - Keine Änderung am Verhalten. Versionsschritt, an dem die Aktualisierung auf

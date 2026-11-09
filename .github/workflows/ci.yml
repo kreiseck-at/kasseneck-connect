@@ -41,7 +41,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14
+          - os: macos-15
             label: macOS arm64
             script: macos
             artifact: kasseneck-connect-macos-arm64
@@ -70,9 +70,11 @@ jobs:
 
       - name: App-Paket und .pkg bauen (macOS)
         if: matrix.script == 'macos'
+        # Ohne Zertifikat auf dem Runner nur als Testbau: unsigniert erlaubt,
+        # Name …-testbau.pkg, den tool/release.sh nie veröffentlicht.
         run: |
           tool/build_macos.sh
-          tool/pkg/macos/build_pkg.sh
+          tool/pkg/macos/build_pkg.sh --testbau
 
       - name: Binary und .deb bauen (Linux)
         if: matrix.script == 'linux'

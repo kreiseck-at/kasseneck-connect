@@ -128,7 +128,7 @@ Future<Response> _handleTest(
     if (!siehtNachHpsAus(antwort)) {
       throw HpsWegFehler(
         errorTerminalError,
-        'Unter ${ziel.$1}:${ziel.$2} antwortet etwas — aber kein '
+        'Unter ${ziel.$1}:${ziel.$2} antwortet etwas – aber kein '
         'Hobex-Terminal.',
       );
     }
@@ -164,6 +164,11 @@ Future<Response> _handleDiagnosis(
 /// einzige Schlüssel für Status-Abfrage und Storno, wenn der lange Aufruf
 /// reißt. Eine Ablehnung kommt als `ok:true` mit `responseCode != "0"` im
 /// `hps`-Rumpf zurück — abgelehnt ist eine Antwort, kein Transportfehler.
+///
+/// Transportfehler: `terminal_unreachable` heißt „keine Verbindung, nichts
+/// gesendet“; `terminal_offline`, `timeout` und `terminal_error` (außer
+/// `detail.terminalHttpStatus == 409`) lassen den Ausgang offen — dann über
+/// `/v1/terminal/status` klären, nie blind neu zahlen.
 Future<Response> _handlePayment(
   HpsBridge hps,
   Request request, [

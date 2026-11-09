@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
@@ -8,6 +9,7 @@ import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'package:test/test.dart';
 
 import 'support/fake_process_runner.dart';
+import 'support/port_zu.dart';
 
 /// Ein Fake-HPS: nimmt die Aufrufe der Brücke entgegen, merkt sie sich und
 /// antwortet mit vorgegebenen JSON-Rümpfen — Format wie in der Spec bzw. der
@@ -55,6 +57,38 @@ class FakeHps {
     return FakeHps(await HttpServer.bind(InternetAddress.loopbackIPv4, 0));
   }
 }
+
+/// Ein Port, auf dem sicher niemand mehr annimmt.
+///
+/// Unter Linux kann ein eben geforkter Kindprozess eines anderen Tests den
+/// Lauschsocket noch kurz halten und die Verbindung annehmen (siehe
+/// `support/port_zu.dart`) – dann stünde sie, und der Test sähe statt
+/// „keine Verbindung“ eine abgerissene. Erst weiter, wenn wirklich abgelehnt
+/// wird; ein geschlossener Socket lässt sich danach nicht mehr erben.
+Future<int> geschlossenerPort() async {
+  final server = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+  final port = server.port;
+  await server.close();
+  await erwartePortZu(() async {
+    final client = HttpClient();
+    try {
+      final request = await client.getUrl(Uri.parse('http://127.0.0.1:$port/'));
+      final response = await request.close();
+      return await response.drain<Object?>();
+    } finally {
+      client.close(force: true);
+    }
+  });
+  return port;
+}
+
+/// Ein Socket-Fehler „No route to host“ in der Form von macOS – so scheitert
+/// eine Verbindung, wenn die Freigabe „Lokales Netzwerk“ fehlt.
+SocketException keineRoute() => const SocketException(
+  'Connection failed',
+  osError: OSError('No route to host', macosEhostunreach),
+  port: 8080,
+);
 
 void main() {
   late Directory temp;
@@ -348,22 +382,21 @@ void main() {
       },
     );
 
-    test('geschlossener Port: terminal_offline mit deutschem Satz', () async {
-      final zu = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
-      final toterPort = zu.port;
-      await zu.close(force: true);
-
-      final antwort = await senden('/v1/terminal/test', {
-        'host': '127.0.0.1',
-        'port': toterPort,
-      });
-      expect(antwort['ok'], isFalse);
-      expect((antwort['error'] as Map)['code'], 'terminal_offline');
-      expect(
-        (antwort['error'] as Map)['message'],
-        contains('nicht erreichbar'),
-      );
-    });
+    test(
+      'geschlossener Port: terminal_unreachable mit deutschem Satz',
+      () async {
+        final antwort = await senden('/v1/terminal/test', {
+          'host': '127.0.0.1',
+          'port': await geschlossenerPort(),
+        });
+        expect(antwort['ok'], isFalse);
+        expect((antwort['error'] as Map)['code'], 'terminal_unreachable');
+        expect(
+          (antwort['error'] as Map)['message'],
+          contains('es wurde nichts gesendet'),
+        );
+      },
+    );
 
     test('Status und Abbruch nutzen die Transaktions-Pfade', () async {
       hps.antworten.add((status: 200, rumpf: '{"state":"CLEARED"}'));
@@ -526,9 +559,17 @@ void main() {
         await response.drain<void>();
         client.close(force: true);
 
-        // Ziel persistiert (ueberlebt einen Agenten-Neustart) …
-        await Future<void>.delayed(const Duration(milliseconds: 100));
-        final config = await store.load();
+        // Ziel persistiert (ueberlebt einen Agenten-Neustart) … Das
+        // Schreiben laeuft absichtlich nebenher (fire-and-forget); unter Last
+        // braucht es laenger als eine feste Wartezeit – also nachsehen, bis
+        // Ziel und Beruehrungen da sind (hoechstens 5 s).
+        final frist = DateTime.now().add(const Duration(seconds: 5));
+        var config = await store.load();
+        while ((config.terminal == null || beruehrt < 2) &&
+            DateTime.now().isBefore(frist)) {
+          await Future<void>.delayed(const Duration(milliseconds: 20));
+          config = await store.load();
+        }
         expect(config.terminal?.host, '127.0.0.1');
         expect(config.terminal?.port, hps.port);
         // … und die Beruehrungen laufen.
@@ -850,19 +891,15 @@ void main() {
     );
 
     test('Aufhebung: Terminal antwortet nicht (geschlossener Port)', () async {
-      final zu = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
-      final toterPort = zu.port;
-      await zu.close(force: true);
-
       final antwort = await senden('/v1/terminal/cancel', {
         'host': '127.0.0.1',
-        'port': toterPort,
+        'port': await geschlossenerPort(),
         'tid': '3710016',
         'transactionId': '17556661',
         'amountCents': 1234,
       });
       expect(antwort['ok'], isFalse);
-      expect((antwort['error'] as Map)['code'], 'terminal_offline');
+      expect((antwort['error'] as Map)['code'], 'terminal_unreachable');
     });
 
     test('Gutschrift und Aufhebung: Unsinn wird abgewiesen, bevor das Netz '
@@ -901,6 +938,257 @@ void main() {
         expect((antwort['error'] as Map)['code'], 'bad_request');
       }
       expect(hps.aufrufe, isEmpty);
+    });
+  });
+
+  group('Verbindungsphase: terminal_unreachable heißt „nichts gesendet“', () {
+    /// Zahlungsrumpf an die API; [port] zeigt auf das Ziel des Tests.
+    Map<String, Object?> zahlung(int port) => <String, Object?>{
+      'host': '127.0.0.1',
+      'port': port,
+      'tid': '12345678',
+      'transactionId': '178786910603700001',
+      'amountCents': 1250,
+    };
+
+    test('Verbindung abgelehnt: Zahlung kommt als terminal_unreachable zurück, '
+        'ohne detail', () async {
+      final antwort = await senden(
+        '/v1/terminal/payment',
+        zahlung(await geschlossenerPort()),
+      );
+      expect(antwort['ok'], isFalse);
+      final fehler = antwort['error'] as Map;
+      expect(fehler['code'], errorTerminalUnreachable);
+      expect(fehler['message'], contains('es wurde nichts gesendet'));
+      expect(fehler['message'], contains('IP-Adresse'));
+      expect(fehler.containsKey('detail'), isFalse);
+    });
+
+    test('Zeitablauf beim Aufbau: terminal_unreachable nach dem kurzen '
+        'Verbindungslimit, nicht erst nach der Zahlungsfrist', () async {
+      // Ein Aufbau, der nie fertig wird – wie ein SYN ins Leere (falsche IP
+      // im selben Netz). Ohne echtes Netz, damit es auf jedem Rechner gleich
+      // läuft.
+      var abgebrochen = 0;
+      final bridge = HpsBridge(
+        log: log,
+        verbindungTimeout: const Duration(milliseconds: 100),
+        verbinden: (uri, proxyHost, proxyPort) async =>
+            ConnectionTask.fromSocket(
+              Completer<Socket>().future,
+              () => abgebrochen++,
+            ),
+      );
+      final uhr = Stopwatch()..start();
+      final fehler = await bridge
+          .payment(
+            host: '192.168.0.50',
+            port: 8080,
+            tid: '12345678',
+            amountCents: 1250,
+            transactionId: '1',
+          )
+          .then<HpsWegFehler?>((_) => null)
+          .onError<HpsWegFehler>((e, _) => e);
+      expect(fehler?.code, errorTerminalUnreachable);
+      expect(fehler?.message, contains('192.168.0.50:8080'));
+      // Die Zahlungsfrist (4 min) gilt erst für die Antwort.
+      expect(uhr.elapsed, lessThan(const Duration(seconds: 5)));
+      // Der halbe Aufbau bleibt nicht hängen.
+      await pumpEventQueue();
+      expect(abgebrochen, greaterThanOrEqualTo(1));
+    });
+
+    test(
+      'auch ein Aufbau, der schon vor dem Verbinden hängt (Namensauflösung), '
+      'endet als terminal_unreachable',
+      () async {
+        final bridge = HpsBridge(
+          log: log,
+          verbindungTimeout: const Duration(milliseconds: 100),
+          verbinden: (uri, proxyHost, proxyPort) =>
+              Completer<ConnectionTask<Socket>>().future,
+        );
+        final fehler = await bridge
+            .diagnosis(host: 'terminal.invalid', port: 8080, tid: '12345678')
+            .then<HpsWegFehler?>((_) => null)
+            .onError<HpsWegFehler>((e, _) => e);
+        expect(fehler?.code, errorTerminalUnreachable);
+      },
+    );
+
+    test('Verbindung steht, Antwort bleibt aus: Zahlung bleibt timeout '
+        '(Ausgang offen)', () async {
+      final stumm = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      addTearDown(() => stumm.close(force: true));
+      var angekommen = 0;
+      stumm.listen((HttpRequest r) async {
+        // Annehmen und lesen, nie antworten – wie ein Terminal mitten im
+        // Kartenfluss, dessen Antwort nicht mehr ankommt.
+        await r.drain<void>();
+        angekommen++;
+      });
+      final bridge = HpsBridge(
+        log: log,
+        zahlungTimeout: const Duration(milliseconds: 300),
+      );
+      final fehler = await bridge
+          .payment(
+            host: '127.0.0.1',
+            port: stumm.port,
+            tid: '12345678',
+            amountCents: 1250,
+            transactionId: '1',
+          )
+          .then<HpsWegFehler?>((_) => null)
+          .onError<HpsWegFehler>((e, _) => e);
+      expect(fehler?.code, errorTerminalTimeout);
+      expect(angekommen, 1, reason: 'die Zahlung war beim Terminal');
+    });
+
+    test(
+      'Verbindung steht, Antwort bleibt aus: kurzer Aufruf bleibt timeout',
+      () async {
+        final stumm = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+        addTearDown(() => stumm.close(force: true));
+        stumm.listen((HttpRequest r) => r.drain<void>());
+        final bridge = HpsBridge(
+          log: log,
+          kurzTimeout: const Duration(milliseconds: 200),
+        );
+        final fehler = await bridge
+            .diagnosis(host: '127.0.0.1', port: stumm.port, tid: '12345678')
+            .then<HpsWegFehler?>((_) => null)
+            .onError<HpsWegFehler>((e, _) => e);
+        expect(fehler?.code, errorTerminalTimeout);
+      },
+    );
+
+    test(
+      'Verbindung bricht nach der Annahme ab: nie terminal_unreachable',
+      () async {
+        // Das Terminal nimmt die Verbindung an und wirft sie sofort weg (etwa
+        // ein Neustart mitten im Aufruf). Die Anfrage kann schon unterwegs
+        // gewesen sein – also darf die Kasse nicht „nichts gesendet“ lesen.
+        final wegwerfer = await ServerSocket.bind(
+          InternetAddress.loopbackIPv4,
+          0,
+        );
+        addTearDown(wegwerfer.close);
+        var angenommen = 0;
+        wegwerfer.listen((Socket s) {
+          angenommen++;
+          s.destroy();
+        });
+        final antwort = await senden(
+          '/v1/terminal/payment',
+          zahlung(wegwerfer.port),
+        );
+        expect(antwort['ok'], isFalse);
+        final code = (antwort['error'] as Map)['code'];
+        expect(code, isNot(errorTerminalUnreachable));
+        expect(code, isIn(<String>[errorTerminalOffline, errorTerminalError]));
+        expect(angenommen, greaterThanOrEqualTo(1));
+      },
+    );
+
+    test('Weckversuch: nach terminal_unreachable kommt die Probe ein zweites '
+        'Mal', () async {
+      hps.antworten.add((
+        status: 200,
+        rumpf:
+            '{"responseCode":"100108","responseText":"Invalid TID","tid":"0"}',
+      ));
+      var versuche = 0;
+      final bridge = HpsBridge(
+        log: log,
+        verbinden: (uri, proxyHost, proxyPort) {
+          versuche++;
+          if (versuche == 1) {
+            return Future<ConnectionTask<Socket>>.error(
+              const SocketException('Connection refused'),
+            );
+          }
+          return Socket.startConnect(uri.host, uri.port);
+        },
+      );
+      final antwort = await bridge.probe(host: '127.0.0.1', port: hps.port);
+      expect((antwort as Map)['responseText'], 'Invalid TID');
+      expect(versuche, 2);
+    });
+
+    test(
+      'Zahlung und Gutschrift bekommen auch nach terminal_unreachable keinen '
+      'zweiten Versuch',
+      () async {
+        var versuche = 0;
+        final bridge = HpsBridge(
+          log: log,
+          verbinden: (uri, proxyHost, proxyPort) {
+            versuche++;
+            return Future<ConnectionTask<Socket>>.error(
+              const SocketException('Connection refused'),
+            );
+          },
+        );
+        final zahlung = await bridge
+            .payment(
+              host: '127.0.0.1',
+              port: 8080,
+              tid: '12345678',
+              amountCents: 1250,
+              transactionId: '1',
+            )
+            .then<HpsWegFehler?>((_) => null)
+            .onError<HpsWegFehler>((e, _) => e);
+        expect(zahlung?.code, errorTerminalUnreachable);
+        expect(versuche, 1);
+
+        final gutschrift = await bridge
+            .refund(
+              host: '127.0.0.1',
+              port: 8080,
+              tid: '12345678',
+              amountCents: 1250,
+              transactionId: '2',
+              originalTransactionId: '1',
+            )
+            .then<HpsWegFehler?>((_) => null)
+            .onError<HpsWegFehler>((e, _) => e);
+        expect(gutschrift?.code, errorTerminalUnreachable);
+        expect(versuche, 2);
+      },
+    );
+
+    test('am Mac nennt die Meldung bei „No route to host“ die Freigabe '
+        '„Lokales Netzwerk“ – der Code bleibt derselbe', () async {
+      HpsBridge bruecke(String os) => HpsBridge(
+        log: log,
+        betriebssystem: os,
+        verbinden: (uri, proxyHost, proxyPort) =>
+            Future<ConnectionTask<Socket>>.error(keineRoute()),
+      );
+      Future<HpsWegFehler?> zahle(HpsBridge b) => b
+          .payment(
+            host: '192.168.0.50',
+            port: 8080,
+            tid: '12345678',
+            amountCents: 1250,
+            transactionId: '1',
+          )
+          .then<HpsWegFehler?>((_) => null)
+          .onError<HpsWegFehler>((e, _) => e);
+
+      final mac = await zahle(bruecke('macos'));
+      expect(mac?.code, errorTerminalUnreachable);
+      expect(mac?.message, contains('es wurde nichts gesendet'));
+      expect(mac?.message, contains('Lokales Netzwerk'));
+      expect(mac?.message, contains('„Kasseneck Connect“'));
+
+      final linux = await zahle(bruecke('linux'));
+      expect(linux?.code, errorTerminalUnreachable);
+      expect(linux?.message, isNot(contains('Lokales Netzwerk')));
     });
   });
 }

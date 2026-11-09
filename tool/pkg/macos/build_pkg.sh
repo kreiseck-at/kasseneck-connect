@@ -23,9 +23,19 @@
 #      eine unsignierte Zwischendatei hält den Auslieferungsnamen frei von
 #      halbfertigen Ständen.
 #
-# Ohne Zertifikat (CI-Runner) entsteht ein unsigniertes Paket samt Warnung;
-# notarisiert wird danach mit `tool/notarize_macos.sh`. `pkgbuild` selbst
-# braucht weder sudo noch Zertifikat.
+# Ohne beide Signaturen bricht das Skript ab: unter dem Auslieferungsnamen
+# steht nur ein Paket, das der Agent beim Ein-Klick-Update annehmen würde
+# (Developer ID Installer des Teams, App-Paket mit Developer ID Application).
+# Notarisiert wird danach mit `tool/notarize_macos.sh`; die Notarisierung prüft
+# `tool/release.sh` und bricht ohne sie ebenfalls ab.
+#
+#   tool/pkg/macos/build_pkg.sh --testbau
+#   -> build/KasseneckConnect-<version>-macos-<arch>-testbau.pkg
+#
+# Für Bauproben ohne Zertifikat (CI-Runner, Rechner ohne Schlüsselbund) gibt
+# es `--testbau`: dann darf das Paket unsigniert bleiben, heißt aber nie wie
+# eine Auslieferung — tool/release.sh sucht nur die Auslieferungsnamen und
+# fände es nicht. `pkgbuild` selbst braucht weder sudo noch Zertifikat.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -33,17 +43,48 @@ cd "$ROOT"
 # shellcheck source=tool/_common.sh
 . tool/_common.sh
 
+TESTBAU=0
+for arg in "$@"; do
+  case "$arg" in
+    --testbau) TESTBAU=1 ;;
+    *) echo "Unbekannte Option: $arg" >&2; exit 64 ;;
+  esac
+done
+
 VERSION="$(pubspec_version)"
 ARCH="$(normalize_arch "${ARCH:-}")"
 APP="build/$APP_BUNDLE_NAME"
 IDENTIFIER="at.kasseneck.connect"
 INSTALL_DIR="/usr/local/kasseneck-connect"
-PKG="build/$(release_name "$VERSION" macos "$ARCH" pkg)"
+if [ "$TESTBAU" -eq 1 ]; then
+  PKG="build/$(testbau_name "$VERSION" macos "$ARCH" pkg)"
+else
+  PKG="build/$(release_name "$VERSION" macos "$ARCH" pkg)"
+fi
+
+# Bricht einen Auslieferungsbau mit Grund ab. Ein Testbau warnt nur.
+ohne_signatur() {
+  if [ "$TESTBAU" -eq 1 ]; then
+    echo "Warnung (Testbau): $1" >&2
+    return 0
+  fi
+  echo "Abbruch: $1" >&2
+  echo "Ein Paket ohne Developer-ID-Signatur nimmt weder Gatekeeper noch das Ein-Klick-Update an." >&2
+  echo "Zertifikate: README, „Signierung & Notarisierung“. Bauprobe ohne Zertifikat: $0 --testbau" >&2
+  exit 1
+}
 
 if [ ! -x "$APP/Contents/MacOS/kasseneck-connect" ] \
    || [ ! -x "$APP/Contents/MacOS/kasseneck-bluetooth" ]; then
   echo "App-Paket fehlt oder ist unvollständig: $APP — zuerst tool/build_macos.sh laufen lassen." >&2
   exit 1
+fi
+
+# Vorab, damit ein Auslieferungsbau nicht erst nach dem ganzen Lauf scheitert:
+# ohne Installer-Identität entsteht nie ein signiertes Paket.
+SIGN_PKG="${KASSENECK_SIGN_PKG:-$(find_signing_identity 'Developer ID Installer' || true)}"
+if [ -z "$SIGN_PKG" ]; then
+  ohne_signatur "keine Developer-ID-Installer-Identität im Schlüsselbund."
 fi
 
 STAGE="$(mktemp -d)"
@@ -76,8 +117,11 @@ if signed_with_developer_id "$STAGED_APP"; then
 elif [ -n "$SIGN_APP" ]; then
   sign_app_bundle "$STAGED_APP" "$SIGN_APP"
   echo "Nutzlast signiert: $SIGN_APP"
+fi
+if signed_with_developer_id "$STAGED_APP"; then
+  warn_app_cert_expiry "$STAGED_APP"
 else
-  echo "Warnung: keine Developer-ID-Application-Identität — das App-Paket im .pkg bleibt unsigniert." >&2
+  ohne_signatur "das App-Paket in der Nutzlast trägt keine gültige Developer-ID-Application-Signatur."
 fi
 # Startprobe aus der Nutzlast heraus, über den Symlink: ins Paket darf nur
 # eine Binary, die auch wirklich startet (Hardened Runtime ohne
@@ -197,17 +241,24 @@ pkgbuild \
   --install-location / \
   "$UNSIGNED"
 
-# 4. Paketsignatur.
-SIGN_PKG="${KASSENECK_SIGN_PKG:-$(find_signing_identity 'Developer ID Installer' || true)}"
+# 4. Paketsignatur — erst in die Arbeitsmappe, unter den Auslieferungsnamen
+#    nur, was die Prüfung besteht (dieselbe wie im Agenten vor dem
+#    Ein-Klick-Update, ohne die Notarisierung, die erst danach kommt).
 rm -f "$PKG"
+SIGNED="$WORK/signed.pkg"
 if [ -n "$SIGN_PKG" ]; then
-  productsign --sign "$SIGN_PKG" "$UNSIGNED" "$PKG"
+  productsign --sign "$SIGN_PKG" "$UNSIGNED" "$SIGNED"
   echo "Paket signiert: $SIGN_PKG"
-  pkgutil --check-signature "$PKG"
+  pkgutil --check-signature "$SIGNED"
+  if pkg_developer_id_signed "$SIGNED"; then
+    warn_pkg_cert_expiry "$SIGNED"
+  else
+    ohne_signatur "die Signatur des Pakets besteht die Prüfung nicht (siehe oben)."
+  fi
+  mv "$SIGNED" "$PKG"
 else
   cp "$UNSIGNED" "$PKG"
-  echo "Warnung: keine Developer-ID-Installer-Identität — das Paket bleibt unsigniert." >&2
-  echo "Warnung: Gatekeeper blockt ein unsigniertes Paket beim Kunden." >&2
+  echo "Warnung (Testbau): das Paket bleibt unsigniert – Gatekeeper blockt es beim Kunden." >&2
 fi
 
 echo "Fertig: $PKG"

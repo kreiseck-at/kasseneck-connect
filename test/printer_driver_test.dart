@@ -16,7 +16,99 @@ Future<int> closedPort() async {
   return port;
 }
 
+/// „No route to host“ in der Form von macOS – so scheitert eine Verbindung,
+/// wenn die Freigabe „Lokales Netzwerk“ fehlt.
+SocketException keineRoute() => const SocketException(
+  'Connection failed',
+  osError: OSError('No route to host', macosEhostunreach),
+);
+
 void main() {
+  group('Hinweis auf die Freigabe „Lokales Netzwerk“ (macOS)', () {
+    Future<PrinterFailure?> fehlschlag(PrinterDriver drucker) => drucker
+        .print(Uint8List.fromList(<int>[1, 2, 3]))
+        .then<PrinterFailure?>((_) => null)
+        .onError<PrinterFailure>((e, _) => e);
+
+    Future<Socket> ohneRoute(String host, int port, {Duration? timeout}) =>
+        Future<Socket>.error(keineRoute());
+
+    test('TCP 9100: Code bleibt printer_offline, die Meldung nennt den Weg '
+        'in den Systemeinstellungen', () async {
+      final mac = await fehlschlag(
+        Tcp9100Printer(
+          '192.168.0.50',
+          9100,
+          betriebssystem: 'macos',
+          verbinden: ohneRoute,
+        ),
+      );
+      expect(mac?.code, errorPrinterOffline);
+      expect(mac?.retryable, isTrue, reason: 'es ging nichts hinaus');
+      expect(mac?.message, startsWith('Der Drucker 192.168.0.50:9100 ist '));
+      expect(mac?.message, contains('Lokales Netzwerk'));
+      expect('${mac?.detail}', contains('errno 65'));
+
+      final linux = await fehlschlag(
+        Tcp9100Printer(
+          '192.168.0.50',
+          9100,
+          betriebssystem: 'linux',
+          verbinden: ohneRoute,
+        ),
+      );
+      expect(linux?.code, errorPrinterOffline);
+      expect(
+        linux?.message,
+        'Der Drucker 192.168.0.50:9100 ist nicht erreichbar.',
+      );
+    });
+
+    test(
+      'ePOS: Code bleibt printer_offline, die Meldung nennt den Weg',
+      () async {
+        EposPrinter drucker(String os) => EposPrinter(
+          '192.168.0.50',
+          betriebssystem: os,
+          verbinden: (uri, proxyHost, proxyPort) =>
+              Future<ConnectionTask<Socket>>.error(keineRoute()),
+        );
+        final mac = await fehlschlag(drucker('macos'));
+        expect(mac?.code, errorPrinterOffline);
+        expect(mac?.mayHavePrinted, isFalse);
+        expect(mac?.message, contains('Lokales Netzwerk'));
+        expect('${mac?.detail}', contains('errno 65'));
+
+        final linux = await fehlschlag(drucker('linux'));
+        expect(
+          linux?.message,
+          'Der Drucker 192.168.0.50 ist nicht erreichbar.',
+        );
+      },
+    );
+
+    test('eine abgelehnte Verbindung bekommt den Hinweis nie', () async {
+      final mac = await fehlschlag(
+        Tcp9100Printer(
+          '192.168.0.50',
+          9100,
+          betriebssystem: 'macos',
+          verbinden: (host, port, {timeout}) => Future<Socket>.error(
+            const SocketException(
+              'Connection failed',
+              osError: OSError('Connection refused', 61),
+            ),
+          ),
+        ),
+      );
+      expect(mac?.code, errorPrinterOffline);
+      expect(
+        mac?.message,
+        'Der Drucker 192.168.0.50:9100 ist nicht erreichbar.',
+      );
+    });
+  });
+
   group('Tcp9100Printer', () {
     test('schickt die Bytes unverändert an den Drucker', () async {
       final fake = await FakeTcpPrinter.start();

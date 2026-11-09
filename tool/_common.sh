@@ -116,6 +116,146 @@ signed_with_developer_id() {
     | grep '^Authority=Developer ID Application' >/dev/null
 }
 
+# Team-ID von Post Now e.U. im Apple Developer Program. Dieselbe Prüfung wie
+# im Agenten vor dem Ein-Klick-Update (lib/src/update/mac_package.dart,
+# `connectTeamId`): was die Skripte durchlassen, nimmt auch der Agent an.
+CONNECT_TEAM_ID="6KMT4H4CNE"
+
+# Ab so vielen Tagen vor dem Ablauf warnen die Skripte vor dem
+# Signierzertifikat. Ein neues Zertifikat braucht Zeit (Apple-Konto,
+# Schlüsselbund, Probebau), und nach dem Ablauf lässt sich nicht mehr signieren.
+CERT_WARN_DAYS="${KASSENECK_CERT_WARN_DAYS:-60}"
+
+# Ob das .pkg $1 so signiert ist, wie der Agent es vor dem Ein-Klick-Update
+# verlangt: gültige Signatur eines Developer-ID-Zertifikats, das Blatt der
+# Kette ist „Developer ID Installer“ unseres Teams, die Kette endet bei
+# „Apple Root CA“. Gibt bei Misserfolg den Grund auf stderr aus.
+pkg_developer_id_signed() {
+  local pkg="$1" out=""
+  if ! out="$(pkgutil --check-signature "$pkg" 2>&1)"; then
+    echo "  pkgutil: keine gültige Signatur." >&2
+    return 1
+  fi
+  # grep ohne -q: es liest bis zum Ende (pipefail, siehe oben).
+  if ! printf '%s\n' "$out" \
+      | grep 'Status: signed by a developer certificate issued by Apple for distribution' >/dev/null; then
+    echo "  pkgutil: nicht mit einem Developer-ID-Zertifikat signiert." >&2
+    return 1
+  fi
+  if ! printf '%s\n' "$out" \
+      | grep -E "^[[:space:]]*1\.[[:space:]]+Developer ID Installer: .+ \($CONNECT_TEAM_ID\)[[:space:]]*$" >/dev/null; then
+    echo "  pkgutil: nicht mit „Developer ID Installer … ($CONNECT_TEAM_ID)“ signiert." >&2
+    return 1
+  fi
+  if ! printf '%s\n' "$out" \
+      | grep -E '^[[:space:]]*[0-9]+\.[[:space:]]+Apple Root CA[[:space:]]*$' >/dev/null; then
+    echo "  pkgutil: die Kette endet nicht bei „Apple Root CA“." >&2
+    return 1
+  fi
+}
+
+# Ob Gatekeeper das .pkg $1 als notarisiertes Paket unseres Teams annimmt
+# (`spctl`, wie der Agent vor dem Ein-Klick-Update).
+pkg_notarized() {
+  local pkg="$1" out=""
+  if ! out="$(spctl -a -t install -vv "$pkg" 2>&1)"; then
+    echo "  spctl: Gatekeeper lehnt das Paket ab." >&2
+    return 1
+  fi
+  if ! printf '%s\n' "$out" | grep 'source=Notarized Developer ID' >/dev/null; then
+    echo "  spctl: nicht als „Notarized Developer ID“ angenommen." >&2
+    return 1
+  fi
+  if ! printf '%s\n' "$out" \
+      | grep -E "^origin=Developer ID Installer: .+ \($CONNECT_TEAM_ID\)[[:space:]]*$" >/dev/null; then
+    echo "  spctl: Herkunft ist nicht „Developer ID Installer … ($CONNECT_TEAM_ID)“." >&2
+    return 1
+  fi
+}
+
+# Sekunden seit 1970 für ein UTC-Datum „JJJJ-MM-TT hh:mm:ss“ (BSD- und
+# GNU-date).
+utc_epoch() {
+  TZ=UTC0 date -j -f '%Y-%m-%d %H:%M:%S' "$1" +%s 2>/dev/null \
+    || TZ=UTC0 date -d "$1" +%s 2>/dev/null
+}
+
+# Warnt, wenn das Zertifikat $1 (Bezeichnung) am $2 („JJJJ-MM-TT hh:mm:ss“,
+# UTC) in weniger als CERT_WARN_DAYS Tagen abläuft oder schon abgelaufen ist.
+# $3 ersetzt im Test die Uhr (Sekunden seit 1970). Bricht nie ab.
+warn_cert_expiry() {
+  local name="$1" expires="$2" now="${3:-$(date -u +%s)}" end="" days=0
+  if ! end="$(utc_epoch "$expires")" || [ -z "$end" ]; then
+    echo "Warnung: Ablaufdatum von „${name}“ nicht lesbar: $expires" >&2
+    return 0
+  fi
+  days=$(( (end - now) / 86400 ))
+  if [ "$end" -le "$now" ]; then
+    echo "WARNUNG: Das Zertifikat „${name}“ ist am ${expires%% *} abgelaufen – damit lässt sich nicht mehr signieren." >&2
+  elif [ "$days" -lt "$CERT_WARN_DAYS" ]; then
+    echo "WARNUNG: Das Zertifikat „${name}“ läuft am ${expires%% *} ab, in $days Tagen." >&2
+    echo "         Rechtzeitig im Apple-Developer-Konto ein neues ausstellen und in den Schlüsselbund holen." >&2
+  fi
+  return 0
+}
+
+# Warnt vor dem Ablauf der Zertifikate, mit denen das .pkg $1 signiert ist
+# (Blatt und Zwischenstelle; die Zeilen „Expires:“ von pkgutil, in UTC).
+warn_pkg_cert_expiry() {
+  local pkg="$1" out="" line="" n=0 name="" expires=""
+  out="$(pkgutil --check-signature "$pkg" 2>/dev/null)" || return 0
+  while IFS= read -r line; do
+    case "$line" in
+      *[0-9]'. '*)
+        name="$(printf '%s\n' "$line" | sed -e 's/^[[:space:]]*[0-9]*\.[[:space:]]*//')"
+        n=$((n + 1)) ;;
+      *'Expires: '*)
+        expires="$(printf '%s\n' "$line" | sed -e 's/^.*Expires: //' -e 's/ [+-][0-9]*$//')"
+        # Die Wurzel von Apple erneuert Apple selbst.
+        [ "$name" = "Apple Root CA" ] || warn_cert_expiry "$name" "$expires" ;;
+    esac
+  done <<EOF_KETTE
+$out
+EOF_KETTE
+  [ "$n" -gt 0 ] || echo "Warnung: keine Zertifikatskette in der Signatur von $pkg gefunden." >&2
+  return 0
+}
+
+# Warnt vor dem Ablauf der Zertifikate, mit denen das App-Paket bzw. die
+# Binary $1 signiert ist (codesign legt sie als DER ab, openssl prüft).
+warn_app_cert_expiry() {
+  local target="$1" dir="" cert="" name="" ende=""
+  command -v codesign >/dev/null 2>&1 || return 0
+  command -v openssl >/dev/null 2>&1 || return 0
+  dir="$(mktemp -d)"
+  if codesign -d --extract-certificates="$dir/zert" "$target" >/dev/null 2>&1; then
+    for cert in "$dir"/zert*; do
+      [ -f "$cert" ] || continue
+      name="$(openssl x509 -inform DER -in "$cert" -noout -subject 2>/dev/null \
+        | sed -e 's/.*CN *= *\([^,/]*\).*/\1/')"
+      [ "$name" = "Apple Root CA" ] && continue
+      ende="$(openssl x509 -inform DER -in "$cert" -noout -enddate 2>/dev/null \
+        | sed -e 's/^notAfter=//')"
+      if ! openssl x509 -inform DER -in "$cert" -noout -checkend 0 >/dev/null 2>&1; then
+        echo "WARNUNG: Das Zertifikat „${name:-?}“ ist abgelaufen ($ende) – damit lässt sich nicht mehr signieren." >&2
+      elif ! openssl x509 -inform DER -in "$cert" -noout \
+          -checkend $((CERT_WARN_DAYS * 86400)) >/dev/null 2>&1; then
+        echo "WARNUNG: Das Zertifikat „${name:-?}“ läuft in weniger als $CERT_WARN_DAYS Tagen ab ($ende)." >&2
+        echo "         Rechtzeitig im Apple-Developer-Konto ein neues ausstellen und in den Schlüsselbund holen." >&2
+      fi
+    done
+  fi
+  rm -rf "$dir"
+  return 0
+}
+
+# Name eines Testbaus: nie ein Auslieferungsname, damit er nie in ein Release
+# gerät (tool/release.sh sucht nur nach release_name).
+testbau_name() {
+  local version="$1" os="$2" arch="$3" ext="$4"
+  echo "KasseneckConnect-$version-$os-$arch-testbau.$ext"
+}
+
 sha256_of() {
   if command -v shasum >/dev/null 2>&1; then
     shasum -a 256 "$1" | awk '{print $1}'

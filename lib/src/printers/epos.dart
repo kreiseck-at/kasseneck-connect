@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import '../lokales_netz.dart';
 import 'driver.dart';
 import 'tcp9100.dart' show defaultConnectTimeout;
 
@@ -36,7 +37,10 @@ class EposPrinter implements PrinterDriver {
     this.devid = defaultEposDevid,
     this.connectTimeout = defaultConnectTimeout,
     this.requestTimeout = defaultEposRequestTimeout,
-  });
+    String? betriebssystem,
+    Future<ConnectionTask<Socket>> Function(Uri, String?, int?)? verbinden,
+  }) : betriebssystem = betriebssystem ?? Platform.operatingSystem,
+       _verbinden = verbinden;
 
   final String host;
 
@@ -52,6 +56,13 @@ class EposPrinter implements PrinterDriver {
 
   /// Obergrenze einer Anfrage; das Auftragslimit kann kürzer sein.
   final Duration requestTimeout;
+
+  /// Betriebssystem für den Hinweis auf die Freigabe „Lokales Netzwerk“
+  /// (macOS); Tests setzen es fest.
+  final String betriebssystem;
+
+  /// Nur für Tests: ersetzt den Verbindungsaufbau des `HttpClient`.
+  final Future<ConnectionTask<Socket>> Function(Uri, String?, int?)? _verbinden;
 
   /// Klient des laufenden Versuchs — nur damit [abort] ihn wegwerfen kann.
   HttpClient? _current;
@@ -124,6 +135,8 @@ class EposPrinter implements PrinterDriver {
       // ist das der Normalfall und kein Angriffsbild.
       ..badCertificateCallback = (X509Certificate _, String __, int ___) =>
           true;
+    final verbinden = _verbinden;
+    if (verbinden != null) client.connectionFactory = verbinden;
     _current = client;
     final sent = _Sent();
 
@@ -142,12 +155,18 @@ class EposPrinter implements PrinterDriver {
         mayHavePrinted: sent.value,
       );
     } on SocketException catch (e) {
+      // Der Code bleibt printer_offline (Vertrag mit der Kasse); am Mac
+      // kommt bei „No route to host“ der Hinweis auf die Freigabe dazu.
       throw PrinterFailure(
         errorPrinterOffline,
         sent.value
             ? unconfirmedPrintMessage
-            : 'Der Drucker $host ist nicht erreichbar.',
-        detail: e.message,
+            : mitLokalesNetzHinweis(
+                'Der Drucker $host ist nicht erreichbar.',
+                e,
+                betriebssystem: betriebssystem,
+              ),
+        detail: socketGrund(e),
         mayHavePrinted: sent.value,
       );
     } on HandshakeException catch (e) {

@@ -187,8 +187,11 @@ void main() {
     final first = queue.enqueue('a', 'job1', bytes);
     final second = await queue.enqueue('b', 'job2', bytes);
 
+    // b ist fertig, obwohl a nicht fertig sein kann – es hängt am Tor, das
+    // erst unten aufgeht. Ob a schon begonnen hat, hängt am Takt des Rechners
+    // (unter Last lädt b seinen Treiber zuerst) und sagt nichts darüber aus.
     expect(second.ok, isTrue);
-    expect(slow.trace, <String>['start:0'], reason: 'a läuft noch');
+    expect(slow.trace, isNot(contains('end:0')), reason: 'a läuft noch');
     slow.gate!.complete();
     await first;
     expect(slow.trace, <String>['start:0', 'end:0']);

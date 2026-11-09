@@ -386,6 +386,43 @@ Bei Druckfehlern steht in `detail.reason` zusätzlich, was das Gerät gemeldet h
 (ePOS-Statuscode, Socket-Meldung) — dieselbe Angabe wie in der Logzeile, damit
 Kasse und Support nicht raten müssen. Beleginhalte stehen dort nie.
 
+### Kartenterminal (Hobex HPS)
+
+Die Kasse spricht das Hobex-Terminal über Connect an (JSON-REST auf Port 8080
+im Kassen-Netz); Host, Port und TID schickt sie bei jedem Aufruf mit. Connect
+reicht die Antwort des Terminals unverändert als `hps` durch – eine abgelehnte
+Zahlung ist `ok: true` mit `responseCode != "0"`, kein Fehler.
+
+| Methode | Pfad | Zweck |
+|---|---|---|
+| POST | `/v1/terminal/test` | `{host, port?, tid?}` – Erreichbarkeit; ohne TID die nebenwirkungsfreie Probe |
+| POST | `/v1/terminal/discover` | `{}` – Terminals im Kassen-Netz suchen |
+| POST | `/v1/terminal/diagnosis` | `{host, port?, tid}` |
+| POST | `/v1/terminal/payment` | `{host, port?, tid, amountCents, transactionId, tipCents?, reference?, currency?, language?}` – blockiert bis zum Ende des Kartenflows (Antwortfrist 4 min) |
+| POST | `/v1/terminal/refund` | `{host, port?, tid, amountCents, transactionId, originalTransactionId, reference?, currency?, language?}` – Gutschrift, ebenfalls ein Kartenfluss |
+| POST | `/v1/terminal/status` | `{host, port?, tid, transactionId}` – Stand einer Transaktion |
+| POST | `/v1/terminal/abort` | `{host, port?, tid, transactionId}` – Abbruch, solange keine Karte durchgezogen ist |
+| POST | `/v1/terminal/cancel` | `{host, port?, tid, transactionId, amountCents, currency?, language?}` – Aufhebung einer Zahlung |
+
+Transportfehler und was sie über den Ausgang sagen:
+
+| Code | Bedeutung |
+|---|---|
+| `terminal_unreachable` | keine Verbindung zum Terminal (abgelehnt, keine Route oder kein Aufbau in 10 s) – **nachweislich nichts gesendet**, ein neuer Versuch ist gefahrlos |
+| `terminal_offline` | die Verbindung stand und ist abgerissen – Ausgang offen |
+| `timeout` | das Terminal hat nicht rechtzeitig geantwortet – Ausgang offen |
+| `terminal_error` | das Terminal meldet einen Fehler oder antwortet nicht im HPS-Format; nennt es einen HTTP-Status, steht er in `detail.terminalHttpStatus` (`409` = beschäftigt, nichts belastet) |
+
+Der Verbindungsaufbau hat bei jedem Aufruf höchstens 10 Sekunden, auch bei
+Zahlung und Gutschrift; deren lange Frist gilt erst für die Antwort. Zahlung
+und Gutschrift wiederholt Connect nie von selbst. Bis 1.4.1 kam auch ohne
+Verbindung `terminal_offline` – eine Kasse, die beide Fassungen bedient, liest
+nur `terminal_unreachable` als „nichts gesendet“.
+
+Nach dem ersten erfolgreichen Kontakt hält Connect das Terminal wach (alle
+45 s ein TCP-Verbindungsaufbau ohne Daten), damit sein WLAN nicht einschläft;
+das Ziel steht in der `config.json` und gilt auch nach einem Neustart.
+
 ### Bluetooth-Brücke (macOS)
 
 Nur am Mac und nur mit dem Hilfsprogramm im App-Paket (zum Entwickeln ohne

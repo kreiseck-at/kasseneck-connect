@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import '../log/logger.dart';
+import '../lokales_netz.dart';
 
 /// Hobex-HPS-Terminals sprechen JSON-REST über HTTP auf diesem Port.
 const int hpsDefaultPort = 8080;
@@ -10,11 +11,59 @@ const int hpsDefaultPort = 8080;
 /// Terminal am Netz, antwortet aber nicht wie erwartet / meldet einen Fehler.
 const String errorTerminalError = 'terminal_error';
 
-/// Terminal unter Host:Port nicht erreichbar (aus, falsche IP, anderes Netz).
+/// Die Verbindung zum Terminal stand und ist danach abgerissen (Netz weg,
+/// Terminal neu gestartet). Ob die Anfrage angekommen ist, ist OFFEN — die
+/// Kasse behandelt den Ausgang als ungeklärt.
+///
+/// Bis 1.4.1 kam dieser Code auch, wenn gar keine Verbindung zustande kam;
+/// das meldet jetzt [errorTerminalUnreachable].
 const String errorTerminalOffline = 'terminal_offline';
 
-/// Das Terminal hat nicht rechtzeitig geantwortet.
+/// Das Terminal hat nicht rechtzeitig geantwortet. Die Verbindung stand, die
+/// Anfrage kann also angekommen sein: Ausgang offen.
 const String errorTerminalTimeout = 'timeout';
+
+/// Keine Verbindung zum Terminal: der TCP-Aufbau scheiterte (abgelehnt, keine
+/// Route, Name unbekannt) oder lief in sein Zeitlimit
+/// ([hpsVerbindungTimeout]). Es wurde **nachweislich nichts gesendet** — die
+/// Kasse darf das wie einen Fehler vor dem Terminal-Kontakt behandeln: nichts
+/// belastet, erneut versuchen ist gefahrlos.
+///
+/// Warum das in Dart gilt (nachgelesen im Dart-SDK 3.12.1,
+/// `sdk/lib/_http/http_impl.dart`):
+///
+/// - `HttpClient.openUrl` (`_HttpClient._openUrl`) liefert erst, wenn
+///   `_ConnectionTarget.connect` einen VERBUNDENEN Socket hat; ein Fehler
+///   oder `connectionTimeout` beim Aufbau endet dort als `SocketException`
+///   ("HTTP connection timed out after …") und erreicht den Aufrufer über
+///   genau diesen Future.
+/// - Erst danach baut `_HttpClientConnection.send` das `HttpClientRequest`
+///   über einem `_HttpOutgoing` mit `headersWritten = false`. Kopf und Rumpf
+///   gehen frühestens beim ersten `add`/`write` (`addStream` →
+///   `writeHeaders`) oder bei `close()` hinaus — beides ruft [HpsBridge] erst
+///   NACH dem erfüllten `openUrl` auf.
+/// - Jeder Aufruf hat seinen eigenen `HttpClient`: eine wiederverwendete,
+///   schon benutzte Verbindung kann `openUrl` nie liefern. Ein Proxy ist
+///   ausgeschaltet (`findProxy` → `DIRECT`), die Verbindung geht also
+///   wirklich zum Terminal und nicht zu einem Zwischenhalt.
+/// - TCP Fast Open (Daten schon im SYN) nutzt Dart nicht.
+///
+/// Fehler NACH aufgebauter Verbindung behalten ihre Codes
+/// ([errorTerminalOffline], [errorTerminalTimeout], [errorTerminalError]) —
+/// dort ist der Ausgang offen.
+const String errorTerminalUnreachable = 'terminal_unreachable';
+
+/// Zeitlimit für den TCP-Verbindungsaufbau, für jeden Aufruf (auch Zahlung
+/// und Gutschrift; deren lange Frist gilt erst für die Antwort).
+///
+/// Im Kassen-Netz steht eine Verbindung in Millisekunden. 10 s reichen auch
+/// für ein Terminal, dessen WLAN gerade schläft: verschluckt es das SYN,
+/// wiederholt der Rechner es nach rund 1, 3 und 7 s — bis 10 s sind das drei
+/// Weckversuche auf TCP-Ebene. Länger zu warten hilft nicht: ein Terminal,
+/// das so lange gar nicht antwortet, ist aus, woanders oder hat eine andere
+/// IP. Vorher blockierte eine falsche IP die Zahlung bis zu 4 Minuten.
+/// Dasselbe Maß wie Druckauftrag und Bluetooth-Aufbau im übrigen Agenten.
+const Duration hpsVerbindungTimeout = Duration(seconds: 10);
 
 /// Kurze Aufrufe (Erreichbarkeit, Diagnose, Status, Abbruch). Die Diagnose
 /// fragt beim Autorisierungs-Host nach und darf ein paar Sekunden brauchen.
@@ -59,22 +108,52 @@ class HpsWegFehler implements Exception {
 /// dann mit HTTP 200 und `responseCode != "0"`, und genau so kommt es bei der
 /// Kasse an (nur sie weiß, wie sie dem Kassier eine Ablehnung zeigt).
 class HpsBridge {
-  HpsBridge({required this.log, this.kurzTimeout = hpsKurzTimeout});
+  HpsBridge({
+    required this.log,
+    this.kurzTimeout = hpsKurzTimeout,
+    this.zahlungTimeout = hpsZahlungTimeout,
+    this.verbindungTimeout = hpsVerbindungTimeout,
+    String? betriebssystem,
+    Future<ConnectionTask<Socket>> Function(Uri, String?, int?)? verbinden,
+  }) : betriebssystem = betriebssystem ?? Platform.operatingSystem,
+       _verbinden = verbinden;
 
   final AgentLog log;
 
   /// Zeitlimit der kurzen Aufrufe (Tests setzen es herab).
   final Duration kurzTimeout;
 
+  /// Zeitlimit für die Antwort auf Zahlung und Gutschrift (Tests setzen es
+  /// herab).
+  final Duration zahlungTimeout;
+
+  /// Zeitlimit des Verbindungsaufbaus — nie länger als die Frist des
+  /// Aufrufs selbst. Siehe [hpsVerbindungTimeout].
+  final Duration verbindungTimeout;
+
+  /// Betriebssystem für den Hinweis auf die Freigabe „Lokales Netzwerk“
+  /// (macOS); Tests setzen es fest.
+  final String betriebssystem;
+
+  /// Nur für Tests: ersetzt den Verbindungsaufbau des `HttpClient`
+  /// (`HttpClient.connectionFactory`), etwa durch einen, der nie fertig wird.
+  final Future<ConnectionTask<Socket>> Function(Uri, String?, int?)? _verbinden;
+
   /// Kurzer Aufruf mit EINEM Weckversuch: ein Terminal im WLAN-Stromsparmodus
   /// verschlaeft gern die erste Anfrage (sie weckt nur das Funkmodul) und
   /// antwortet auf die zweite in Millisekunden — belegt am Geraet. Zahlungen
   /// bekommen diesen Automatismus bewusst NICHT (nie doppelt ausloesen).
+  ///
+  /// Ein verschlafenes Terminal kann jeden der drei Transportfehler auslösen:
+  /// keine Verbindung (`terminal_unreachable`), Verbindung abgerissen
+  /// (`terminal_offline`) oder keine Antwort (`timeout`).
   Future<Object?> _kurzMitWeckversuch(Future<Object?> Function() aufruf) async {
     try {
       return await aufruf();
     } on HpsWegFehler catch (e) {
-      if (e.code != errorTerminalTimeout && e.code != errorTerminalOffline) {
+      if (e.code != errorTerminalTimeout &&
+          e.code != errorTerminalOffline &&
+          e.code != errorTerminalUnreachable) {
         rethrow;
       }
       log.info('Terminal verschlafen? Zweiter Versuch nach ${e.code}.');
@@ -135,7 +214,7 @@ class HpsBridge {
       port,
       '/api/transaction/payment',
       body: <String, Object?>{'transaction': transaction},
-      timeout: hpsZahlungTimeout,
+      timeout: zahlungTimeout,
     );
   }
 
@@ -202,7 +281,7 @@ class HpsBridge {
       port,
       '/api/transaction/refund',
       body: <String, Object?>{'transaction': transaction},
-      timeout: hpsZahlungTimeout,
+      timeout: zahlungTimeout,
     );
   }
 
@@ -255,7 +334,17 @@ class HpsBridge {
     Duration? timeout,
   }) async {
     final zeitlimit = timeout ?? kurzTimeout;
-    final client = HttpClient()..connectionTimeout = zeitlimit;
+    final aufbauLimit = verbindungTimeout < zeitlimit
+        ? verbindungTimeout
+        : zeitlimit;
+    final client = HttpClient()
+      ..connectionTimeout = aufbauLimit
+      // Das Terminal steht im lokalen Netz; ein Proxy aus der Umgebung
+      // (`http_proxy`) hätte dort nichts verloren und machte aus „verbunden“
+      // „mit dem Proxy verbunden“ — siehe errorTerminalUnreachable.
+      ..findProxy = (Uri _) => 'DIRECT';
+    final verbinden = _verbinden;
+    if (verbinden != null) client.connectionFactory = verbinden;
     try {
       final uri = Uri(
         scheme: 'http',
@@ -264,7 +353,7 @@ class HpsBridge {
         path: path,
         queryParameters: query,
       );
-      final request = await client.openUrl(method, uri).timeout(zeitlimit);
+      final request = await _oeffnen(client, method, uri, aufbauLimit);
       request.headers.contentType = ContentType.json;
       request.headers.set(HttpHeaders.acceptHeader, 'application/json');
       if (body != null) {
@@ -288,7 +377,7 @@ class HpsBridge {
       } on FormatException {
         throw HpsWegFehler(
           errorTerminalError,
-          'Das Terminal antwortet, aber nicht im HPS-Format — '
+          'Das Terminal antwortet, aber nicht im HPS-Format – '
           'ist unter $host:$port wirklich das Hobex-Terminal?',
         );
       }
@@ -313,11 +402,13 @@ class HpsBridge {
         'Das Terminal hat nicht rechtzeitig geantwortet.',
       );
     } on SocketException catch (e) {
-      log.info('HPS $host:$port nicht erreichbar: ${e.message}');
+      // Die Verbindung stand schon (sonst hätte _oeffnen gemeldet): ob die
+      // Anfrage angekommen ist, weiß hier niemand.
+      log.info('HPS $host:$port: Verbindung abgerissen: ${socketGrund(e)}');
       throw HpsWegFehler(
         errorTerminalOffline,
-        'Terminal unter $host:$port nicht erreichbar — eingeschaltet und im '
-        'selben Netz?',
+        'Die Verbindung zum Terminal unter $host:$port ist abgerissen – ob '
+        'die Anfrage angekommen ist, ist offen.',
       );
     } on HttpException {
       throw HpsWegFehler(
@@ -327,6 +418,45 @@ class HpsBridge {
     } finally {
       client.close(force: true);
     }
+  }
+
+  /// Die Verbindungsphase: scheitert sie, ist nachweislich nichts gesendet
+  /// (siehe [errorTerminalUnreachable]) — und nur dann entsteht dieser Code.
+  ///
+  /// [limit] deckt den ganzen Aufbau ab, auch eine Namensauflösung, die vor
+  /// dem `connectionTimeout` des `HttpClient` liegt.
+  Future<HttpClientRequest> _oeffnen(
+    HttpClient client,
+    String method,
+    Uri uri,
+    Duration limit,
+  ) async {
+    try {
+      return await client.openUrl(method, uri).timeout(limit);
+    } on SocketException catch (e) {
+      throw _unerreichbar(uri, e, socketGrund(e));
+    } on TimeoutException catch (e) {
+      throw _unerreichbar(
+        uri,
+        e,
+        'kein Verbindungsaufbau in ${limit.inMilliseconds} ms',
+      );
+    }
+  }
+
+  HpsWegFehler _unerreichbar(Uri uri, Object ursache, String grund) {
+    final ziel = '${uri.host}:${uri.port}';
+    log.info('HPS $ziel: keine Verbindung ($grund) – nichts gesendet.');
+    return HpsWegFehler(
+      errorTerminalUnreachable,
+      mitLokalesNetzHinweis(
+        'Keine Verbindung zum Terminal unter $ziel – es wurde nichts '
+        'gesendet. Bitte prüfen, ob das Terminal eingeschaltet und im selben '
+        'Netz ist und die IP-Adresse stimmt.',
+        ursache,
+        betriebssystem: betriebssystem,
+      ),
+    );
   }
 }
 

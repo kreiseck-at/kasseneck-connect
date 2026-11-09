@@ -5,6 +5,19 @@ Alle nennenswerten Änderungen an Kasseneck Connect. Die Versionsnummer folgt
 `lib/src/version.dart` und wird über `GET /v1/status` sowie im Update-Feed
 gemeldet.
 
+## Unveröffentlicht
+
+- **Terminal: „nichts gesendet“ ist jetzt erkennbar.** Kommt keine Verbindung
+  zum Terminal zustande (abgelehnt, keine Route, kein Aufbau in 10 s), meldet
+  Connect den neuen Code `terminal_unreachable`: die Anfrage hat das Terminal
+  nachweislich nicht erreicht. `terminal_offline` heißt nur noch „Verbindung
+  stand und ist abgerissen“ (Ausgang offen), `timeout` und `terminal_error`
+  bleiben, wie sie waren. Der Verbindungsaufbau hat bei jedem Aufruf ein
+  eigenes Limit von 10 s – eine falsche Terminal-IP blockierte eine Zahlung
+  bisher bis zu 4 Minuten. Der Weckversuch der Probe greift auch bei
+  `terminal_unreachable`; Zahlung und Gutschrift wiederholt Connect weiterhin
+  nie. Ein Proxy aus der Umgebung gilt für das Terminal nicht mehr.
+
 ## 1.4.1 — 2026-11-02
 
 - Keine Änderung am Verhalten. Versionsschritt, an dem die Aktualisierung auf

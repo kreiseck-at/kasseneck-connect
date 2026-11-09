@@ -5,7 +5,7 @@ Alle nennenswerten Änderungen an Kasseneck Connect. Die Versionsnummer folgt
 `lib/src/version.dart` und wird über `GET /v1/status` sowie im Update-Feed
 gemeldet.
 
-## Unveröffentlicht
+## 1.4.2 — 2026-11-09
 
 - **Terminal: „nichts gesendet“ ist jetzt erkennbar.** Kommt keine Verbindung
   zum Terminal zustande (abgelehnt, keine Route, kein Aufbau in 10 s), meldet

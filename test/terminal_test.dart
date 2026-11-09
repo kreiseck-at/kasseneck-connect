@@ -559,9 +559,17 @@ void main() {
         await response.drain<void>();
         client.close(force: true);
 
-        // Ziel persistiert (ueberlebt einen Agenten-Neustart) …
-        await Future<void>.delayed(const Duration(milliseconds: 100));
-        final config = await store.load();
+        // Ziel persistiert (ueberlebt einen Agenten-Neustart) … Das
+        // Schreiben laeuft absichtlich nebenher (fire-and-forget); unter Last
+        // braucht es laenger als eine feste Wartezeit – also nachsehen, bis
+        // Ziel und Beruehrungen da sind (hoechstens 5 s).
+        final frist = DateTime.now().add(const Duration(seconds: 5));
+        var config = await store.load();
+        while ((config.terminal == null || beruehrt < 2) &&
+            DateTime.now().isBefore(frist)) {
+          await Future<void>.delayed(const Duration(milliseconds: 20));
+          config = await store.load();
+        }
         expect(config.terminal?.host, '127.0.0.1');
         expect(config.terminal?.port, hps.port);
         // … und die Beruehrungen laufen.

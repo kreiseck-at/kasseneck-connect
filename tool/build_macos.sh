@@ -71,6 +71,7 @@ if [ -n "$SIGN_APP" ]; then
     --sign "$SIGN_APP" "$OUT"
   codesign --verify --strict --verbose=2 "$OUT"
   sign_app_bundle "$APP" "$SIGN_APP"
+  warn_app_cert_expiry "$APP"
 else
   echo "Warnung: keine Developer-ID-Application-Identität gefunden — Binary und App-Paket bleiben unsigniert." >&2
 fi

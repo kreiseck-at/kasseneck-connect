@@ -30,6 +30,13 @@ gemeldet.
   oder Terminal am Mac mit „No route to host“, nennt die Meldung den Weg zur
   Freigabe; die Codes bleiben (`printer_offline`, `terminal_unreachable`).
   `detail.reason` nennt bei Druckfehlern zusätzlich den Betriebssystem-Fehler.
+- **Release nur signiert und notarisiert:** `tool/release.sh` bricht bei einem
+  macOS-Paket ohne Developer-ID-Signatur des Teams, ohne Notarisierung oder
+  ohne Zusage von Gatekeeper ab (bisher: Warnung und trotzdem veröffentlicht);
+  es prüft wie der Agent vor dem Ein-Klick-Update. `build_pkg.sh` bricht ohne
+  beide Signaturen ab; die CI baut mit `--testbau` (Name `…-testbau.pkg`, nie
+  veröffentlicht). Alle drei Skripte warnen, wenn ein Signierzertifikat in
+  weniger als 60 Tagen abläuft.
 
 ## 1.4.1 — 2026-11-02
 

@@ -32,12 +32,18 @@
 # README-Tabelle; `test/downloads_test.dart` prüft, dass alle drei Stellen
 # dasselbe sagen.
 #
-# macOS-Pakete werden vor dem Hochladen notarisiert (`tool/notarize_macos.sh`),
-# sofern sie signiert sind und noch kein Ticket tragen — das muss vor den
-# unversionierten Kopien passieren, weil der Stapler die Datei verändert. Fehlt
-# das Schlüsselbund-Profil, läuft die Veröffentlichung mit einer deutlichen
-# Warnung weiter; das Paket kommt dann aber auf keinem Kundenrechner an
-# Gatekeeper vorbei.
+# macOS-Pakete müssen vor dem Hochladen dieselbe Prüfung bestehen wie im
+# Agenten vor dem Ein-Klick-Update (lib/src/update/mac_package.dart): mit
+# „Developer ID Installer“ des Teams signiert und von Apple notarisiert
+# (Gatekeeper: „Notarized Developer ID“). Fehlt nur das Ticket, holt das
+# Skript die Notarisierung nach (`tool/notarize_macos.sh`) — vor den
+# unversionierten Kopien, weil der Stapler die Datei verändert. Alles andere
+# (unsigniert, fremdes Team, kein notarytool-Profil, Notarisierung
+# gescheitert, kein xcrun) bricht ab, auch im Probelauf. Einen Schalter
+# dagegen gibt es bewusst nicht: ein solches Paket blockt Gatekeeper auf
+# jedem Kundenrechner, und das Ein-Klick-Update lehnt es ab. Testbauten
+# (`build_pkg.sh --testbau`) tragen einen anderen Namen und werden hier nie
+# gefunden.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -136,43 +142,57 @@ if [ "${#STALE[@]}" -gt 0 ]; then
   exit 70
 fi
 
-# macOS-Pakete notarisieren — und zwar **vor** den unversionierten Kopien: der
-# Stapler schreibt das Ticket in die Datei, also müssen Kopie und Prüfsumme im
-# Feed das fertig notarisierte Paket meinen. Was schon ein Ticket trägt, wird
-# übersprungen (ein zweiter Lauf ist damit unschädlich).
+# Bricht die Veröffentlichung wegen des macOS-Pakets $1 ab, Grund $2.
+abbruch_mac() {
+  echo >&2
+  echo "Abbruch: $1 – $2" >&2
+  echo "Ein solches Paket blockt Gatekeeper beim Kunden, und das Ein-Klick-Update lehnt es ab." >&2
+  echo "Abhilfe: README, „Signierung & Notarisierung“. Es wurde nichts veröffentlicht." >&2
+  exit 70
+}
+
+# macOS-Pakete prüfen und notarisieren — und zwar **vor** den unversionierten
+# Kopien: der Stapler schreibt das Ticket in die Datei, also müssen Kopie und
+# Prüfsumme im Feed das fertig notarisierte Paket meinen. Was schon ein Ticket
+# trägt, wird nicht noch einmal eingereicht (ein zweiter Lauf ist unschädlich).
 for key in "${PRESENT[@]}"; do
   case "$key" in darwin-*) ;; *) continue ;; esac
   pkg="build/$(file_for_key "$key")"
 
-  if ! command -v xcrun >/dev/null 2>&1; then
-    echo "Warnung: kein xcrun — $pkg wird ungeprüft und ohne Notarisierung veröffentlicht." >&2
-    continue
-  fi
+  for werkzeug in xcrun pkgutil spctl; do
+    command -v "$werkzeug" >/dev/null 2>&1 \
+      || abbruch_mac "$pkg" "$werkzeug fehlt; macOS-Pakete lassen sich nur am Mac prüfen und veröffentlichen."
+  done
 
-  if ! pkgutil --check-signature "$pkg" >/dev/null 2>&1; then
-    echo "WARNUNG: $pkg ist NICHT signiert — Gatekeeper wird es beim Kunden blockieren." >&2
-    echo "         Signieren braucht das Developer-ID-Zertifikat; siehe README, „Signierung & Notarisierung“." >&2
-    continue
+  if ! pkg_developer_id_signed "$pkg"; then
+    abbruch_mac "$pkg" "nicht mit „Developer ID Installer … ($CONNECT_TEAM_ID)“ signiert."
   fi
+  warn_pkg_cert_expiry "$pkg"
 
   if xcrun stapler validate "$pkg" >/dev/null 2>&1; then
     echo "Bereits notarisiert: $pkg"
+  elif [ "$DRY_RUN" -eq 1 ]; then
+    echo "[dry-run] tool/notarize_macos.sh $pkg"
+    echo "Hinweis: $pkg ist noch nicht notarisiert. Der echte Lauf holt das nach und bricht ab, wenn es misslingt." >&2
     continue
+  else
+    echo "Notarisierung nachholen: $pkg"
+    NOTARY_STATUS=0
+    tool/notarize_macos.sh "$pkg" || NOTARY_STATUS=$?
+    if [ "$NOTARY_STATUS" -eq 69 ]; then
+      abbruch_mac "$pkg" "nicht notarisiert, und es gibt kein notarytool-Profil (oder kein xcrun)."
+    elif [ "$NOTARY_STATUS" -ne 0 ]; then
+      abbruch_mac "$pkg" "die Notarisierung ist fehlgeschlagen."
+    fi
+    if ! xcrun stapler validate "$pkg" >/dev/null 2>&1; then
+      abbruch_mac "$pkg" "nach der Notarisierung trägt das Paket kein Ticket."
+    fi
   fi
 
-  echo "Notarisierung nachholen: $pkg"
-  NOTARY_STATUS=0
-  run tool/notarize_macos.sh "$pkg" || NOTARY_STATUS=$?
-  if [ "$NOTARY_STATUS" -eq 69 ]; then
-    echo >&2
-    echo "WARNUNG: $pkg wird OHNE Notarisierung veröffentlicht." >&2
-    echo "         Gatekeeper blockt das Paket auf jedem Kundenrechner — das Release taugt nur zum Testen." >&2
-    echo "         Abhilfe: notarytool-Profil anlegen (README, „Signierung & Notarisierung“) und neu veröffentlichen." >&2
-    echo >&2
-  elif [ "$NOTARY_STATUS" -ne 0 ]; then
-    echo "Notarisierung von $pkg fehlgeschlagen — Abbruch." >&2
-    exit 70
+  if ! pkg_notarized "$pkg"; then
+    abbruch_mac "$pkg" "Gatekeeper nimmt es nicht als notarisiertes Paket des Teams $CONNECT_TEAM_ID an."
   fi
+  echo "Geprüft: $pkg (signiert, notarisiert, von Gatekeeper angenommen)"
 done
 
 # Unversionierte Kopien anlegen — das sind die eigentlichen Release-Assets.

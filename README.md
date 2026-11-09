@@ -683,13 +683,29 @@ tool/notarize_macos.sh build/KasseneckConnect-<version>-macos-<arch>.pkg
 tool/release.sh                  # holt eine fehlende Notarisierung selbst nach
 ```
 
-`tool/release.sh` prüft jedes macOS-Paket vor dem Hochladen: unsigniert →
-laute Warnung, signiert und schon gestapelt → übersprungen, signiert ohne
-Ticket → `tool/notarize_macos.sh`. Das muss vor den unversionierten Kopien
-passieren, weil `stapler` die Datei verändert und die Prüfsumme in
-`latest.json` das fertige Paket meinen muss. Fehlt das Schlüsselbund-Profil,
-warnt der Lauf deutlich und veröffentlicht trotzdem — brauchbar ist so ein
-Paket dann nur zum Testen, beim Kunden blockt Gatekeeper es.
+`tool/release.sh` prüft jedes macOS-Paket vor dem Hochladen genau so wie
+Connect vor dem Ein-Klick-Update (`lib/src/update/mac_package.dart`): mit
+„Developer ID Installer“ des Teams `6KMT4H4CNE` signiert, Kette bis „Apple
+Root CA“, von Gatekeeper als „Notarized Developer ID“ angenommen. Fehlt nur das
+Ticket, reicht es das Paket über `tool/notarize_macos.sh` ein – vor den
+unversionierten Kopien, weil `stapler` die Datei verändert und die Prüfsumme in
+`latest.json` das fertige Paket meinen muss. Alles andere bricht ab, auch im
+Probelauf und ohne Schalter dagegen: unsigniert, fremdes Team, kein
+`notarytool`-Profil, Notarisierung gescheitert, kein Ticket, Gatekeeper lehnt
+ab, kein `xcrun`. Veröffentlicht wird dann nichts.
+
+`tool/pkg/macos/build_pkg.sh` bricht ohne Developer-ID-Installer-Identität
+gleich zu Beginn ab und ebenso, wenn das App-Paket in der Nutzlast keine
+gültige Developer-ID-Application-Signatur trägt oder die fertige Paketsignatur
+die Prüfung oben (ohne Notarisierung) nicht besteht. Unter dem
+Auslieferungsnamen steht so nie ein ungeprüftes Paket.
+
+Läuft eines der Signierzertifikate (Blatt oder Zwischenstelle) in weniger als
+60 Tagen ab, warnen `build_macos.sh`, `build_pkg.sh` und `release.sh` laut
+(Frist über `KASSENECK_CERT_WARN_DAYS`). Das heutige Paar läuft am 01.02.2027
+ab, die Warnung kommt also ab dem 04.12.2026. Ein Ablauf bricht nichts ab:
+ein schon signiertes Paket bleibt dank Zeitstempel gültig, nur neu signieren
+geht nicht mehr.
 
 Prüfen lässt sich das Ergebnis von Hand:
 
@@ -702,10 +718,13 @@ xcrun stapler validate build/KasseneckConnect-*.pkg
 spctl -a -vv -t install build/KasseneckConnect-*.pkg           # Urteil von Gatekeeper
 ```
 
-Auf den CI-Runnern liegt kein Zertifikat. Die Build-Skripte warnen dort und
-bauen unsigniert weiter — die CI-Artefakte sind Bauprobe, kein
-Auslieferungsstand. Ausgeliefert wird ausschließlich, was auf dem
-Entwicklungsrechner signiert und notarisiert entstanden ist.
+Auf den CI-Runnern liegt kein Zertifikat. Dort läuft
+`tool/pkg/macos/build_pkg.sh --testbau`: das Paket darf unsigniert bleiben,
+heißt aber `KasseneckConnect-<version>-macos-<arch>-testbau.pkg` – diesen
+Namen sucht `tool/release.sh` nie. `tool/build_macos.sh` warnt ohne Zertifikat
+nur. Die CI-Artefakte sind Bauprobe, kein Auslieferungsstand. Ausgeliefert
+wird ausschließlich, was auf dem Entwicklungsrechner signiert und notarisiert
+entstanden ist.
 
 Windows- und Linux-Artefakte bleiben vorerst unsigniert (siehe die Hinweise
 bei der Installation).

@@ -148,6 +148,7 @@ void main() {
 
       expect(sicherung().readAsBytesSync(), vorher);
       expect((await store.load()).tokenHashes, <String>['hash-b']);
+      if (!Platform.isWindows) expect(rechte(sicherung()), 0x180);
     });
 
     test('kaputt mit Sicherung: die Sicherung springt ein, die kaputte Datei '

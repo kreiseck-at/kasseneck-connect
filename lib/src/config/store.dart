@@ -172,7 +172,7 @@ class ConfigStore {
       // Die gute Fassung als Sicherung. Scheitert das, bleibt die ältere
       // Sicherung stehen – die config.json selbst ist ja gut.
       try {
-        await _schreibeAtomar(paths.configBackupFile, vorige.bytes!);
+        await _kopiereAtomar(file, paths.configBackupFile);
       } on FileSystemException catch (e) {
         _log?.warn('config.json.bak ließ sich nicht schreiben: ${e.message}');
       }
@@ -254,6 +254,27 @@ class ConfigStore {
           FileSystemEntityType.notFound) {
         return kandidat;
       }
+    }
+  }
+
+  /// Kopiert [quelle] atomar nach [ziel] (Temp-Datei, Rechte 600, rename).
+  ///
+  /// `File.copy` übernimmt die Rechte der Quelle; `chmod` läuft nur, wenn sie
+  /// nicht schon 600 sind. Jeder `chmod` ist ein eigener Prozess, der den
+  /// Agenten kurz anhält, und [save] läuft bei jeder Änderung. Gelesen wird
+  /// die Quelle hier unter der Sperre: es ist dieselbe Fassung, die [_lies]
+  /// eben als gut befunden hat.
+  Future<void> _kopiereAtomar(File quelle, File ziel) async {
+    final temp = paths.configTempFile();
+    try {
+      await quelle.copy(temp.path);
+      if (!Platform.isWindows && temp.statSync().mode & 0x1FF != 0x180) {
+        _restrict(temp.path, '600');
+      }
+      await temp.rename(ziel.path);
+    } on Object {
+      _wegraeumen(temp);
+      rethrow;
     }
   }
 

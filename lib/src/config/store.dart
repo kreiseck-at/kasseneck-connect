@@ -311,27 +311,21 @@ class ConfigStore {
         grund: 'nicht lesbar: ${e.osError?.message ?? e.message}',
       );
     }
-    final kennung = sha256.convert(bytes).toString();
+    // Die Prüfsumme nur für eine unbrauchbare Datei: load() läuft bei jeder
+    // Anfrage an den Agenten, und dort zählt jede Millisekunde.
+    _Gelesen kaputt(String grund) => _Gelesen.kaputt(
+      grund: grund,
+      bytes: bytes,
+      kennung: sha256.convert(bytes).toString(),
+    );
     try {
       final text = utf8.decode(bytes);
-      if (text.trim().isEmpty) {
-        return _Gelesen.kaputt(grund: 'leer', bytes: bytes, kennung: kennung);
-      }
+      if (text.trim().isEmpty) return kaputt('leer');
       final map = readMap(jsonDecode(text));
-      if (map == null) {
-        return _Gelesen.kaputt(
-          grund: 'kein JSON-Objekt',
-          bytes: bytes,
-          kennung: kennung,
-        );
-      }
+      if (map == null) return kaputt('kein JSON-Objekt');
       return _Gelesen.gut(AgentConfig.fromJson(map), bytes);
     } on FormatException {
-      return _Gelesen.kaputt(
-        grund: 'kein gültiges JSON',
-        bytes: bytes,
-        kennung: kennung,
-      );
+      return kaputt('kein gültiges JSON');
     }
   }
 

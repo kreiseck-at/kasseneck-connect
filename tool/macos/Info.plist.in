@@ -10,6 +10,15 @@
 	  Ordnernamen des Pakets, nicht CFBundleName; der Text unter
 	  NSBluetoothAlwaysUsageDescription steht im Dialog. LSUIElement hält
 	  das Paket aus dem Dock.
+
+	  Lokales Netzwerk (seit macOS 15): launchd-Agenten fallen anders als
+	  Daemons unter die Freigabe. Der LaunchAgent startet die Hauptbinary
+	  dieses Pakets, also gilt diese Info.plist: der Text unter
+	  NSLocalNetworkUsageDescription steht im Dialog, die Freigabe unter
+	  Systemeinstellungen, Datenschutz und Sicherheit, Lokales Netzwerk.
+	  NSBonjourServices nennt die Dienste der Druckersuche
+	  (printerServices in lib/src/printers/discovery.dart, ohne .local);
+	  test/macos_bundle_test.dart hält beide Listen gleich.
 	-->
 	<key>CFBundleIdentifier</key>
 	<string>at.kasseneck.connect</string>
@@ -35,5 +44,13 @@
 	<true/>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>Kasseneck Connect verbindet die Kasse mit Bluetooth-Druckern wie dem Etikettendrucker.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Kasseneck Connect verbindet die Kasse mit Bondruckern und dem Kartenterminal im lokalen Netzwerk.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_printer._tcp</string>
+		<string>_pdl-datastream._tcp</string>
+		<string>_epos._tcp</string>
+	</array>
 </dict>
 </plist>

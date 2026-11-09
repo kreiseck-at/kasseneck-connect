@@ -128,7 +128,7 @@ Future<Response> _handleTest(
     if (!siehtNachHpsAus(antwort)) {
       throw HpsWegFehler(
         errorTerminalError,
-        'Unter ${ziel.$1}:${ziel.$2} antwortet etwas — aber kein '
+        'Unter ${ziel.$1}:${ziel.$2} antwortet etwas – aber kein '
         'Hobex-Terminal.',
       );
     }

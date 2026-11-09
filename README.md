@@ -95,6 +95,14 @@ freigeschaltet werden müsste.
    „Kasseneck Connect verbindet die Kasse mit Bluetooth-Druckern wie dem
    Etikettendrucker.“ Danach steht „Kasseneck Connect“ unter
    **Systemeinstellungen → Datenschutz & Sicherheit → Bluetooth**.
+7. Ab macOS 15 fragt macOS beim ersten Zugriff auf Drucker oder
+   Kartenterminal nach dem **lokalen Netzwerk** („Kasseneck Connect verbindet
+   die Kasse mit Bondruckern und dem Kartenterminal im lokalen Netzwerk.“).
+   Erlauben. Solange der Dialog offen ist, kann der erste Versuch schon
+   scheitern – danach einfach wiederholen. Die Freigabe steht unter
+   **Systemeinstellungen → Datenschutz & Sicherheit → Lokales Netzwerk**.
+   Fehlt sie, scheitert jede Verbindung mit „No route to host“; die Meldung an
+   die Kasse nennt dann diesen Weg.
 
 Ein Update von 1.2.x über das neue Paket behält Konfiguration, gekoppelte
 Kassen und Drucker; der Autostart zeigt danach auf die Binary im App-Paket.
@@ -541,6 +549,8 @@ letzten Fehlerzeilen aus dem Log.
 | Bluetooth: `bluetooth_unreachable` | Gerät an? Hält es gerade ein anderes Gerät (Kassen-App, Handy)? Dort schließen und erneut versuchen |
 | `doctor`: „Bluetooth-Hilfsprogramm: fehlt“ | Connect neu installieren (das Hilfsprogramm liegt im App-Paket) |
 | Drucker `offline` | IP und Port prüfen (`doctor`), Gerät anpingen, `POST /v1/printers/discover` |
+| Mac: Drucker oder Terminal „nicht erreichbar“, Meldung nennt „Lokales Netzwerk“ | **Systemeinstellungen → Datenschutz & Sicherheit → Lokales Netzwerk** → „Kasseneck Connect“ einschalten. `doctor` im Terminal braucht die Freigabe nicht – zeigt es den Drucker `online`, die Kasse aber nicht, fehlt sie |
+| Terminal: `terminal_unreachable` | Es ging nichts ans Terminal. Terminal an? Im selben Netz wie der Rechner? IP am Terminal ablesen oder `POST /v1/terminal/discover` |
 | Bon kam nicht | Log ansehen: `logs/connect.log`; bei `timeout` mit `mayHavePrinted` erst am Gerät nachsehen |
 | Agent startet nach dem Neustart nicht | `doctor` → Autostart-Zeile; notfalls `install-autostart` erneut |
 

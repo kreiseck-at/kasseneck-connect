@@ -24,6 +24,12 @@ gemeldet.
   Fehler und nimmt die Sicherung. Bisher fiel er still auf die
   Standardkonfiguration zurück, und das nächste Speichern überschrieb
   Kopplungen und Drucker endgültig.
+- **macOS „Lokales Netzwerk“:** `Kasseneck Connect.app` trägt jetzt
+  `NSLocalNetworkUsageDescription` (Text im Freigabe-Dialog) und die
+  Druckerdienste in `NSBonjourServices`. Scheitert eine Verbindung zu Drucker
+  oder Terminal am Mac mit „No route to host“, nennt die Meldung den Weg zur
+  Freigabe; die Codes bleiben (`printer_offline`, `terminal_unreachable`).
+  `detail.reason` nennt bei Druckfehlern zusätzlich den Betriebssystem-Fehler.
 
 ## 1.4.1 — 2026-11-02
 

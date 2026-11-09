@@ -2,10 +2,15 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
+import '../lokales_netz.dart';
 import 'driver.dart';
 
 /// Voreingestelltes Zeitlimit für den Verbindungsaufbau.
 const Duration defaultConnectTimeout = Duration(seconds: 5);
+
+/// Baut eine TCP-Verbindung auf (wie `Socket.connect`; Tests ersetzen das).
+typedef SocketConnector =
+    Future<Socket> Function(String host, int port, {Duration? timeout});
 
 /// Roher ESC/POS-Bytestrom über TCP 9100 („RAW"/JetDirect).
 ///
@@ -18,13 +23,22 @@ class Tcp9100Printer implements PrinterDriver {
     this.host,
     this.port, {
     this.connectTimeout = defaultConnectTimeout,
-  });
+    String? betriebssystem,
+    SocketConnector? verbinden,
+  }) : betriebssystem = betriebssystem ?? Platform.operatingSystem,
+       _verbinden = verbinden ?? Socket.connect;
 
   final String host;
   final int port;
 
   /// Zeitlimit für den Verbindungsaufbau (immer höchstens das Auftragslimit).
   final Duration connectTimeout;
+
+  /// Betriebssystem für den Hinweis auf die Freigabe „Lokales Netzwerk“
+  /// (macOS); Tests setzen es fest.
+  final String betriebssystem;
+
+  final SocketConnector _verbinden;
 
   /// Verbindung des laufenden Versuchs — nur damit [abort] sie wegwerfen kann.
   Socket? _current;
@@ -65,7 +79,7 @@ class Tcp9100Printer implements PrinterDriver {
         sent
             ? unconfirmedPrintMessage
             : 'Die Verbindung zum Drucker $host:$port ist abgebrochen.',
-        detail: e.message,
+        detail: socketGrund(e),
         mayHavePrinted: sent,
       );
     } finally {
@@ -84,7 +98,7 @@ class Tcp9100Printer implements PrinterDriver {
   @override
   Future<PrinterState> status({Duration timeout = defaultPrintTimeout}) async {
     try {
-      final socket = await Socket.connect(
+      final socket = await _verbinden(
         host,
         port,
         timeout: _shorter(connectTimeout, timeout),
@@ -100,16 +114,22 @@ class Tcp9100Printer implements PrinterDriver {
 
   Future<Socket> _connect(Duration timeout) async {
     try {
-      return await Socket.connect(
+      return await _verbinden(
         host,
         port,
         timeout: _shorter(connectTimeout, timeout),
       );
     } on SocketException catch (e) {
+      // Der Code bleibt printer_offline (Vertrag mit der Kasse); am Mac
+      // kommt bei „No route to host“ der Hinweis auf die Freigabe dazu.
       throw PrinterFailure(
         errorPrinterOffline,
-        'Der Drucker $host:$port ist nicht erreichbar.',
-        detail: e.message,
+        mitLokalesNetzHinweis(
+          'Der Drucker $host:$port ist nicht erreichbar.',
+          e,
+          betriebssystem: betriebssystem,
+        ),
+        detail: socketGrund(e),
       );
     }
   }

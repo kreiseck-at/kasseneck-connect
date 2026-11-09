@@ -17,6 +17,13 @@ gemeldet.
   bisher bis zu 4 Minuten. Der Weckversuch der Probe greift auch bei
   `terminal_unreachable`; Zahlung und Gutschrift wiederholt Connect weiterhin
   nie. Ein Proxy aus der Umgebung gilt für das Terminal nicht mehr.
+- **Konfiguration geht nicht mehr verloren.** Jedes Speichern behält die
+  vorige gute Fassung als `config.json.bak`. Eine unbrauchbare `config.json`
+  (kein JSON, leer, nicht lesbar) legt Connect einmalig als
+  `config.json.defekt-<UTC-Zeitstempel>` ab (Rechte 600), meldet sie als
+  Fehler und nimmt die Sicherung. Bisher fiel er still auf die
+  Standardkonfiguration zurück, und das nächste Speichern überschrieb
+  Kopplungen und Drucker endgültig.
 
 ## 1.4.1 — 2026-11-02
 

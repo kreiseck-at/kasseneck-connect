@@ -381,7 +381,8 @@ Future<int> _serveAgent(
   required ProcessRunner runProcess,
   required ProcessStarter startProcess,
 }) async {
-  final store = ConfigStore(paths);
+  // Mit Log: eine unbrauchbare config.json soll laut auffallen.
+  final store = ConfigStore(paths, log: log);
   final config = await store.load();
   final agent = Agent(
     store: store,
@@ -425,8 +426,8 @@ Future<int> _serveAgent(
 /// Läuft in einem eigenen Prozess neben dem Agenten: der Code steht in der
 /// `config.json`, und der laufende Agent liest ihn dort bei `POST /v1/pair`.
 Future<int> _printPairingCode(ConfigPaths paths, StringSink out) async {
-  final store = ConfigStore(paths);
   final log = AgentLog(paths.logDirectory);
+  final store = ConfigStore(paths, log: log);
   final code = await Pairing(store: store, log: log).newCode();
   final config = await store.load();
 

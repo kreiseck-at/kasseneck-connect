@@ -84,6 +84,29 @@ class ConfigPaths {
     return File(p.join(directory.path, 'config.json.$pid.$suffix.tmp'));
   }
 
+  /// Die vorige gute Fassung der `config.json` (siehe `ConfigStore`).
+  File get configBackupFile => File(p.join(directory.path, 'config.json.bak'));
+
+  /// Vorsilbe der aufbewahrten unbrauchbaren Fassungen
+  /// (`config.json.defekt-<UTC-Zeitstempel>`).
+  static const String configDefektPrefix = 'config.json.defekt-';
+
+  /// Ablage einer unbrauchbaren `config.json`, gestempelt mit [zeitpunkt]
+  /// in UTC.
+  ///
+  /// Der Stempel kommt ohne Doppelpunkte aus (`20261109T061530Z`), damit der
+  /// Name auch unter Windows gültig ist. [nummer] unterscheidet zwei Fassungen
+  /// aus derselben Sekunde.
+  File configDefektFile(DateTime zeitpunkt, [int nummer = 1]) {
+    final t = zeitpunkt.toUtc();
+    String zwei(int n) => n.toString().padLeft(2, '0');
+    final stempel =
+        '${t.year.toString().padLeft(4, '0')}${zwei(t.month)}${zwei(t.day)}'
+        'T${zwei(t.hour)}${zwei(t.minute)}${zwei(t.second)}Z';
+    final zusatz = nummer > 1 ? '-$nummer' : '';
+    return File(p.join(directory.path, '$configDefektPrefix$stempel$zusatz'));
+  }
+
   /// Sperrdatei, über die sich mehrere Prozesse abstimmen.
   File get configLockFile => File(p.join(directory.path, 'config.lock'));
 

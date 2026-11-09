@@ -238,6 +238,14 @@ er auf `%ProgramData%\KasseneckConnect` aus.
 
 Darin: `config.json` (Port, Token-Hashes, Drucker, Terminal, Update-Kanal; atomar
 geschrieben, Rechte 600) und `logs/connect.log` (täglich rotierend, 7 Dateien).
+Neben der `config.json` liegt `config.json.bak`, die Fassung vor dem letzten
+Speichern. Ist die `config.json` einmal unbrauchbar (kein JSON, leer, nicht
+lesbar), legt Connect sie unverändert als `config.json.defekt-<UTC-Zeitstempel>`
+ab, meldet das als Fehler im Log und arbeitet mit `config.json.bak` weiter;
+erst ohne brauchbare Sicherung startet er ohne Kopplungen und Drucker. Die
+kaputte Datei ersetzt erst das nächste Speichern – nachdem sie aufbewahrt ist.
+Wer die `config.json` zum Zurücksetzen löscht, muss `config.json.bak`
+mitlöschen.
 Auf macOS liegen daneben `logs/launchd.out.log` und `logs/launchd.err.log` —
 dorthin schreibt der LaunchAgent, wenn der Agent so früh stirbt, dass er sein
 eigenes Log nicht mehr erreicht. Die Umgebungsvariable

@@ -58,4 +58,44 @@ void main() {
         .toList();
     expect(leftovers, isEmpty);
   });
+
+  test('zwei Prozesse auf einer kaputten config.json: die Sicherung trägt, '
+      'die kaputte Fassung liegt genau einmal daneben', () async {
+    final store = ConfigStore.forDirectory(temp);
+    await store.save(AgentConfig(tokenHashes: <String>['alt-1']));
+    await store.save(AgentConfig(tokenHashes: <String>['alt-2']));
+    const kaputt = '{"tokenHashes": ["alt-2"';
+    store.file.writeAsStringSync(kaputt);
+
+    final worker = p.join(
+      Directory.current.path,
+      'test',
+      'support',
+      'mutate_worker.dart',
+    );
+    Future<ProcessResult> spawn(String prefix) => Process.run(
+      Platform.resolvedExecutable,
+      <String>['run', worker, temp.path, prefix, '20'],
+      workingDirectory: Directory.current.path,
+    );
+    final results = await Future.wait(<Future<ProcessResult>>[
+      spawn('a'),
+      spawn('b'),
+    ]);
+    for (final result in results) {
+      expect(result.exitCode, 0, reason: '${result.stdout}\n${result.stderr}');
+    }
+
+    final config = await ConfigStore.forDirectory(temp).load();
+    // Aufgebaut auf der Sicherung (alt-1), keine Änderung verloren.
+    expect(config.tokenHashes.first, 'alt-1');
+    expect(config.tokenHashes, hasLength(41));
+    final defekte = temp
+        .listSync()
+        .whereType<File>()
+        .where((f) => p.basename(f.path).startsWith('config.json.defekt-'))
+        .toList();
+    expect(defekte, hasLength(1));
+    expect(defekte.single.readAsStringSync(), kaputt);
+  });
 }

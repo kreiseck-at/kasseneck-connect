@@ -4,6 +4,12 @@ import 'dart:io';
 import 'escpos.dart';
 import 'tcp9100.dart' show SocketConnector;
 
+/// So lange wartet die Abfrage auf die erste Antwort (`DLE EOT 2`). Ein
+/// ESC/POS-Drucker beantwortet Echtzeitbefehle sofort, im LAN in wenigen
+/// Millisekunden, im WLAN selten über 100 ms. Was nach 250 ms nicht
+/// antwortet, gilt als stumm – und kostet den Bon nicht das ganze Budget.
+const Duration handshakeFrist = Duration(milliseconds: 250);
+
 /// Was eine Abfrage-Verbindung wissen will.
 enum EscPosFrage {
   /// `DLE EOT 2`: Deckel, Stopp wegen Papierende.
@@ -114,7 +120,7 @@ class EscPosAbfrage {
       final offline = await leser.statusByte(
         socket,
         dleEot(dleEotOfflineGrund),
-        rest(),
+        rest() < handshakeFrist ? rest() : handshakeFrist,
       );
       if (offline == null) {
         return const EscPosAntworten(verbunden: true);
@@ -199,6 +205,8 @@ class _Leser {
     List<int> befehl,
     Duration frist,
   ) async {
+    // Ohne Zeit für die Antwort wird gar nicht erst gefragt.
+    if (frist <= Duration.zero) return null;
     _puffer.clear();
     socket.add(befehl);
     final uhr = Stopwatch()..start();
@@ -217,6 +225,8 @@ class _Leser {
     List<int> befehl,
     Duration frist,
   ) async {
+    // Ohne Zeit für die Antwort wird gar nicht erst gefragt.
+    if (frist <= Duration.zero) return null;
     _puffer.clear();
     socket.add(befehl);
     final uhr = Stopwatch()..start();

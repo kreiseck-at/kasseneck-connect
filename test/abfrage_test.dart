@@ -41,20 +41,37 @@ void main() {
     ]);
   });
 
-  test('stummes Gerät: nur DLE EOT 2, nie GS I, binnen des Budgets', () async {
+  test('stummes Gerät: nur DLE EOT 2, nie GS I, nach der Handshake-Frist '
+      'statt des ganzen Budgets', () async {
     drucker = await FakeTcpPrinter.start();
     final uhr = Stopwatch()..start();
     final antworten = await abfrage.frage(
       '127.0.0.1',
       drucker.port,
       fragen: EscPosFrage.values.toSet(),
-      budget: const Duration(milliseconds: 300),
+      budget: const Duration(seconds: 2),
     );
-    expect(uhr.elapsed, lessThan(const Duration(milliseconds: 600)));
+    expect(uhr.elapsed, lessThan(handshakeFrist * 3));
     expect(antworten.stumm, isTrue);
     expect(antworten.seriennummer, isNull);
     // Ein Bürodrucker auf 9100 bekäme sonst „ID“ als Seite.
+    await Future<void>.delayed(const Duration(milliseconds: 100));
     expect(drucker.received, dleEot(2));
+  });
+
+  test('ohne Restzeit wird nicht mehr gefragt', () async {
+    drucker = await FakeTcpPrinter.start(dleEot: gesund)
+      ..antwortVerzug = const Duration(milliseconds: 120);
+    final antworten = await abfrage.frage(
+      '127.0.0.1',
+      drucker.port,
+      fragen: EscPosFrage.values.toSet(),
+      budget: const Duration(milliseconds: 150),
+    );
+    expect(antworten.offlineGrund, 0x12);
+    expect(antworten.seriennummer, isNull);
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+    expect(drucker.received.length, lessThanOrEqualTo(6));
   });
 
   test('Bytes ohne feste Bits werden übergangen, nie gedeutet', () async {

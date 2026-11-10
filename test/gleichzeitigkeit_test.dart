@@ -12,6 +12,7 @@ import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
 import 'support/agent_klient.dart';
+import 'support/druck_aufbau.dart' show bewiesenesTestModell, testModelle;
 import 'support/fake_hps.dart';
 import 'support/fake_printer.dart';
 import 'support/fake_process_runner.dart';
@@ -71,6 +72,7 @@ class _Aufbau {
       schnittstellen: () async => const <LocalInterface>[VirtuellesNetz.eigene],
       geraeteVerbindung: netz.verbinden,
       geraeteProbe: netz.tcp,
+      bewieseneModelle: testModelle,
       discovery: PrinterDiscovery(
         mdns: (_) async => const <DiscoveredPrinter>[],
         interfaces: () async => const <LocalInterface>[VirtuellesNetz.eigene],
@@ -110,6 +112,9 @@ class _Aufbau {
         name: host,
         kind: PrinterKind.tcp9100,
         host: host,
+        // Ein bewiesenes Modell: Prüfungen, Takt und Wiederfinden laufen mit.
+        model: bewiesenesTestModell,
+        modelSource: KennungsQuelle.escpos,
         serial: serial,
         mac: mac,
       ),

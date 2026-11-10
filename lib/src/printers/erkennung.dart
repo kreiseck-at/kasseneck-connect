@@ -11,6 +11,7 @@ import 'funde.dart';
 import 'kennung.dart';
 import 'lage.dart';
 import 'queue.dart';
+import 'wiederfinden.dart';
 
 /// Zeitbudget einer Erkennung. Sie läuft im Hintergrund über die Warteschlange
 /// des Druckers, niemand wartet an der Kasse darauf; zwei Sekunden reichen
@@ -114,8 +115,10 @@ Future<String?> macImSelbenNetz(
   return arp.macFuer(host, frist: frist);
 }
 
-/// Pflegt die Kennungen: nach dem Anlegen und beim ersten erfolgreichen
-/// Kontakt eines Druckers ohne Kennung.
+/// Pflegt die Kennungen: beim Anlegen (`PUT`), nach einer Druckersuche und
+/// auf Zuruf (`POST /v1/printers/{id}/status`) – nie wegen eines Bons. Ein
+/// Drucker, dessen Modell nicht bewiesen ist, sieht vor seinen Bons so nie
+/// eine fremde Verbindung.
 ///
 /// Läuft immer über die Warteschlange des Druckers – die Abfrage-Verbindung
 /// steht nie neben einem Auftrag. Abgeschaltet über `printer_identity`.
@@ -125,6 +128,7 @@ class Kennungspflege {
     required this.queue,
     required this.erkennung,
     required this.lagen,
+    this.wiederfinder,
     AgentLog? log,
     DateTime Function()? clock,
   }) : _log = log,
@@ -134,6 +138,10 @@ class Kennungspflege {
   final PrintQueue queue;
   final DruckerErkennung erkennung;
   final DruckerLagen lagen;
+
+  /// Sucht den alten Drucker, bevor eine neue Kennung übernommen wird.
+  DruckerWiederfinder? wiederfinder;
+
   final AgentLog? _log;
   final DateTime Function() _clock;
 
@@ -146,9 +154,128 @@ class Kennungspflege {
   /// Nach dem Anlegen bzw. Ändern der Adresse: sofort erkennen.
   Future<void> nachAnlegen(String id) => _erkenne(id, sofort: true);
 
-  /// Nach einem erfolgreichen Kontakt: erkennen, wenn die Kennung fehlt und
-  /// der letzte Versuch lange genug her ist. Kehrt sofort zurück.
-  void nachKontakt(String id) => unawaited(_erkenne(id, sofort: false));
+  /// Auf Zuruf: erkennen, wenn Kennung oder ein über `GS I 67` gelesenes
+  /// Modell fehlt und der letzte Versuch lange genug her ist.
+  Future<void> aufZuruf(String id) => _erkenne(id, sofort: false);
+
+  /// Nach einer Druckersuche: alle Drucker ohne gelesenes Modell erkennen,
+  /// im Hintergrund.
+  Future<void> nachSuche() async {
+    try {
+      for (final drucker in (await store.load()).printers) {
+        if (_unvollstaendig(drucker)) unawaited(aufZuruf(drucker.id));
+      }
+    } on Object catch (e) {
+      _log?.warn('Kennungen nach der Suche: $e');
+    }
+  }
+
+  static bool _unvollstaendig(PrinterConfig drucker) =>
+      !drucker.hatKennung ||
+      (drucker.kind == PrinterKind.tcp9100 &&
+          drucker.modelSource != KennungsQuelle.escpos);
+
+  /// Unter der Adresse von [drucker] antwortet dauerhaft ein anderer Drucker
+  /// mit [neueSerie]: erst gründlich nach dem alten suchen; ist er nirgends,
+  /// die Kennung des neuen übernehmen (Logzeile, `relocations` mit
+  /// `kind: replaced`). Gedruckt wurde ohnehin an die Adresse wie bis 1.4.2.
+  /// Im Hintergrund; wirft nie.
+  void ersetzen(PrinterConfig drucker, String neueSerie) {
+    if (_laufend.containsKey(drucker.id)) return;
+    final arbeit = _ersetzen(drucker, neueSerie).whenComplete(() {
+      _laufend.remove(drucker.id);
+    });
+    _laufend[drucker.id] = arbeit;
+  }
+
+  Future<void> _ersetzen(PrinterConfig drucker, String neueSerie) async {
+    final lage = lagen.von(drucker.id);
+    try {
+      final suche = wiederfinder;
+      if (suche != null) {
+        final ergebnis = await suche.gruendlichMitAuskunft(drucker.id);
+        if (ergebnis.fund != null) return;
+        if (!ergebnis.gesucht) {
+          // Nicht gesucht (Zahlung, abgeschaltet): später wieder.
+          lage.ersetzenAngestossen = false;
+          return;
+        }
+      }
+      final erkannt = await queue.exclusive(
+        drucker.id,
+        () => erkennung.erkenne(drucker),
+      );
+      final serie = erkannt.serial;
+      if (serie == null ||
+          erkannt.serialQuelle != KennungsQuelle.escpos ||
+          !gleicheKennung(serie, neueSerie)) {
+        lage.ersetzenAngestossen = false;
+        return;
+      }
+      await _uebernimm(drucker, erkannt, serie);
+    } on Object catch (e) {
+      lage.ersetzenAngestossen = false;
+      _log?.warn('Kennung von ${drucker.id} ließ sich nicht übernehmen: $e');
+    }
+  }
+
+  Future<void> _uebernimm(
+    PrinterConfig vorher,
+    ErkannteKennung erkannt,
+    String serie,
+  ) async {
+    var geschrieben = false;
+    final jetzt = _clock().toUtc();
+    await store.mutate((config) {
+      final printers = config.printers.toList();
+      final index = printers.indexWhere((p) => p.id == vorher.id);
+      if (index < 0) return config;
+      final aktuell = printers[index];
+      // Inzwischen anders eingerichtet oder schon geändert: nichts tun.
+      if (aktuell.host != vorher.host ||
+          aktuell.port != vorher.port ||
+          aktuell.serial != vorher.serial) {
+        return config;
+      }
+      final ausGsI = erkannt.modelQuelle == KennungsQuelle.escpos;
+      printers[index] = PrinterConfig(
+        id: aktuell.id,
+        name: aktuell.name,
+        kind: aktuell.kind,
+        host: aktuell.host,
+        port: aktuell.port,
+        devid: aktuell.devid,
+        model: ausGsI ? erkannt.model : null,
+        modelSource: ausGsI ? KennungsQuelle.escpos : null,
+        serial: serie,
+        mac: normalizeMac(erkannt.mac),
+        identifiedAt: jetzt,
+        identitySource: KennungsQuelle.escpos,
+        // Ein anderes Gerät: ob es auf DLE EOT antwortet, zeigt sich neu.
+        extras: aktuell.extras,
+      );
+      geschrieben = true;
+      return config
+          .copyWith(printers: printers)
+          .mitAdressWechsel(
+            AdressWechsel(
+              at: jetzt,
+              art: GeraeteArt.ersetzt,
+              kennung: aktuell.id,
+              von: vorher.serial ?? '',
+              nach: serie,
+            ),
+          );
+    });
+    if (!geschrieben) return;
+    lagen.vergiss(vorher.id);
+    _log?.info(
+      'Drucker ${vorher.id}: unter ${vorher.host}:${vorher.port} steht '
+      'dauerhaft ein anderer Drucker (Seriennummer $serie statt '
+      '${vorher.serial}), der alte ist nirgends zu finden – Kennung '
+      'übernommen.',
+    );
+  }
 
   Future<void> _erkenne(String id, {required bool sofort}) {
     final laufend = _laufend[id];
@@ -170,7 +297,7 @@ class Kennungspflege {
       if (drucker == null) return;
       final lage = lagen.von(id);
       if (!sofort) {
-        if (drucker.hatKennung) return;
+        if (!_unvollstaendig(drucker)) return;
         final zuletzt = lage.letzteErkennung;
         if (zuletzt != null &&
             _clock().difference(zuletzt) < erkennungsAbstand) {

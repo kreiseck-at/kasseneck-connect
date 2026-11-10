@@ -1,11 +1,9 @@
 import 'dart:async';
-import 'dart:io';
 
 import 'package:kasseneck_connect/kasseneck_connect.dart';
 import 'package:test/test.dart';
 
 import 'support/druck_aufbau.dart';
-import 'support/fake_epos.dart';
 import 'support/fake_printer.dart';
 import 'support/virtuelles_netz.dart';
 
@@ -37,12 +35,9 @@ void main() {
         isTrue,
       );
       expect(
-        kandidatBestaetigt(
-          d,
-          const DruckerKandidat(host: _neu, port: 9100, mac: _mac),
-        ),
+        kandidatBestaetigt(d, const DruckerKandidat(host: _neu, port: 9100)),
         isFalse,
-        reason: 'MAC allein reicht bei gespeicherter Seriennummer nicht',
+        reason: 'ohne gelesene Seriennummer kein Fund',
       );
       expect(
         kandidatBestaetigt(
@@ -61,36 +56,17 @@ void main() {
       );
     });
 
-    test('nur mit MAC: dieselbe MAC und ein Protokollbeweis', () {
+    test('ohne gespeicherte Seriennummer nie ein Fund – die MAC beweist '
+        'nichts', () {
       final d = _drucker(serial: null);
       expect(
         kandidatBestaetigt(
           d,
-          const DruckerKandidat(
-            host: _neu,
-            port: 9100,
-            mac: '0:26:ab:0:0:1',
-            sprichtProtokoll: true,
-          ),
-        ),
-        isTrue,
-      );
-      // Offener Port mit derselben MAC (Weboberfläche eines Repeaters mit
-      // MAC-NAT) ist kein Beweis.
-      expect(
-        kandidatBestaetigt(
-          d,
-          const DruckerKandidat(host: _neu, port: 9100, mac: '0:26:ab:0:0:1'),
+          const DruckerKandidat(host: _neu, port: 9100, serie: _serie),
         ),
         isFalse,
       );
-      expect(
-        kandidatBestaetigt(
-          d,
-          const DruckerKandidat(host: _neu, port: 9100, sprichtProtokoll: true),
-        ),
-        isFalse,
-      );
+      expect(kennungEindeutig(d, <PrinterConfig>[d]), isFalse);
     });
 
     test('genau einer, sonst keiner', () {
@@ -194,12 +170,7 @@ void main() {
       final ergebnis = await a.drucke(id);
       expect(ergebnis.code, errorPrinterOffline, reason: 'wie 1.4.2');
       expect((await gespeichert()).host, _alt);
-      // Dieselbe MAC unter zwei neuen Adressen ist keine Kennung …
-      expect(
-        a.logZeilen.where((z) => z.contains('steht unter 2 Adressen')),
-        isNotEmpty,
-      );
-      // … und dieselbe Seriennummer an zwei Geräten auch nicht.
+      // Dieselbe Seriennummer an zwei Geräten ist keine Kennung.
       expect(await a.wiederfinder.gruendlich(id, erzwingen: true), isNull);
       expect((await gespeichert()).host, _alt);
       expect(
@@ -216,69 +187,13 @@ void main() {
       expect((await gespeichert()).host, _alt);
     });
 
-    test('mDNS-TXT mit Seriennummer findet ihn ohne MAC', () async {
+    test('ohne MAC: im Auftrag keine Suche (kein Warten), die gründliche '
+        'findet ihn per GS I', () async {
       netz.macs.clear();
-      a.mdnsFunde = <DiscoveredPrinter>[
-        const DiscoveredPrinter(
-          host: _neu,
-          port: 9100,
-          kind: PrinterKind.tcp9100,
-          serial: _serie,
-        ),
-      ];
       final id = await a.drucker(9100, host: _alt, serial: _serie);
-      expect((await drucke(id)).ok, isTrue);
-      expect((await gespeichert()).host, _neu);
-    });
-
-    test('mDNS nennt nur das Modell: per GS I bestätigt übernommen', () async {
-      netz.macs.clear();
-      a.mdnsFunde = <DiscoveredPrinter>[
-        const DiscoveredPrinter(
-          host: _neu,
-          port: 9100,
-          kind: PrinterKind.tcp9100,
-          model: 'TM-T20III',
-        ),
-      ];
-      await a.store.mutate(
-        (c) => c.copyWith(
-          printers: <PrinterConfig>[
-            PrinterConfig(
-              id: 'p_ab12cd34',
-              name: 'Bon',
-              kind: PrinterKind.tcp9100,
-              host: _alt,
-              model: 'TM-T20III',
-              serial: _serie,
-            ),
-          ],
-        ),
-      );
-      final neu = await a.wiederfinder.schnell(await gespeichert());
-      expect(neu?.host, _neu);
-    });
-
-    test('mit MAC nur die ARP-Tabelle: kein mDNS, kein Warten', () async {
-      netz.macs.remove(_neu);
-      var mdns = 0;
-      final wf = DruckerWiederfinder(
-        registry: a.registry,
-        arp: a.arp,
-        abfrage: EscPosAbfrage(verbinden: netz.verbinden),
-        suche: PrinterDiscovery(
-          mdns: (_) async {
-            mdns++;
-            return const <DiscoveredPrinter>[];
-          },
-        ),
-        schnittstellen: () async => a.schnittstellen,
-        clock: () => a.jetzt,
-      );
-      addTearDown(wf.beenden);
-      await a.drucker(9100, host: _alt, serial: _serie, mac: _mac);
-      expect(await wf.schnell(await gespeichert()), isNull);
-      expect(mdns, 0);
+      expect(await a.wiederfinder.schnell(await gespeichert()), isNull);
+      expect(netz.versuche[_neu], isNull, reason: 'kein Netzverkehr');
+      expect((await a.wiederfinder.gruendlich(id))?.host, _neu);
     });
 
     test('schnelles Wiederfinden höchstens einmal je Minute', () async {
@@ -295,68 +210,62 @@ void main() {
     group('nie eine falsche Adresse', () {
       const repeater = '00:11:22:33:44:55';
 
-      test('nur MAC: ein offener Druckport ohne Antwort auf DLE EOT ist kein '
-          'Beweis', () async {
-        final fremd = await FakeTcpPrinter.start();
-        addTearDown(fremd.stop);
-        netz.stelle('192.168.0.70', 9100, fremd.port, mac: _mac);
-        netz.entferne(_neu);
-        netz.macs.remove(_neu);
+      test('nur mit MAC (keine Seriennummer): nie umgezogen, auch wenn dort '
+          'ein ESC/POS-Gerät gültig antwortet – wie 1.4.2', () async {
+        netz.macs[_alt] = _mac;
         final id = await a.drucker(9100, host: _alt, mac: _mac);
         expect(await a.wiederfinder.schnell(await gespeichert(id)), isNull);
         expect(await a.wiederfinder.gruendlich(id, erzwingen: true), isNull);
+        expect(a.wiederfinder.suchen, 0);
         expect((await gespeichert(id)).host, _alt);
-        expect(fremd.druckVerbindungen, isEmpty);
+        expect(drucker.connections, 0, reason: 'keine Frage an fremde Geräte');
       });
 
-      test('nur MAC: mit gültiger Antwort auf DLE EOT übernommen', () async {
-        final id = await a.drucker(9100, host: _alt, mac: _mac);
-        expect(
-          (await a.wiederfinder.schnell(await gespeichert(id)))?.host,
-          _neu,
-        );
-      });
+      test(
+        'Repeater mit MAC-NAT, dahinter ein nicht eingerichtetes '
+        'ESC/POS-Gerät: der Bon geht an die alte Adresse wie 1.4.2',
+        () async {
+          final fremd = await FakeTcpPrinter.start(dleEot: _gesund);
+          addTearDown(fremd.stop);
+          netz
+            ..macs.clear()
+            ..macs[_alt] = repeater
+            ..entferne(_neu)
+            ..stelle('192.168.0.62', 9100, fremd.port, mac: repeater);
+          final id = await a.drucker(9100, host: _alt, mac: repeater);
+          expect(await a.wiederfinder.gruendlich(id, erzwingen: true), isNull);
+          expect((await a.drucke(id)).code, errorPrinterOffline);
+          expect(fremd.druckVerbindungen, isEmpty);
+          expect((await gespeichert(id)).host, _alt);
+        },
+      );
 
-      test('Repeater mit MAC-NAT: dieselbe MAC unter einem anderen '
-          'eingerichteten Drucker wird nie übernommen', () async {
-        final kueche = await FakeTcpPrinter.start(dleEot: _gesund);
-        addTearDown(kueche.stop);
-        netz
-          ..macs.clear()
-          ..macs[_alt] = repeater
-          ..entferne(_neu)
-          ..stelle('192.168.0.62', 9100, kueche.port, mac: repeater);
-        await a.drucker(9100, host: '192.168.0.62', id: 'p_kueche');
-        await a.drucker(9100, host: _alt, mac: repeater);
-        expect(
-          await a.wiederfinder.gruendlich('p_ab12cd34', erzwingen: true),
-          isNull,
-        );
-        expect(
-          await a.wiederfinder.schnell(await gespeichert('p_ab12cd34')),
-          isNull,
-        );
-        expect((await gespeichert('p_ab12cd34')).host, _alt);
-        expect((await gespeichert('p_kueche')).host, '192.168.0.62');
-      });
-
-      test('Repeater mit MAC-NAT: dieselbe MAC unter mehreren fremden Adressen '
-          'ist keine Kennung – auch wenn nur eine davon antwortet', () async {
-        // Unter _neu steht der Repeater selbst (kein Druckport), unter .62
-        // ein Drucker hinter ihm – ob es der eingerichtete ist, sagt die MAC
-        // nicht.
-        final zweiter = await FakeTcpPrinter.start(dleEot: _gesund);
-        addTearDown(zweiter.stop);
-        netz
-          ..entferne(_neu)
-          ..macs[_neu] = repeater
-          ..macs[_alt] = repeater
-          ..stelle('192.168.0.62', 9100, zweiter.port, mac: repeater);
-        final id = await a.drucker(9100, host: _alt, mac: repeater);
-        expect(await a.wiederfinder.schnell(await gespeichert(id)), isNull);
-        expect(await a.wiederfinder.gruendlich(id, erzwingen: true), isNull);
-        expect((await gespeichert(id)).host, _alt);
-      });
+      test(
+        'Repeater mit MAC-NAT, Seriennummer gespeichert: die MAC zeigt nur, '
+        'wo GS I gefragt wird – übernommen wird nur dieselbe Seriennummer',
+        () async {
+          final fremd = await FakeTcpPrinter.start(
+            dleEot: _gesund,
+            gsI: const <int, String>{68: 'X5ZT000777'},
+          );
+          addTearDown(fremd.stop);
+          netz
+            ..macs[_neu] = repeater
+            ..macs[_alt] = repeater
+            ..stelle('192.168.0.62', 9100, fremd.port, mac: repeater);
+          final id = await a.drucker(
+            9100,
+            host: _alt,
+            serial: _serie,
+            mac: repeater,
+          );
+          expect(
+            (await a.wiederfinder.schnell(await gespeichert(id)))?.host,
+            _neu,
+          );
+          expect(fremd.druckVerbindungen, isEmpty);
+        },
+      );
 
       test('Nachbau mit fester Seriennummer: trägt ein anderer eingerichteter '
           'Drucker dieselbe, wird nichts übernommen', () async {
@@ -381,118 +290,37 @@ void main() {
         expect((await gespeichert('p_ab12cd34')).host, _alt);
         expect((await gespeichert('p_kueche')).host, '192.168.0.62');
         expect(
-          a.logZeilen.where((z) => z.contains('dieselbe Kennung')),
+          a.logZeilen.where((z) => z.contains('dieselbe Seriennummer')),
           isNotEmpty,
         );
       });
 
-      test('mDNS nennt unter der Adresse eines anderen Druckers eine '
-          'Seriennummer: zählt nicht (nur GS I zählt dort)', () async {
-        netz.macs.clear();
-        netz.entferne(_neu);
-        final kueche = await FakeTcpPrinter.start(
-          dleEot: _gesund,
-          gsI: const <int, String>{68: 'X5ZT000777'},
-        );
-        addTearDown(kueche.stop);
-        netz.stelle('192.168.0.62', 9100, kueche.port);
-        await a.drucker(
-          9100,
-          host: '192.168.0.62',
-          id: 'p_kueche',
-          serial: 'X5ZT000777',
-        );
-        a.mdnsFunde = <DiscoveredPrinter>[
-          const DiscoveredPrinter(
-            host: '192.168.0.62',
-            port: 9100,
-            kind: PrinterKind.tcp9100,
-            serial: _serie,
+      test('ePOS-Drucker werden nie automatisch umgezogen', () async {
+        await a.store.mutate(
+          (c) => c.copyWith(
+            printers: <PrinterConfig>[
+              PrinterConfig(
+                id: 'p_epos',
+                name: 'Bon',
+                kind: PrinterKind.epos,
+                host: _alt,
+                port: 80,
+                serial: _serie,
+                mac: _mac,
+              ),
+            ],
           ),
-        ];
-        await a.drucker(9100, host: _alt, serial: _serie);
+        );
         expect(
-          await a.wiederfinder.schnell(await gespeichert('p_ab12cd34')),
+          await a.wiederfinder.schnell(await gespeichert('p_epos')),
           isNull,
         );
-      });
-
-      group('ePOS', () {
-        late FakeEposServer epos;
-        late HttpServer web;
-
-        setUp(() async {
-          epos = await FakeEposServer.start(status: '2');
-          // Weboberfläche eines Repeaters: Port 80 offen, aber kein ePOS.
-          web = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
-          web.listen((anfrage) {
-            anfrage.response
-              ..statusCode = 200
-              ..write('<html><body>Repeater</body></html>');
-            unawaited(anfrage.response.close());
-          });
-          netz.macs.clear();
-        });
-
-        tearDown(() async {
-          await epos.stop();
-          await web.close(force: true);
-        });
-
-        Future<PrinterConfig> eposDrucker() async {
-          await a.store.mutate(
-            (c) => c.copyWith(
-              printers: <PrinterConfig>[
-                PrinterConfig(
-                  id: 'p_epos',
-                  name: 'Bon',
-                  kind: PrinterKind.epos,
-                  host: _alt,
-                  port: 80,
-                  mac: repeater,
-                ),
-              ],
-            ),
-          );
-          return gespeichert('p_epos');
-        }
-
-        test(
-          'hinter der Weboberfläche eines Repeaters: nicht übernommen',
-          () async {
-            netz
-              ..macs[_alt] = repeater
-              ..stelle('192.168.0.2', 80, web.port, mac: repeater);
-            expect(await a.wiederfinder.schnell(await eposDrucker()), isNull);
-            // Auch ohne den veralteten Eintrag: offener Port ohne ePOS-Antwort.
-            netz.macs.remove(_alt);
-            a.jetzt = a.jetzt.add(schnellAbstand);
-            expect(await a.wiederfinder.schnell(await eposDrucker()), isNull);
-            expect((await gespeichert('p_epos')).host, _alt);
-          },
+        expect(
+          await a.wiederfinder.gruendlich('p_epos', erzwingen: true),
+          isNull,
         );
-
-        test('mit gültiger ePOS-Antwort übernommen', () async {
-          netz.stelle(_neu, 80, epos.port, mac: repeater);
-          final neu = await a.wiederfinder.schnell(await eposDrucker());
-          expect(neu?.host, _neu);
-          expect(epos.lastCommand, isNull, reason: 'kein Bon, nur Status');
-        });
+        expect(a.wiederfinder.suchen, 0);
       });
-    });
-
-    test('printer_relocate aus: keine Suche, Fehler wie 1.4.2', () async {
-      await a.abschalten(<Neuerung>[Neuerung.druckerWiederfinden]);
-      final id = await a.drucker(9100, host: _alt, serial: _serie, mac: _mac);
-      expect((await a.drucke(id)).code, errorPrinterOffline);
-      expect(a.wiederfinder.suchen, 0);
-      expect((await gespeichert()).host, _alt);
-    });
-
-    test('ohne Kennung: keine Suche', () async {
-      final id = await a.drucker(9100, host: _alt);
-      expect((await a.drucke(id)).code, errorPrinterOffline);
-      expect(a.wiederfinder.suchen, 0);
     });
 
     group('gründlich', () {

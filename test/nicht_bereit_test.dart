@@ -29,6 +29,12 @@ void main() {
     await a.aufraeumen();
   });
 
+  /// Wie eine frühere Abfrage (Takt, voriger Bon): der Drucker schweigt
+  /// schon [schweigenMindestdauer] am Stück.
+  void schweigtSchon(String id) => a.registry.lagen
+      .von(id)
+      .schweigt(a.jetzt.subtract(schweigenMindestdauer));
+
   Future<PrintResult> drucke(String id, {String jobId = 'beleg-1'}) async {
     final vorher = drucker.druckVerbindungen.length;
     final ergebnis = await a.queue.enqueue(id, jobId, beispielBon);
@@ -98,7 +104,7 @@ void main() {
   });
 
   group('vor dem Druck', () {
-    test('statusfähig, gleiche MAC und jetzt stumm: kein Byte, '
+    test('statusfähig, gleiche MAC, schweigt seit 30 s am Stück: kein Byte, '
         'printer_not_ready, zwei Versuche auf neuer Verbindung', () async {
       final id = await a.drucker(
         drucker.port,
@@ -107,6 +113,7 @@ void main() {
       );
       a.arpMac = _mac;
       drucker.dleEot.clear(); // Deckel auf
+      schweigtSchon(id);
       final ergebnis = await drucke(id);
       expect(ergebnis.ok, isFalse);
       expect(ergebnis.code, errorPrinterNotReady);
@@ -144,7 +151,41 @@ void main() {
       // Der eigene Bon ist längst gedruckt.
       a.jetzt = a.jetzt.add(const Duration(minutes: 1));
       drucker.dleEot.clear();
+      schweigtSchon(id);
       expect((await drucke(id, jobId: 'beleg-2')).code, errorPrinterNotReady);
+    });
+
+    test('Schweigen ohne lange Vorgeschichte (etwa ein Bon eines anderen '
+        'Rechners): unbekannt, gedruckt wie 1.4.2; erst nach 30 s am Stück '
+        'nicht bereit', () async {
+      final id = await a.drucker(
+        drucker.port,
+        statusCapableAt: seit,
+        mac: _mac,
+      );
+      a.arpMac = _mac;
+      drucker.dleEot.clear();
+      expect((await drucke(id)).ok, isTrue, reason: 'erstes Schweigen');
+      expect((await a.registry.summaries()).single['readiness'], 'unknown');
+      // 10 s später, nach dem Nachlauf des eigenen Bons: noch zu kurz.
+      a.jetzt = a.jetzt.add(const Duration(seconds: 10));
+      expect((await drucke(id, jobId: 'beleg-2')).ok, isTrue);
+      a.jetzt = a.jetzt.add(schweigenMindestdauer);
+      expect((await drucke(id, jobId: 'beleg-3')).code, errorPrinterNotReady);
+    });
+
+    test('eine gültige Antwort beendet das Schweigen', () async {
+      final id = await a.drucker(
+        drucker.port,
+        statusCapableAt: seit,
+        mac: _mac,
+      );
+      a.arpMac = _mac;
+      schweigtSchon(id);
+      expect((await drucke(id)).ok, isTrue, reason: 'antwortet');
+      a.jetzt = a.jetzt.add(const Duration(minutes: 1));
+      drucker.dleEot.clear();
+      expect((await drucke(id, jobId: 'beleg-2')).ok, isTrue);
     });
 
     test(
@@ -172,6 +213,7 @@ void main() {
       expect((await drucke(id)).ok, isTrue);
       a.jetzt = a.jetzt.add(const Duration(minutes: 1));
       drucker.dleEot.clear();
+      schweigtSchon(id);
       expect((await drucke(id, jobId: 'beleg-2')).code, errorPrinterNotReady);
       // Nach der Frische ist die Kennung wieder offen: unbekannt, Druck.
       a.jetzt = a.jetzt.add(kennungFrisch);
@@ -268,37 +310,40 @@ void main() {
   });
 
   group('Statustakt', () {
-    test(
-      'statusfähig und stumm: readiness not_ready, nie „stumm“ gemerkt',
-      () async {
-        final id = await a.drucker(
-          drucker.port,
-          statusCapableAt: seit,
-          mac: _mac,
-        );
-        a.arpMac = _mac;
-        final dienst = DruckerStatusDienst(
-          registry: a.registry,
-          queue: a.queue,
-          abfrage: EscPosAbfrage(),
-          kasseZuletzt: () => a.jetzt,
-          arp: a.arp,
-          schnittstellen: () async => a.schnittstellen,
-          clock: () => a.jetzt,
-        );
-        drucker.dleEot.clear();
-        await dienst.runde();
-        var eintrag = (await a.registry.summaries()).single;
-        expect(eintrag['readiness'], 'not_ready');
-        expect(eintrag['state'], 'online');
-        expect(a.registry.lagen.von(id).stumm(a.jetzt), isFalse);
+    test('statusfähig und stumm: erst unbekannt, nach 30 s am Stück not_ready, '
+        'nie „stumm“ gemerkt', () async {
+      final id = await a.drucker(
+        drucker.port,
+        statusCapableAt: seit,
+        mac: _mac,
+      );
+      a.arpMac = _mac;
+      final dienst = DruckerStatusDienst(
+        registry: a.registry,
+        queue: a.queue,
+        abfrage: EscPosAbfrage(),
+        kasseZuletzt: () => a.jetzt,
+        arp: a.arp,
+        schnittstellen: () async => a.schnittstellen,
+        clock: () => a.jetzt,
+      );
+      drucker.dleEot.clear();
+      await dienst.runde();
+      var eintrag = (await a.registry.summaries()).single;
+      expect(eintrag['readiness'], 'unknown', reason: 'erst seit eben');
+      // Die nächste Runde, länger als 30 s später: nicht bereit.
+      a.jetzt = a.jetzt.add(schweigenMindestdauer);
+      await dienst.runde();
+      eintrag = (await a.registry.summaries()).single;
+      expect(eintrag['readiness'], 'not_ready');
+      expect(eintrag['state'], 'online');
+      expect(a.registry.lagen.von(id).stumm(a.jetzt), isFalse);
 
-        drucker.dleEot.addAll(_gesund);
-        await dienst.runde();
-        eintrag = (await a.registry.summaries()).single;
-        expect(eintrag['readiness'], 'ready');
-      },
-    );
+      drucker.dleEot.addAll(_gesund);
+      await dienst.runde();
+      eintrag = (await a.registry.summaries()).single;
+      expect(eintrag['readiness'], 'ready');
+    });
 
     test('nie geantwortet: die erste gültige Antwort im Takt macht '
         'statusfähig', () async {

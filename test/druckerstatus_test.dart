@@ -272,7 +272,7 @@ void main() {
     });
   });
 
-  group('vor dem Druck (ePOS)', () {
+  group('ePOS (kein Modell bewiesen)', () {
     late DruckAufbau a;
     late FakeEposServer epos;
 
@@ -291,6 +291,8 @@ void main() {
               kind: PrinterKind.epos,
               host: '127.0.0.1',
               port: epos.port,
+              model: bewiesenesTestModell,
+              modelSource: KennungsQuelle.mdns,
             ),
           ],
         ),
@@ -300,39 +302,30 @@ void main() {
 
     bool istDruck(String rumpf) => rumpf.contains('<command>');
 
-    test(
-      'Papierende in den Statusbits: kein Druckauftrag, paper_out',
-      () async {
-        a = DruckAufbau.erstellen(budget: _eposBudget);
-        epos = await FakeEposServer.start(status: '${0x00080000 | 2}');
-        final id = await eposDrucker();
-        final ergebnis = await a.queue.enqueue(id, 'job', beispielBon);
-        expect(ergebnis.code, errorPaperOut);
-        expect(epos.bodies.where(istDruck), isEmpty);
-        expect(epos.bodies, hasLength(1), reason: 'nur der Statusabruf');
-      },
-    );
-
-    test('fast leer: Druck geht, near_end', () async {
+    test('Papierende in den Statusbits: kein Statusabruf vor dem Bon, Druck '
+        'wie 1.4.2', () async {
       a = DruckAufbau.erstellen(budget: _eposBudget);
-      epos = await FakeEposServer.start(status: '${0x00020000 | 2}');
+      epos = await FakeEposServer.start(status: '${0x00080000 | 2}');
       final id = await eposDrucker();
-      expect((await a.queue.enqueue(id, 'job', beispielBon)).ok, isTrue);
+      await a.queue.enqueue(id, 'job', beispielBon);
+      expect(epos.bodies, hasLength(1), reason: 'nur der Druck');
       expect(epos.bodies.where(istDruck), hasLength(1));
-      expect(epos.lastCommand, beispielBon);
-      expect((await a.registry.summaries()).single['paper'], 'near_end');
     });
 
-    test('Statusabruf scheitert (HTTP 500): unbekannt, gedruckt wird '
-        'wie bisher', () async {
+    test('kein Takt für ePOS', () async {
       a = DruckAufbau.erstellen(budget: _eposBudget);
-      epos = await FakeEposServer.start(mode: FakeEposMode.serverError);
-      final id = await eposDrucker();
-      final ergebnis = await a.queue.enqueue(id, 'job', beispielBon);
-      // Der Druck selbst scheitert am Fake wie in 1.4.2 – nicht an der
-      // Statusprüfung.
-      expect(ergebnis.code, errorPrinterOffline);
-      expect(epos.bodies.where(istDruck), isNotEmpty);
+      epos = await FakeEposServer.start(status: '2');
+      await eposDrucker();
+      final dienst = DruckerStatusDienst(
+        registry: a.registry,
+        queue: a.queue,
+        abfrage: EscPosAbfrage(),
+        kasseZuletzt: () => a.jetzt,
+        clock: () => a.jetzt,
+        budget: _eposBudget,
+      );
+      await dienst.runde();
+      expect(epos.bodies, isEmpty);
     });
   });
 
@@ -457,48 +450,28 @@ void main() {
       expect(drucker.abfrageVerbindungen, hasLength(1), reason: 'kein Byte');
     });
 
-    test('ePOS im Takt: Statusbits, ohne Antwort offline', () async {
-      final epos = await FakeEposServer.start(status: '${0x00020000 | 2}');
-      addTearDown(epos.stop);
-      await a.store.mutate(
-        (c) => c.copyWith(
-          printers: <PrinterConfig>[
-            PrinterConfig(
-              id: 'p_epos',
-              name: 'ePOS',
-              kind: PrinterKind.epos,
-              host: '127.0.0.1',
-              port: epos.port,
-            ),
-          ],
-        ),
-      );
+    test('nicht bewiesenes Modell: kein Takt, kein Byte', () async {
+      await a.drucker(drucker.port, model: 'TM-T88VI');
       kasse = a.jetzt;
-      final langsam = DruckerStatusDienst(
-        registry: a.registry,
-        queue: a.queue,
-        abfrage: EscPosAbfrage(),
-        kasseZuletzt: () => kasse,
-        clock: () => a.jetzt,
-        budget: _eposBudget,
-      );
-      await langsam.runde();
-      var eintrag = (await a.registry.summaries()).single;
-      expect(eintrag['paper'], 'near_end');
-      expect(eintrag['state'], 'online');
-      final kaputt = await FakeEposServer.start(mode: FakeEposMode.serverError);
-      addTearDown(kaputt.stop);
-      await a.store.mutate(
-        (c) => c.copyWith(
-          printers: <PrinterConfig>[
-            c.printers.single.copyWith(port: kaputt.port),
-          ],
-        ),
-      );
-      await langsam.runde();
-      eintrag = (await a.registry.summaries()).single;
-      expect(eintrag['state'], 'offline');
+      await dienst.runde();
+      expect(drucker.connections, 0);
     });
+
+    test(
+      'auf Zuruf, nicht bewiesenes Modell: nur die Erreichbarkeit wie '
+      '1.4.2 – nach einer Erkennung, die das Modell über GS I liest',
+      () async {
+        final id = await a.drucker(drucker.port, model: null);
+        final erkannt = <String>[];
+        dienst.erkennen = (id) async => erkannt.add(id);
+        final eintrag = await dienst.jetzt(id);
+        expect(erkannt, <String>[id]);
+        expect(eintrag!['state'], 'online');
+        expect(eintrag.containsKey('paper'), isFalse);
+        await drucker.ruhigNachVerbindung();
+        expect(drucker.abfrageVerbindungen, isEmpty);
+      },
+    );
 
     test('auf Zuruf: sofort, mit Papier und Deckel', () async {
       final id = await a.drucker(drucker.port);
@@ -533,6 +506,7 @@ void main() {
       temp = Directory.systemTemp.createTempSync('connect-status-api-');
       drucker = await FakeTcpPrinter.start(
         dleEot: const <int, int>{2: _stoppPapierende, 4: _rolleLeer},
+        gsI: const <int, String>{67: bewiesenesTestModell, 68: 'X5ZT000123'},
       );
       agent = Agent(
         store: ConfigStore.forDirectory(temp),
@@ -540,6 +514,7 @@ void main() {
         preferredPort: 0,
         openBrowser: false,
         environment: const <String, String>{},
+        bewieseneModelle: testModelle,
       );
       await agent.start();
     });
@@ -550,41 +525,48 @@ void main() {
       temp.deleteSync(recursive: true);
     });
 
-    test('POST /v1/printers/{id}/status und printer.state mit paper', () async {
-      final ereignisse = <AgentEvent>[];
-      final abo = agent.events.stream.listen(ereignisse.add);
-      addTearDown(abo.cancel);
-      final drucker1 = await agent.printers.upsert(
-        PrinterConfig(
-          id: '',
-          name: 'Bon',
-          kind: PrinterKind.tcp9100,
-          host: '127.0.0.1',
-          port: drucker.port,
-        ),
-      );
-      final token = await agent.context.pairing.issueToken();
-      final antwort = await anAgent(
-        agent.port,
-        'POST',
-        '/v1/printers/${drucker1.id}/status',
-        token: token,
-      );
-      final eintrag = antwort.json['printer']! as Map<String, Object?>;
-      expect(eintrag['paper'], 'out');
-      expect(eintrag['cover'], 'closed');
-      final unbekannt = await anAgent(
-        agent.port,
-        'POST',
-        '/v1/printers/p_gibtsnicht/status',
-        token: token,
-      );
-      expect(unbekannt.code, errorPrinterUnknown);
-      await Future<void>.delayed(Duration.zero);
-      final mitPapier = ereignisse.where(
-        (e) => e.type == eventPrinterState && e.data['paper'] == 'out',
-      );
-      expect(mitPapier, isNotEmpty);
-    });
+    test(
+      'POST /v1/printers/{id}/status erkennt den Drucker (Modell über '
+      'GS I 67, bewiesen) und meldet paper, auch als printer.state',
+      () async {
+        final ereignisse = <AgentEvent>[];
+        final abo = agent.events.stream.listen(ereignisse.add);
+        addTearDown(abo.cancel);
+        final drucker1 = await agent.printers.upsert(
+          PrinterConfig(
+            id: '',
+            name: 'Bon',
+            kind: PrinterKind.tcp9100,
+            host: '127.0.0.1',
+            port: drucker.port,
+          ),
+        );
+        final token = await agent.context.pairing.issueToken();
+        final antwort = await anAgent(
+          agent.port,
+          'POST',
+          '/v1/printers/${drucker1.id}/status',
+          token: token,
+        );
+        final eintrag = antwort.json['printer']! as Map<String, Object?>;
+        expect(eintrag['paper'], 'out');
+        expect(eintrag['cover'], 'closed');
+        final gespeichert = (await agent.printers.list()).single;
+        expect(gespeichert.model, bewiesenesTestModell);
+        expect(gespeichert.modelSource, KennungsQuelle.escpos);
+        final unbekannt = await anAgent(
+          agent.port,
+          'POST',
+          '/v1/printers/p_gibtsnicht/status',
+          token: token,
+        );
+        expect(unbekannt.code, errorPrinterUnknown);
+        await Future<void>.delayed(Duration.zero);
+        final mitPapier = ereignisse.where(
+          (e) => e.type == eventPrinterState && e.data['paper'] == 'out',
+        );
+        expect(mitPapier, isNotEmpty);
+      },
+    );
   });
 }

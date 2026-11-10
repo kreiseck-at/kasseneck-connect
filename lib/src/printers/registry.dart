@@ -5,6 +5,7 @@ import '../config/model.dart';
 import '../config/store.dart';
 import '../events/bus.dart';
 import '../log/logger.dart';
+import 'bewiesen.dart' as bewiesen;
 import 'driver.dart';
 import 'epos.dart';
 import 'kennung.dart';
@@ -42,6 +43,7 @@ class PrinterRegistry {
     DruckerLagen? lagen,
     SocketConnector? verbinden,
     HttpVerbinder? eposVerbinden,
+    this.bewieseneModelle = bewiesen.bewieseneModelle,
   }) : _verbinden = verbinden,
        _eposVerbinden = eposVerbinden,
        _log = log,
@@ -71,6 +73,16 @@ class PrinterRegistry {
 
   /// Was Connect im Lauf über jeden Drucker weiß (Kennung, Papier, Deckel).
   final DruckerLagen lagen;
+
+  /// Die im Gerätetest bewiesenen Modelle (Tests geben eigene vor).
+  final List<bewiesen.BewiesenesModell> bewieseneModelle;
+
+  /// Ob vor den Bons von [drucker] geprüft werden darf: bewiesenes Modell
+  /// und keine verzögerte Freigabe der Verbindung beobachtet. Sonst druckt er
+  /// exakt wie bis 1.4.2.
+  bool pruefbar(PrinterConfig drucker) =>
+      bewiesen.modellBewiesen(drucker, liste: bewieseneModelle) &&
+      !(lagen.vorhanden(drucker.id)?.gibtLangsamFrei ?? false);
 
   /// Alle konfigurierten Drucker in Reihenfolge der Konfiguration.
   Future<List<PrinterConfig>> list() async => (await store.load()).printers;
@@ -191,6 +203,7 @@ class PrinterRegistry {
       port: neu.port,
       devid: neu.devid,
       model: kennung ? alt.model : null,
+      modelSource: kennung ? alt.modelSource : null,
       serial: kennung ? alt.serial : null,
       mac: kennung ? alt.mac : null,
       identifiedAt: kennung ? alt.identifiedAt : null,
@@ -330,18 +343,6 @@ class PrinterRegistry {
         'Drucker ${drucker.id}: Statusfähigkeit nicht gespeichert: $e',
       );
     }
-  }
-
-  /// Papier und Deckel eines ePOS-Druckers über einen leeren Auftrag; `null`,
-  /// wenn er nicht antwortet oder kein ePOS-Drucker ist. Wirft nie.
-  Future<DruckerZustand?> eposZustand(
-    PrinterConfig printer,
-    Duration frist,
-  ) async {
-    final treiber = driverFor(printer);
-    if (treiber is! EposPrinter) return null;
-    final antwort = await treiber.statusbits(timeout: frist);
-    return antwort == null ? null : zustandAusEposStatus(antwort.status);
   }
 
   /// Merkt sich Papier und Deckel und meldet eine Änderung als

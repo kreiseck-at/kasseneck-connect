@@ -29,9 +29,24 @@ const Duration vorpruefungBudget = Duration(milliseconds: 500);
 const Duration vorpruefungBudgetStatusfaehig = Duration(milliseconds: 1500);
 
 /// Nach einem Kennungskonflikt ohne Fund sucht Connect so lange nicht erneut
-/// vor jedem Bon (das schnelle Wiederfinden kostet bis zu 4 s). Ein getauschter
-/// Drucker unter derselben Adresse druckt so wieder ohne Wartezeit.
+/// vor jedem Bon. Ein getauschter Drucker unter derselben Adresse druckt so
+/// wieder ohne Wartezeit.
 const Duration konfliktSuchPause = Duration(minutes: 10);
+
+/// So oft vor einem Bon und …
+const int ersetzenNachBons = 3;
+
+/// … über mindestens diese Zeit muss unter der eingerichteten Adresse
+/// dieselbe fremde Seriennummer antworten, bevor Connect die Kennung
+/// übernimmt (wenn der alte Drucker nirgends zu finden ist). Ein Drucker, der
+/// nur kurz vertreten wird, behält so seine Kennung.
+const Duration ersetzenNachDauer = Duration(hours: 1);
+
+/// Wird gerufen, wenn unter der Adresse von [drucker] dauerhaft ein anderer
+/// Drucker mit [neueSerie] antwortet. Darf nicht warten lassen und nicht
+/// werfen.
+typedef DauerhafterKonflikt =
+    void Function(PrinterConfig drucker, String neueSerie);
 
 /// Ergebnis der Prüfung vor dem Druck.
 sealed class VorpruefungsErgebnis {
@@ -117,6 +132,9 @@ class DruckVorpruefung {
   /// Schnelles Wiederfinden nach bewiesenem Konflikt (`null`: keins).
   SchnellesWiederfinden? schnellesWiederfinden;
 
+  /// Übernahme der Kennung nach einem dauerhaften Konflikt (`null`: keine).
+  DauerhafterKonflikt? beiDauerhaftemKonflikt;
+
   /// Zeitbudget der Prüfungen (ohne Wiederfinden).
   final Duration budget;
 
@@ -134,6 +152,9 @@ class DruckVorpruefung {
     final kennungSchalter = config.aktiv(Neuerung.druckerKennung);
     final statusAn = config.aktiv(Neuerung.druckerStatus);
     if (!kennungSchalter && !statusAn) return DruckFreigabe(drucker);
+    // Nur ein im Gerätetest bewiesenes Modell wird vor dem Bon gefragt; jeder
+    // andere Drucker druckt exakt wie bis 1.4.2 – keine Verbindung, kein ARP.
+    if (!registry.pruefbar(drucker)) return DruckFreigabe(drucker);
 
     final statusfaehig = statusAn && drucker.statusCapableAt != null;
     final uhr = Stopwatch()..start();
@@ -206,7 +227,15 @@ class DruckVorpruefung {
           );
         }
         if (antworten != null) {
-          abfrage = antworten.verbunden || lage.druckt(jetzt)
+          if (antworten.verbunden) lage.verbunden();
+          // Abgelehnt, obwohl eben noch eine eigene Verbindung stand (Bon,
+          // Takt): der Drucker gibt sie nur langsam frei – er ist da.
+          final ebenDa =
+              !antworten.verbunden &&
+              antworten.verbindungsFehler != null &&
+              (lage.druckt(jetzt) || lage.ebenVerbunden());
+          if (ebenDa) _langsameFreigabe(drucker, lage);
+          abfrage = antworten.verbunden || ebenDa
               ? AbfrageVerlauf.ebenErreichbar
               : antworten.verbindungsFehler != null
               ? AbfrageVerlauf.ohneVerbindung
@@ -222,7 +251,8 @@ class DruckVorpruefung {
           );
         }
       case PrinterKind.epos:
-        if (statusAn) zustand = await registry.eposZustand(drucker, rest());
+        // Nie bewiesen (siehe registry.pruefbar): hierher kommt keiner.
+        break;
     }
 
     // 3. Kennung.
@@ -289,6 +319,9 @@ class DruckVorpruefung {
         if (!lage.druckt(jetzt)) _alsStummMerken(drucker, lage, jetzt);
         return null;
       }
+      // Schweigen während eines eigenen Bons beweist nichts; sonst beginnt
+      // (oder läuft) die Strecke, nach der es „nicht bereit“ heißt.
+      if (!lage.druckt(jetzt)) lage.schweigt(jetzt);
       return schweigenHeisstNichtBereit(mac: mac, lage: lage, jetzt: jetzt)
           ? DruckerZustand.nichtBereit
           : DruckerZustand.unbekannt;
@@ -298,6 +331,7 @@ class DruckVorpruefung {
       // Gegenstelle schloss): unbekannt, gedruckt wird wie bis 1.4.2.
       return statusAn ? DruckerZustand.unbekannt : null;
     }
+    lage.antwortet();
     // Antwortet unter der Adresse nachweislich ein anderes Gerät (andere MAC),
     // sagt das nichts über den eingerichteten Drucker.
     if (mac != MacVergleich.anders) registry.statusfaehigMerken(drucker, jetzt);
@@ -357,16 +391,22 @@ class DruckVorpruefung {
     DateTime jetzt,
   ) async {
     if (lage.kennung != KennungsLage.konflikt ||
-        lage.konfliktSerie != geseheneSerie) {
+        lage.konfliktSerie == null ||
+        !gleicheKennung(lage.konfliktSerie!, geseheneSerie)) {
       _log?.warn(
         'Drucker ${drucker.id}: unter ${drucker.host}:${drucker.port} '
         'antwortet ein anderer Drucker (Seriennummer $geseheneSerie statt '
         '${drucker.serial}).',
       );
+      lage
+        ..konfliktSeit = jetzt
+        ..konfliktBons = 0
+        ..ersetzenAngestossen = false;
     }
     lage
       ..kennung = KennungsLage.konflikt
-      ..konfliktSerie = geseheneSerie;
+      ..konfliktSerie = geseheneSerie
+      ..konfliktBons += 1;
 
     final suche = schnellesWiederfinden;
     final pause = lage.konfliktSucheBis;
@@ -377,11 +417,30 @@ class DruckVorpruefung {
       if (neu != null) return DruckFreigabe(neu, umgeleitet: true);
       lage.konfliktSucheBis = jetzt.add(konfliktSuchPause);
     }
+    final seit = lage.konfliktSeit;
+    final ersetzen = beiDauerhaftemKonflikt;
+    if (ersetzen != null &&
+        !lage.ersetzenAngestossen &&
+        lage.konfliktBons >= ersetzenNachBons &&
+        seit != null &&
+        jetzt.difference(seit) >= ersetzenNachDauer) {
+      lage.ersetzenAngestossen = true;
+      ersetzen(drucker, geseheneSerie);
+    }
     _log?.info(
       'Drucker ${drucker.id}: Druck an die eingerichtete Adresse wie bisher '
       '(Kennungskonflikt).',
     );
     return null;
+  }
+
+  void _langsameFreigabe(PrinterConfig drucker, DruckerLage lage) {
+    if (lage.gibtLangsamFrei) return;
+    lage.gibtLangsamFrei = true;
+    _log?.info(
+      'Drucker ${drucker.id} gibt seine Verbindung erst verzögert frei – '
+      'ab jetzt keine Prüfung mehr vor dem Bon (Druck wie bisher).',
+    );
   }
 
   /// Dieselbe Seriennummer unter einer anderen MAC: derselbe Drucker mit

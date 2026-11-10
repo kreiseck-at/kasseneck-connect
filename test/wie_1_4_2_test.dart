@@ -26,6 +26,7 @@ void main() {
       LocalInterface(name: 'lo0', address: '127.0.0.2'),
     ],
     SocketConnector? verbinden,
+    bool bewiesen = false,
   }) async {
     agent = Agent(
       store: store,
@@ -38,6 +39,7 @@ void main() {
       betriebssystem: 'macos',
       schnittstellen: () async => netz,
       geraeteVerbindung: verbinden,
+      bewieseneModelle: bewiesen ? testModelle : const <BewiesenesModell>[],
     );
     await agent.start();
     token = await agent.context.pairing.issueToken();
@@ -57,7 +59,11 @@ void main() {
     temp.deleteSync(recursive: true);
   });
 
-  Future<String> drucker142({String? serial, String? mac}) async {
+  Future<String> drucker142({
+    String? serial,
+    String? mac,
+    bool bewiesen = false,
+  }) async {
     final saved = await agent.printers.upsert(
       PrinterConfig(
         id: '',
@@ -65,6 +71,8 @@ void main() {
         kind: PrinterKind.tcp9100,
         host: '127.0.0.1',
         port: drucker.port,
+        model: bewiesen ? bewiesenesTestModell : null,
+        modelSource: bewiesen ? KennungsQuelle.escpos : null,
         serial: serial,
         mac: mac,
       ),
@@ -84,28 +92,46 @@ void main() {
     },
   );
 
-  test('stummes Gerät: jede Druckverbindung trägt genau die Bytes der Kasse, '
-      'der Zuschlag ist gedeckelt', () async {
-    await starten();
-    final id = await drucker142(serial: 'X5ZT000123');
+  test(
+    'Modell nicht bewiesen (wie jeder Drucker bis zum Gerätetest): jede '
+    'Verbindung trägt genau die Bytes der Kasse, keine Abfrage, kein ARP',
+    () async {
+      await starten();
+      final id = await drucker142(
+        serial: 'X5ZT000123',
+        mac: '00:26:ab:00:00:01',
+      );
 
-    final erste = await drucke(id, 'beleg-1');
-    expect(erste.ok, isTrue, reason: erste.text);
-    expect(erste.json.keys, <String>['ok', 'jobId']);
+      final erste = await drucke(id, 'beleg-1');
+      expect(erste.ok, isTrue, reason: erste.text);
+      expect(erste.json.keys, <String>['ok', 'jobId']);
+      await drucke(id, 'beleg-2');
+      await drucker.warteAufDruck(1);
+
+      expect(drucker.verbindungen.map((v) => v.bytes), <List<int>>[
+        beispielBon,
+        beispielBon,
+      ]);
+      expect(prozesse.calls.where((c) => c.executable == 'arp'), isEmpty);
+    },
+  );
+
+  test('bewiesenes Modell, aber stummes Gerät: höchstens eine '
+      'Abfrage-Verbindung, nie GS I, der Zuschlag gedeckelt', () async {
+    await starten(bewiesen: true);
+    final id = await drucker142(serial: 'X5ZT000123', bewiesen: true);
+    await drucke(id, 'beleg-1');
+    await drucke(id, 'beleg-2');
+    await drucker.warteAufDruck(1);
+    expect(drucker.druckVerbindungen, <List<int>>[beispielBon, beispielBon]);
+    // Die erste, danach gilt es als stumm; darauf nie GS I.
+    expect(drucker.abfrageVerbindungen.single, dleEot(2));
     // Gedeckelt durch das Budget der Vorprüfung (Vorgabe: höchstens 600 ms),
     // nicht über eine Wanduhr am HTTP-Umlauf gemessen.
     expect(
       vorpruefungBudget,
       lessThanOrEqualTo(const Duration(milliseconds: 600)),
     );
-
-    await drucke(id, 'beleg-2');
-    await drucker.warteAufDruck(1);
-
-    expect(drucker.druckVerbindungen, <List<int>>[beispielBon, beispielBon]);
-    // Höchstens eine Abfrage-Verbindung (die erste, danach gilt es als
-    // stumm), und darauf nie GS I.
-    expect(drucker.abfrageVerbindungen.single, dleEot(2));
   });
 
   test('Drucker in fremdem Netz mit Kennung: druckt, ohne ARP', () async {

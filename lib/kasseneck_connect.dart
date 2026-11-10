@@ -54,6 +54,7 @@ export 'src/lokales_netz.dart';
 export 'src/net/arp.dart';
 export 'src/pairing/pairing.dart';
 export 'src/printers/abfrage.dart';
+export 'src/printers/bewiesen.dart';
 export 'src/printers/discovery.dart';
 export 'src/printers/driver.dart';
 export 'src/printers/epos.dart';

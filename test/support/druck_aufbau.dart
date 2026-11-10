@@ -14,6 +14,20 @@ final Uint8List beispielBon = Uint8List.fromList(<int>[
   0x0A, 0x1D, 0x56, 0x01,
 ]);
 
+/// Erfundenes Modell, das in den Tests als „im Gerätetest bewiesen“ gilt
+/// ([testModelle]); die Liste des Betriebs ist bis zur Messung leer.
+const String bewiesenesTestModell = 'TM-T20III';
+
+/// Die bewiesenen Modelle der Tests.
+const List<BewiesenesModell> testModelle = <BewiesenesModell>[
+  BewiesenesModell(
+    modell: bewiesenesTestModell,
+    geraet: 'Fake-Drucker der Tests',
+    datum: '2026-11-10',
+    gemessen: 'nichts – nur für Tests',
+  ),
+];
+
 /// `arp -n 127.0.0.1` am Mac mit der MAC [mac].
 String arpZeile(String mac) =>
     '? (127.0.0.1) at $mac on lo0 ifscope [ethernet]\n';
@@ -69,9 +83,6 @@ class DruckAufbau {
   /// Das virtuelle Netz, falls eines verwendet wird.
   VirtuellesNetz? netz;
 
-  /// Funde der mDNS-Suche (für das Wiederfinden).
-  List<DiscoveredPrinter> mdnsFunde = const <DiscoveredPrinter>[];
-
   /// Ob gerade eine Zahlung läuft (für das Wiederfinden).
   bool zahlung = false;
 
@@ -110,6 +121,7 @@ class DruckAufbau {
       events: events,
       verbinden: verbinden,
       eposVerbinden: netz?.httpVerbinden,
+      bewieseneModelle: testModelle,
     );
     queue = PrintQueue(
       registry: registry,
@@ -122,7 +134,6 @@ class DruckAufbau {
       registry: registry,
       arp: arp,
       abfrage: abfrage,
-      suche: PrinterDiscovery(mdns: (_) async => mdnsFunde),
       schnittstellen: () async => schnittstellen,
       queue: queue,
       events: events,
@@ -154,7 +165,9 @@ class DruckAufbau {
     arp.vergiss('127.0.0.1');
   }
 
-  /// Legt einen Drucker unter [host] (Vorgabe Loopback) auf [port] an.
+  /// Legt einen Drucker unter [host] (Vorgabe Loopback) auf [port] an –
+  /// Vorgabe ein bewiesenes Modell ([bewiesenesTestModell], über `GS I 67`
+  /// gelesen); `model: null` ergibt einen Drucker, der wie 1.4.2 druckt.
   Future<String> drucker(
     int port, {
     String? serial,
@@ -162,6 +175,7 @@ class DruckAufbau {
     String id = 'p_ab12cd34',
     String host = '127.0.0.1',
     DateTime? statusCapableAt,
+    String? model = bewiesenesTestModell,
   }) async {
     await store.mutate(
       (c) => c.copyWith(
@@ -173,6 +187,8 @@ class DruckAufbau {
             kind: PrinterKind.tcp9100,
             host: host,
             port: port,
+            model: model,
+            modelSource: model == null ? null : KennungsQuelle.escpos,
             serial: serial,
             mac: mac,
             statusCapableAt: statusCapableAt,

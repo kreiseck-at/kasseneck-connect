@@ -31,6 +31,8 @@ import 'log/logger.dart';
 import 'net/arp.dart';
 import 'pairing/pairing.dart';
 import 'printers/abfrage.dart';
+import 'printers/bewiesen.dart' as bewiesen;
+import 'printers/bewiesen.dart' show BewiesenesModell;
 import 'printers/discovery.dart';
 import 'printers/erkennung.dart';
 import 'printers/funde.dart';
@@ -111,7 +113,9 @@ class Agent {
     Future<void> Function()? neustart,
     SocketConnector? geraeteVerbindung,
     TcpProbe? geraeteProbe,
+    List<BewiesenesModell> bewieseneModelle = bewiesen.bewieseneModelle,
   }) : _clock = clock ?? DateTime.now,
+       _bewieseneModelle = bewieseneModelle,
        _neustart = neustart,
        _geraeteProbe = geraeteProbe ?? tcpReachable,
        _betriebssystem = betriebssystem ?? Platform.operatingSystem,
@@ -184,6 +188,9 @@ class Agent {
 
   /// „Antwortet dort ein Port?“ fürs Wiederfinden (Tests ersetzen es).
   final TcpProbe _geraeteProbe;
+
+  /// Die im Gerätetest bewiesenen Druckermodelle (Tests geben eigene vor).
+  final List<BewiesenesModell> _bewieseneModelle;
 
   /// Zugang zum Bluetooth-Hilfsprogramm; ohne ihn der dieses Rechners
   /// ([platformBluetoothHelper]). [stop] beendet ihn – auch einen
@@ -303,6 +310,7 @@ class Agent {
           log: log,
           events: bus,
           verbinden: _geraeteVerbindung,
+          bewieseneModelle: _bewieseneModelle,
         );
     final queue =
         _queue ??
@@ -354,7 +362,6 @@ class Agent {
       registry: registry,
       arp: arp,
       abfrage: abfrage,
-      suche: discovery,
       schnittstellen: _schnittstellen,
       queue: queue,
       events: bus,
@@ -363,14 +370,16 @@ class Agent {
       log: log,
       clock: _clock,
     );
-    status.beiDauerndVerfehlt = wiederfinder.gruendlichImHintergrund;
+    status
+      ..beiDauerndVerfehlt = wiederfinder.gruendlichImHintergrund
+      ..erkennen = kennung.aufZuruf;
+    kennung.wiederfinder = wiederfinder;
     _kennung = kennung;
     _wiederfinder = wiederfinder;
     queue
-      ..nachErfolg = kennung.nachKontakt
       ..vorgaenge = vorgaenge
       ..wiederfinder = wiederfinder
-      ..vorpruefung = DruckVorpruefung(
+      ..vorpruefung = (DruckVorpruefung(
         registry: registry,
         abfrage: abfrage,
         arp: arp,
@@ -378,7 +387,7 @@ class Agent {
         log: log,
         clock: _clock,
         schnellesWiederfinden: wiederfinder.schnell,
-      );
+      )..beiDauerhaftemKonflikt = kennung.ersetzen);
 
     // Die Brücke steht ab hier, Bluetooth selbst startet erst mit dem ersten
     // Gerätezugriff bzw. der ersten Suche: der Start des Agenten (Anmeldung,

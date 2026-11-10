@@ -25,13 +25,37 @@ Duration druckNachlauf(int bytes) =>
     druckNachlaufMindestens +
     Duration(milliseconds: bytes * 1000 ~/ druckRateBytesJeSekunde);
 
+/// So lange muss ein statusfähiger Drucker ohne Unterbrechung geschwiegen
+/// haben, bevor Schweigen „nicht bereit“ heißt: die erste Beobachtung
+/// (Statustakt oder ein früherer Bon) liegt mindestens so lange zurück, und
+/// seitdem kam keine gültige Antwort.
+///
+/// Warum nicht zwei Versuche im selben Bon: ein Drucker, der gerade den Bon
+/// eines anderen Rechners druckt, schweigt ebenso – und ein Tagesabschluss
+/// von 25 KB druckt gut 12 s. Zwei Versuche mit 2 s Abstand passten nicht in
+/// das Budget von 1,5 s (Vorgabe des Inhabers) und hielten so einen Fremdbon
+/// auch nicht aus. 30 s Schweigen am Stück hat ein druckender Drucker nicht,
+/// ein offener Deckel oder eine fehlende Rolle schon. Bis dahin wird gedruckt
+/// wie bis 1.4.2 (ein Epson-Drucker hält die Daten, bis er wieder bereit ist).
+const Duration schweigenMindestdauer = Duration(seconds: 30);
+
+/// So lange nach einer eigenen Verbindung gilt eine abgelehnte neue als
+/// „gibt noch nicht frei“ statt „aus“; ebenso lange wiederholt die
+/// Warteschlange die Druckverbindung dann in kurzen Schritten (es ging
+/// nachweislich nichts hinaus).
+const Duration freigabeFenster = Duration(seconds: 3);
+
+/// Abstand der Wiederholungen innerhalb von [freigabeFenster].
+const Duration freigabeSchritt = Duration(milliseconds: 250);
+
 /// Ob das Schweigen eines statusfähigen Druckers „nicht bereit“ heißen darf.
 ///
 /// Nur, wenn feststeht, dass unter der Adresse derselbe Drucker hängt – gleiche
-/// MAC oder frisch bestätigte Kennung, und keine andere MAC –, und kein Bon aus
-/// diesem Prozess mehr druckt. Sonst kann ein getauschtes Gerät schweigen, das
-/// nie ein Statusdrucker war, oder ein Drucker, der mit vollem Puffer erst
-/// druckt; dann ist der Zustand unbekannt, und gedruckt wird wie bis 1.4.2.
+/// MAC oder frisch bestätigte Kennung, und keine andere MAC –, kein Bon aus
+/// diesem Prozess mehr druckt und er schon [schweigenMindestdauer] am Stück
+/// schweigt. Sonst kann ein getauschtes Gerät schweigen, das nie ein
+/// Statusdrucker war, oder ein Drucker, der gerade (auch fremd) druckt; dann
+/// ist der Zustand unbekannt, und gedruckt wird wie bis 1.4.2.
 bool schweigenHeisstNichtBereit({
   required MacVergleich mac,
   required DruckerLage lage,
@@ -39,7 +63,8 @@ bool schweigenHeisstNichtBereit({
 }) =>
     mac != MacVergleich.anders &&
     (mac == MacVergleich.gleich || lage.frisch(jetzt)) &&
-    !lage.druckt(jetzt);
+    !lage.druckt(jetzt) &&
+    lage.schweigtLangeGenug(jetzt);
 
 /// Was Connect im Lauf über einen Drucker weiß – nur im Speicher.
 ///
@@ -79,6 +104,38 @@ class DruckerLage {
   /// druckt ([druckNachlauf]); bis dahin ist Schweigen unbekannt.
   DateTime? drucktBis;
 
+  /// Seit wann der (statusfähige) Drucker ohne Unterbrechung schweigt;
+  /// `null`, solange er antwortet.
+  DateTime? schweigtSeit;
+
+  /// Der Drucker gab eine Verbindung nach dem Schließen erst verzögert frei
+  /// (die Druckverbindung direkt nach der Abfrage wurde abgelehnt). Dann
+  /// spricht Connect vor seinen Bons und im Takt nicht mehr mit ihm – Druck
+  /// wie bis 1.4.2. Nur im Speicher: nach einem Neustart prüft Connect neu.
+  bool gibtLangsamFrei = false;
+
+  /// Seit wann unter der Adresse dieselbe fremde Seriennummer
+  /// ([konfliktSerie]) antwortet, und wie oft vor einem Bon.
+  DateTime? konfliktSeit;
+  int konfliktBons = 0;
+
+  /// Ob die Übernahme der fremden Kennung schon angestoßen ist.
+  bool ersetzenAngestossen = false;
+
+  /// Seit wann die letzte eigene Verbindung zum Drucker zu ist (Abfrage,
+  /// Takt, Bon) – in Echtzeit, denn die Freigabe ist ein Verhalten des
+  /// Geräts.
+  Stopwatch? _seitVerbindung;
+
+  /// Eine eigene Verbindung zum Drucker stand eben.
+  void verbunden() => _seitVerbindung = Stopwatch()..start();
+
+  /// Ob die letzte eigene Verbindung höchstens [freigabeFenster] her ist.
+  bool ebenVerbunden() {
+    final uhr = _seitVerbindung;
+    return uhr != null && uhr.elapsed < freigabeFenster;
+  }
+
   /// Tag (`JJJJ-MM-TT`) der letzten Logzeile „Kennung nicht prüfbar“: eine
   /// je Tag reicht.
   String? letzterHinweisTag;
@@ -102,6 +159,19 @@ class DruckerLage {
   bool druckt(DateTime jetzt) {
     final bis = drucktBis;
     return bis != null && jetzt.isBefore(bis);
+  }
+
+  /// Eine Abfrage blieb ohne gültige Antwort (nachgewiesenes Schweigen).
+  void schweigt(DateTime jetzt) => schweigtSeit ??= jetzt;
+
+  /// Eine gültige Antwort beendet das Schweigen.
+  void antwortet() => schweigtSeit = null;
+
+  /// Ob der Drucker bis [jetzt] schon [schweigenMindestdauer] am Stück
+  /// schweigt.
+  bool schweigtLangeGenug(DateTime jetzt) {
+    final seit = schweigtSeit;
+    return seit != null && jetzt.difference(seit) >= schweigenMindestdauer;
   }
 
   /// Merkt sich ab [jetzt] für [stummDauer]: das Gerät schweigt.

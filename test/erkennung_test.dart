@@ -46,6 +46,15 @@ void main() {
         LocalInterface(name: 'lo0', address: '127.0.0.2'),
       ],
       discovery: PrinterDiscovery(mdns: (_) async => mdnsFunde),
+      // Das Modell des Fake-Druckers gilt hier als bewiesen.
+      bewieseneModelle: const <BewiesenesModell>[
+        BewiesenesModell(
+          modell: 'TM-m30III',
+          geraet: 'Fake-Drucker der Tests',
+          datum: '2026-11-10',
+          gemessen: 'nichts – nur für Tests',
+        ),
+      ],
     );
     await agent.start();
     token = await agent.context.pairing.issueToken();
@@ -218,35 +227,55 @@ void main() {
     expect(eintrag.identitySource, KennungsQuelle.mdns);
   });
 
-  test('ohne Kennung: der erste gelungene Druck trägt sie nach, '
-      'danach höchstens alle zehn Minuten ein Versuch', () async {
-    await store.mutate(
-      (c) => c.copyWith(disabledFeatures: <String>['printer_identity']),
-    );
-    final id = await anlegen();
-    // Abgeschaltet: kein Byte außer dem Druck an das Gerät.
-    await Future<void>.delayed(const Duration(milliseconds: 200));
-    expect(drucker.connections, 0);
+  test(
+    'ohne Kennung: ein Druck erkennt nie – die Druckersuche trägt sie nach',
+    () async {
+      await store.mutate(
+        (c) => c.copyWith(disabledFeatures: <String>['printer_identity']),
+      );
+      final id = await anlegen();
+      // Abgeschaltet: kein Byte außer dem Druck an das Gerät.
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+      expect(drucker.connections, 0);
 
-    await store.mutate((c) => c.copyWith(disabledFeatures: <String>[]));
-    drucker.gsI.clear();
-    final druck = await anAgent(
-      agent.port,
-      'POST',
-      '/v1/print',
-      token: token,
-      rumpf: <String, Object?>{
-        'printerId': id,
-        'jobId': 'beleg-1',
-        'bytes': base64Encode(<int>[0x1B, 0x40, 0x41, 0x0A]),
-      },
-    );
-    expect(druck.ok, isTrue, reason: druck.text);
-    // Ohne GS-I-Antwort bleibt nur die MAC – auch sie ist eine Kennung.
-    await warteAufKennung(id);
-    expect((await gespeichert(id)).mac, '00:26:ab:00:00:01');
-    expect((await gespeichert(id)).serial, isNull);
-  });
+      await store.mutate((c) => c.copyWith(disabledFeatures: <String>[]));
+      for (var i = 0; i < 3; i++) {
+        final druck = await anAgent(
+          agent.port,
+          'POST',
+          '/v1/print',
+          token: token,
+          rumpf: <String, Object?>{
+            'printerId': id,
+            'jobId': 'beleg-$i',
+            'bytes': base64Encode(<int>[0x1B, 0x40, 0x41, 0x0A]),
+          },
+        );
+        expect(druck.ok, isTrue, reason: druck.text);
+      }
+      await drucker.warteAufDruck(2);
+      expect(
+        drucker.abfrageVerbindungen,
+        isEmpty,
+        reason: 'nie wegen eines Bons',
+      );
+      expect((await gespeichert(id)).hatKennung, isFalse);
+
+      final suche = await anAgent(
+        agent.port,
+        'POST',
+        '/v1/printers/discover',
+        token: token,
+        rumpf: const <String, Object?>{},
+      );
+      expect(suche.ok, isTrue);
+      await warteAufKennung(id);
+      final eintrag = await gespeichert(id);
+      expect(eintrag.model, 'TM-m30III');
+      expect(eintrag.modelSource, KennungsQuelle.escpos);
+      expect(eintrag.serial, 'X5ZT000123');
+    },
+  );
 
   test('printer_identity aus: PUT fragt das Gerät nie', () async {
     await store.mutate(

@@ -63,7 +63,8 @@ void main() {
       expect((await a.registry.summaries()).single['readiness'], 'unknown');
     });
 
-    test('nach dem Nachlauf heißt Schweigen wieder „nicht bereit“', () async {
+    test('nach dem Nachlauf zählt Schweigen wieder – „nicht bereit“ erst nach '
+        '30 s am Stück', () async {
       final id = await a.drucker(
         drucker.port,
         statusCapableAt: seit,
@@ -72,6 +73,10 @@ void main() {
       expect((await drucke(id, bytes: _langerBon)).ok, isTrue);
       drucker.dleEot.clear(); // Deckel auf
       a.jetzt = a.jetzt.add(druckNachlauf(_langerBon.length));
+      expect((await drucke(id)).ok, isTrue, reason: 'erstes Schweigen');
+      a.jetzt = a.jetzt
+          .add(druckNachlauf(beispielBon.length))
+          .add(schweigenMindestdauer);
       expect((await a.drucke(id)).code, errorPrinterNotReady);
     });
 
@@ -150,16 +155,16 @@ void main() {
     );
   });
 
-  group('Druckverbindung direkt nach der Abfrage abgelehnt', () {
+  group('Drucker gibt seine Verbindung langsam frei', () {
     late DruckAufbau a;
     late FakeTcpPrinter drucker;
 
     setUp(() async {
       // Nimmt nur eine Verbindung zugleich an und gibt die vorige erst
-      // 200 ms nach dem Schließen frei.
+      // 800 ms nach dem Schließen frei.
       drucker = await FakeTcpPrinter.start(dleEot: _gesund)
         ..eineVerbindung = true
-        ..freigabeVerzug = const Duration(milliseconds: 200);
+        ..freigabeVerzug = const Duration(milliseconds: 800);
       a = DruckAufbau.erstellen(verbinden: drucker.verbinden);
     });
 
@@ -169,27 +174,156 @@ void main() {
     });
 
     test(
-      'kurz warten, dieselbe Adresse noch einmal, ohne Wiederfinden',
+      'Druckverbindung nach der Abfrage abgelehnt: dieselbe Adresse in '
+      'kurzen Schritten, ohne Suche; danach keine Abfrage mehr vor dem Bon',
       () async {
         final id = await a.drucker(drucker.port, serial: _serie, mac: _mac);
         drucker.gsI[68] = _serie;
         final ergebnis = await a.drucke(id);
         expect(ergebnis.ok, isTrue, reason: '${ergebnis.code}');
         await drucker.warteAufDruck(0);
-        expect(drucker.abgelehnt, 1);
+        expect(drucker.abgelehnt, greaterThanOrEqualTo(1));
         expect(drucker.druckVerbindungen.single, beispielBon);
         expect(a.wiederfinder.suchen, 0);
-        expect(nachAbfrageWarten, greaterThan(drucker.freigabeVerzug));
+        expect(a.registry.lagen.von(id).gibtLangsamFrei, isTrue);
+        expect(drucker.freigabeVerzug, lessThan(freigabeFenster));
+
+        // Der nächste Bon nach der Freigabe: wie 1.4.2, keine Abfrage.
+        final abfragen = drucker.abfrageVerbindungen.length;
+        await Future<void>.delayed(drucker.freigabeVerzug * 1.5);
+        expect((await a.drucke(id)).ok, isTrue);
+        await drucker.warteAufDruck(1);
+        expect(drucker.abfrageVerbindungen, hasLength(abfragen));
       },
     );
+
+    test(
+      'vier Bons im Abstand der Kasse: alle gedruckt (1.4.2: 4/4)',
+      () async {
+        // Probe der Nachprüfung: 1.5.0 druckte hier 0 von 4.
+        final id = await a.drucker(
+          drucker.port,
+          statusCapableAt: DateTime.utc(2026, 11, 1),
+        );
+        for (var i = 0; i < 4; i++) {
+          expect((await a.drucke(id)).ok, isTrue, reason: 'Bon ${i + 1}');
+          a.jetzt = a.jetzt.add(const Duration(minutes: 1));
+          await Future<void>.delayed(const Duration(milliseconds: 1200));
+        }
+        expect(drucker.druckVerbindungen, hasLength(4));
+      },
+    );
+
+    test('Takt, direkt danach ein Bon: die abgelehnte Abfrage heißt „gibt '
+        'langsam frei“, nicht „aus“ – der Bon geht', () async {
+      final id = await a.drucker(
+        drucker.port,
+        statusCapableAt: DateTime.utc(2026, 11, 1),
+      );
+      final dienst = DruckerStatusDienst(
+        registry: a.registry,
+        queue: a.queue,
+        abfrage: EscPosAbfrage(verbinden: drucker.verbinden),
+        kasseZuletzt: () => a.jetzt,
+        clock: () => a.jetzt,
+      );
+      await dienst.runde();
+      expect(drucker.abfrageVerbindungen, hasLength(1));
+      final ergebnis = await a.drucke(id);
+      expect(ergebnis.ok, isTrue, reason: '${ergebnis.code}');
+      expect(a.registry.lagen.von(id).gibtLangsamFrei, isTrue);
+      await drucker.warteAufDruck(0);
+      // Ab jetzt auch kein Takt mehr.
+      final verbindungen = drucker.connections;
+      await Future<void>.delayed(drucker.freigabeVerzug * 1.5);
+      await dienst.runde();
+      expect(drucker.connections, verbindungen);
+    });
 
     test('der Fake hält immer nur eine Verbindung', () async {
       final id = await a.drucker(drucker.port, serial: _serie, mac: _mac);
       drucker.gsI[68] = _serie;
       for (var i = 0; i < 3; i++) {
         expect((await a.drucke(id)).ok, isTrue);
+        await Future<void>.delayed(drucker.freigabeVerzug * 1.5);
       }
       expect(drucker.hoechstAngenommen, 1);
+    });
+  });
+
+  group('nicht bewiesenes Modell: Druckpfad wie 1.4.2', () {
+    test('keine Abfrage-Verbindung, kein ARP, nur die Bytes der Kasse – '
+        'Verbindungsfolge wie mit allen Neuerungen aus', () async {
+      Future<List<List<int>>> ablauf({required bool alleAus}) async {
+        final drucker = await FakeTcpPrinter.start(
+          dleEot: _gesund,
+          gsI: const <int, String>{67: 'TM-T88VI', 68: _serie},
+        );
+        final a = DruckAufbau.erstellen(verbinden: drucker.verbinden)
+          ..arpMac = _mac;
+        if (alleAus) await a.abschalten(Neuerung.values);
+        final id = await a.drucker(
+          drucker.port,
+          model: 'TM-T88VI',
+          serial: _serie,
+          mac: _mac,
+          statusCapableAt: DateTime.utc(2026, 11, 1),
+        );
+        for (var i = 0; i < 3; i++) {
+          expect((await a.drucke(id)).ok, isTrue);
+          await drucker.warteAufDruck(i);
+        }
+        final arp = a.arpAufrufe;
+        await a.aufraeumen();
+        await drucker.stop();
+        expect(arp, 0, reason: 'kein ARP vor dem Bon');
+        return drucker.verbindungen.map((v) => v.bytes).toList();
+      }
+
+      final neu = await ablauf(alleAus: false);
+      final alt = await ablauf(alleAus: true);
+      expect(neu, alt);
+      expect(neu, <List<int>>[beispielBon, beispielBon, beispielBon]);
+    });
+
+    test('ohne Modell (nie erkannt): ebenso', () async {
+      final drucker = await FakeTcpPrinter.start(dleEot: _gesund);
+      final a = DruckAufbau.erstellen(verbinden: drucker.verbinden);
+      addTearDown(() async {
+        await a.aufraeumen();
+        await drucker.stop();
+      });
+      final id = await a.drucker(drucker.port, model: null, serial: _serie);
+      expect((await a.drucke(id)).ok, isTrue);
+      await drucker.warteAufDruck(0);
+      expect(drucker.verbindungen.map((v) => v.bytes), <List<int>>[
+        beispielBon,
+      ]);
+    });
+
+    test('ein Modell aus mDNS zählt nicht (nur GS I 67)', () {
+      final drucker = PrinterConfig(
+        id: 'p1',
+        name: 'Bon',
+        kind: PrinterKind.tcp9100,
+        host: '192.168.0.50',
+        model: bewiesenesTestModell,
+        modelSource: KennungsQuelle.mdns,
+      );
+      expect(modellBewiesen(drucker, liste: testModelle), isFalse);
+      expect(
+        modellBewiesen(
+          drucker.copyWith(modelSource: KennungsQuelle.escpos),
+          liste: testModelle,
+        ),
+        isTrue,
+      );
+      // Die Liste des Betriebs ist bis zum Gerätetest leer.
+      expect(bewieseneModelle, isEmpty);
+      expect(
+        modellBewiesen(drucker.copyWith(modelSource: KennungsQuelle.escpos)),
+        isFalse,
+      );
     });
   });
 

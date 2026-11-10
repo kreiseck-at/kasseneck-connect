@@ -76,6 +76,9 @@ class DruckerStatusDienst {
   /// hintereinander nicht sah (die gründliche Suche hängt sich hier an).
   void Function(String printerId)? beiDauerndVerfehlt;
 
+  /// Erkennt einen Drucker auf Zuruf (Kennungspflege); `null`: nie.
+  Future<void> Function(String printerId)? erkennen;
+
   final Duration abstand;
   final Duration budget;
 
@@ -117,7 +120,9 @@ class DruckerStatusDienst {
       runden++;
       final jetzt = _clock();
       await Future.wait(
-        config.printers.map((drucker) async {
+        // Nur bewiesene Modelle: jeder andere Drucker sieht von Connect außer
+        // den Bons nichts, wie bis 1.4.2.
+        config.printers.where(registry.pruefbar).map((drucker) async {
           // Ein Bon aus diesem Prozess druckt womöglich noch: der Drucker war
           // eben erreichbar, und eine Abfrage jetzt bewiese nichts.
           if (registry.lagen.vorhanden(drucker.id)?.druckt(jetzt) ?? false) {
@@ -151,15 +156,28 @@ class DruckerStatusDienst {
 
   /// Fragt [id] sofort ab (über die Warteschlange) und liefert den Drucker
   /// für die API; `null`, wenn es ihn nicht gibt.
+  ///
+  /// Auf Zuruf darf Connect den Drucker auch erkennen ([erkennen]), wenn sein
+  /// Modell noch nicht über `GS I 67` feststeht. Papier und Deckel fragt es
+  /// nur bei einem bewiesenen Modell; sonst nur die Erreichbarkeit wie 1.4.2.
   Future<Map<String, Object?>?> jetzt(String id) async {
-    final config = await registry.store.load();
-    PrinterConfig? drucker;
-    for (final eintrag in config.printers) {
-      if (eintrag.id == id) drucker = eintrag;
-    }
+    var drucker = await registry.find(id);
     if (drucker == null) return null;
+    final erkenne = erkennen;
+    if (erkenne != null &&
+        drucker.kind == PrinterKind.tcp9100 &&
+        drucker.modelSource != KennungsQuelle.escpos) {
+      await erkenne(id);
+      drucker = await registry.find(id) ?? drucker;
+    }
+    final config = await registry.store.load();
     final gefunden = drucker;
-    await queue.exclusive(id, () => _abfragen(gefunden, config));
+    await queue.exclusive(
+      id,
+      () => registry.pruefbar(gefunden)
+          ? _abfragen(gefunden, config)
+          : _nurErreichbar(gefunden),
+    );
     return registry.zusammenfassung(gefunden);
   }
 
@@ -189,17 +207,29 @@ class DruckerStatusDienst {
                 fragen: fragen,
                 budget: budget,
               );
-        registry.noteState(
-          drucker.id,
-          antworten.verbunden ? PrinterState.online : PrinterState.offline,
-        );
-        if (!antworten.verbunden) return false;
+        if (!antworten.verbunden) {
+          // Abgelehnt direkt nach einer eigenen Verbindung: der Drucker gibt
+          // langsam frei, er ist nicht weg – ab jetzt kein Takt mehr für ihn.
+          if (antworten.verbindungsFehler != null && lage.ebenVerbunden()) {
+            lage.gibtLangsamFrei = true;
+            _log?.info(
+              'Drucker ${drucker.id} gibt seine Verbindung erst verzögert '
+              'frei – keine Abfrage mehr im Takt und vor dem Bon.',
+            );
+            return true;
+          }
+          registry.noteState(drucker.id, PrinterState.offline);
+          return false;
+        }
+        lage.verbunden();
+        registry.noteState(drucker.id, PrinterState.online);
         final mac = await _macVergleich(drucker);
         if (antworten.stumm) {
           if (!statusfaehig) {
             if (!lage.druckt(jetzt)) _alsStumm(drucker, lage, jetzt);
             return true;
           }
+          if (!lage.druckt(jetzt)) lage.schweigt(jetzt);
           registry.noteZustand(
             drucker.id,
             schweigenHeisstNichtBereit(mac: mac, lage: lage, jetzt: jetzt)
@@ -209,6 +239,7 @@ class DruckerStatusDienst {
           );
           return true;
         }
+        if (antworten.offlineGrund != null) lage.antwortet();
         if (antworten.offlineGrund != null && mac != MacVergleich.anders) {
           registry.statusfaehigMerken(drucker, jetzt);
         }
@@ -222,13 +253,8 @@ class DruckerStatusDienst {
         );
         return true;
       case PrinterKind.epos:
-        final zustand = await registry.eposZustand(drucker, budget);
-        registry.noteState(
-          drucker.id,
-          zustand == null ? PrinterState.offline : PrinterState.online,
-        );
-        if (zustand != null) registry.noteZustand(drucker.id, zustand, jetzt);
-        return zustand != null;
+        // Kein ePOS-Modell ist bewiesen (das Modell kommt nie über GS I 67).
+        return _nurErreichbar(drucker);
     }
   }
 

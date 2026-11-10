@@ -50,7 +50,8 @@ RouteRegistrar printerRoutes({
       ..get('/v1/printers', (Request r) => handleListPrinters(registry, r))
       ..post(
         '/v1/printers/discover',
-        (Request r) => handleDiscoverPrinters(search, r, funde: funde),
+        (Request r) =>
+            handleDiscoverPrinters(search, r, funde: funde, kennung: kennung),
       )
       ..put(
         '/v1/printers',
@@ -129,8 +130,8 @@ Future<Response> handlePutPrinter(
 
   final saved = await registry.upsert(parsed.printer!);
   // Die Kennung ermittelt Connect selbst (mDNS, GS I, ARP) und im Hintergrund:
-  // die Antwort soll nicht auf den Drucker warten. Fehlt sie schon, holt sie
-  // der nächste gelungene Druck nach.
+  // die Antwort soll nicht auf den Drucker warten. Nie vor einem Bon – fehlt
+  // sie, holen sie die nächste Druckersuche oder eine Statusabfrage nach.
   if (!saved.hatKennung) unawaited(kennung?.nachAnlegen(saved.id));
   return okJson(<String, Object?>{
     'printer': <String, Object?>{
@@ -209,6 +210,7 @@ Future<Response> handleDiscoverPrinters(
   PrinterDiscovery discovery,
   Request request, {
   FundGedaechtnis? funde,
+  Kennungspflege? kennung,
 }) async {
   final body = await readJsonBody(request, allowEmpty: true);
   final error = body.error;
@@ -216,6 +218,9 @@ Future<Response> handleDiscoverPrinters(
 
   final found = await discovery.discover(scan: body.data!['scan'] == true);
   funde?.merke(found.printers);
+  // Eine Suche ist ein Anlass, die eingerichteten Drucker ohne gelesenes
+  // Modell zu erkennen – im Hintergrund, über ihre Warteschlangen.
+  if (kennung != null) unawaited(kennung.nachSuche());
   // `scanned` sagt der Kasse, wo gesucht wurde („Suche in 192.168.0.0/24 …")
   // — und beim Kunden, warum nichts gefunden wurde: steht dort nur das Netz
   // einer virtuellen Maschine, hängt der Drucker woanders.

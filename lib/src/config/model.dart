@@ -86,6 +86,7 @@ class PrinterConfig {
     int? port,
     this.devid,
     this.model,
+    this.modelSource,
     this.serial,
     this.mac,
     this.identifiedAt,
@@ -115,6 +116,11 @@ class PrinterConfig {
 
   /// Modellname, wie das Gerät ihn nennt (`TM-m30III`).
   final String? model;
+
+  /// Woher [model] stammt. Nur ein über `GS I 67` gelesenes Modell
+  /// ([KennungsQuelle.escpos]) kann ein im Gerätetest bewiesenes sein
+  /// (`printers/bewiesen.dart`).
+  final KennungsQuelle? modelSource;
 
   /// Seriennummer aus `GS I 68` oder mDNS.
   final String? serial;
@@ -149,6 +155,7 @@ class PrinterConfig {
     int? port,
     String? devid,
     String? model,
+    KennungsQuelle? modelSource,
     String? serial,
     String? mac,
     DateTime? identifiedAt,
@@ -163,6 +170,7 @@ class PrinterConfig {
       port: port ?? this.port,
       devid: devid ?? this.devid,
       model: model ?? this.model,
+      modelSource: modelSource ?? this.modelSource,
       serial: serial ?? this.serial,
       mac: mac ?? this.mac,
       identifiedAt: identifiedAt ?? this.identifiedAt,
@@ -187,6 +195,7 @@ class PrinterConfig {
     ...extras,
     ...toApiJson(),
     if (model != null) 'model': model,
+    if (modelSource != null) 'modelSource': modelSource!.wireName,
     if (serial != null) 'serial': serial,
     if (mac != null) 'mac': mac,
     if (identifiedAt != null)
@@ -204,6 +213,7 @@ class PrinterConfig {
     'port',
     'devid',
     'model',
+    'modelSource',
     'serial',
     'mac',
     'identifiedAt',
@@ -221,6 +231,7 @@ class PrinterConfig {
       port: readInt(json['port']) ?? kind.defaultPort,
       devid: readString(json['devid']),
       model: _kennungsText(json['model']),
+      modelSource: KennungsQuelle.fromWireName(json['modelSource']),
       serial: _kennungsText(json['serial']),
       mac: normalizeMac(readString(json['mac'])),
       identifiedAt: readDateTime(json['identifiedAt'])?.toUtc(),
@@ -332,10 +343,18 @@ class TerminalConfig {
   String toString() => 'TerminalConfig($kind, $host:$port)';
 }
 
-/// Art des Geräts in einem [AdressWechsel].
+/// Art eines Eintrags in `relocations` ([AdressWechsel]).
 enum GeraeteArt {
+  /// Ein Drucker ist unter eine neue Adresse gezogen (`from`/`to`: Adressen).
   drucker('printer'),
-  terminal('terminal');
+
+  /// Das Terminal ist unter eine neue Adresse gezogen.
+  terminal('terminal'),
+
+  /// Unter der Adresse eines Druckers steht dauerhaft ein anderer, und der
+  /// alte ist nirgends zu finden: Connect hat die Kennung übernommen
+  /// (`from`/`to`: alte und neue Seriennummer, die Adresse bleibt).
+  ersetzt('replaced');
 
   const GeraeteArt(this.wireName);
 
@@ -371,7 +390,8 @@ class AdressWechsel {
   /// Drucker-ID bzw. TID.
   final String kennung;
 
-  /// Alte und neue Adresse (`host:port`).
+  /// Alte und neue Adresse (`host:port`); bei [GeraeteArt.ersetzt] alte und
+  /// neue Seriennummer.
   final String von;
   final String nach;
 
@@ -380,7 +400,7 @@ class AdressWechsel {
   Map<String, Object?> toJson() => <String, Object?>{
     'at': at.toUtc().toIso8601String(),
     'kind': art.wireName,
-    if (art == GeraeteArt.drucker) 'id': kennung else 'tid': kennung,
+    if (art == GeraeteArt.terminal) 'tid': kennung else 'id': kennung,
     'from': von,
     'to': nach,
   };
@@ -393,7 +413,7 @@ class AdressWechsel {
     final nach = readString(json['to']);
     if (at == null || art == null || von == null || nach == null) return null;
     final kennung = readString(
-      art == GeraeteArt.drucker ? json['id'] : json['tid'],
+      art == GeraeteArt.terminal ? json['tid'] : json['id'],
     );
     if (kennung == null) return null;
     return AdressWechsel(

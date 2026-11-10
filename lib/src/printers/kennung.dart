@@ -134,12 +134,24 @@ PrinterConfig? ergaenzeKennung(
   ErkannteKennung erkannt,
   DateTime jetzt,
 ) {
-  final model = drucker.model ?? erkannt.model;
+  // Ein über `GS I 67` gelesenes Modell ersetzt eines aus mDNS: nur dieses
+  // kann ein bewiesenes sein.
+  final ausGsI =
+      erkannt.model != null &&
+      erkannt.modelQuelle == KennungsQuelle.escpos &&
+      drucker.modelSource != KennungsQuelle.escpos;
+  final model = ausGsI ? erkannt.model : drucker.model ?? erkannt.model;
+  final modelSource = ausGsI
+      ? KennungsQuelle.escpos
+      : drucker.model != null
+      ? drucker.modelSource
+      : erkannt.modelQuelle;
   final serial = drucker.serial ?? erkannt.serial;
   final mac = drucker.mac ?? normalizeMac(erkannt.mac);
   final statusfaehig =
       drucker.statusCapableAt ?? erkannt.statusfaehigAm?.toUtc();
   if (model == drucker.model &&
+      modelSource == drucker.modelSource &&
       serial == drucker.serial &&
       mac == drucker.mac &&
       statusfaehig == drucker.statusCapableAt) {
@@ -154,6 +166,7 @@ PrinterConfig? ergaenzeKennung(
       : erkannt.modelQuelle;
   return drucker.copyWith(
     model: model,
+    modelSource: modelSource,
     serial: serial,
     mac: mac,
     identifiedAt: kennungNeu ? jetzt : drucker.identifiedAt,

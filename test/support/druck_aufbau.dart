@@ -25,7 +25,14 @@ class DruckAufbau {
 
   /// Mit [netz] laufen alle Verbindungen, Proben und ARP-Ausgaben über das
   /// virtuelle Kassen-Netz statt über Loopback.
-  static DruckAufbau erstellen({DateTime? start, VirtuellesNetz? netz}) {
+  ///
+  /// [budget] ersetzt das Zeitbudget der Vorprüfung (Tests, deren Antworten
+  /// über HTTP kommen und unter Last länger brauchen dürfen).
+  static DruckAufbau erstellen({
+    DateTime? start,
+    VirtuellesNetz? netz,
+    Duration budget = vorpruefungBudget,
+  }) {
     final temp = Directory.systemTemp.createTempSync('connect-druck-');
     final aufbau = DruckAufbau._(
       temp,
@@ -35,6 +42,7 @@ class DruckAufbau {
     );
     aufbau
       ..netz = netz
+      .._budget = budget
       ..jetzt = start ?? DateTime(2026, 11, 10, 9);
     if (netz != null) {
       aufbau.schnittstellen = const <LocalInterface>[VirtuellesNetz.eigene];
@@ -49,6 +57,8 @@ class DruckAufbau {
     aufbau._bauen();
     return aufbau;
   }
+
+  Duration _budget = vorpruefungBudget;
 
   /// Das virtuelle Netz, falls eines verwendet wird.
   VirtuellesNetz? netz;
@@ -117,6 +127,7 @@ class DruckAufbau {
       log: log,
       clock: () => jetzt,
       schnellesWiederfinden: wiederfinder.schnell,
+      budget: _budget,
     );
     queue
       ..vorpruefung = vorpruefung

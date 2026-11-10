@@ -44,6 +44,20 @@ bool tidBestaetigt(Object? antwort, String tid) {
   return true;
 }
 
+/// Die Seriennummer des Terminals aus einer Diagnose (`sn`), wenn sie ein
+/// brauchbarer Text ist. Zusätzliche Kennung neben der TID, nie Grundlage
+/// einer Entscheidung. `mac` aus der Diagnose taugt nicht (das Terminal nennt
+/// „Unavailable“); die MAC kommt aus ARP.
+String? terminalSerie(Object? antwort) {
+  if (antwort is! Map) return null;
+  final sn = antwort['sn'];
+  if (sn is! String) return null;
+  final text = sn.trim();
+  if (text.isEmpty || text.length > kennungsTextMaxLength) return null;
+  if (text.codeUnits.any((c) => c < 0x21 || c > 0x7E)) return null;
+  return text;
+}
+
 /// Die Adresse, auf die ein Aufruf an [host]:[port] mit [tid] umgeleitet
 /// werden darf, nachdem dort keine Verbindung zustande kam; sonst `null`.
 ///

@@ -98,7 +98,13 @@ class TerminalWarmhalter {
   ///
   /// [tid] mit [bestaetigt] heißt: die Antwort hat diese TID unter dieser
   /// Adresse bestätigt (`tidBestaetigt`).
-  void merken(String host, int port, {String? tid, bool bestaetigt = false}) {
+  void merken(
+    String host,
+    int port, {
+    String? tid,
+    bool bestaetigt = false,
+    String? serie,
+  }) {
     final jetzt = _clock();
     final adresseNeu = _host != host || _port != port || _timer == null;
     final zuletzt = _bestaetigtAm;
@@ -121,13 +127,22 @@ class TerminalWarmhalter {
       _bestaetigtAm = null;
     }
     // Fire-and-forget: das Wachhalten haengt nicht am Plattenschreiben.
-    unawaited(_speichern(host, port, tid: auffrischen ? tid : null, am: jetzt));
+    unawaited(
+      _speichern(
+        host,
+        port,
+        tid: auffrischen ? tid : null,
+        serie: auffrischen ? serie : null,
+        am: jetzt,
+      ),
+    );
   }
 
   Future<void> _speichern(
     String host,
     int port, {
     required String? tid,
+    required String? serie,
     required DateTime am,
   }) async {
     try {
@@ -146,6 +161,7 @@ class TerminalWarmhalter {
             confirmedAt: tid != null
                 ? am.toUtc()
                 : (gleicheAdresse ? alt.confirmedAt : null),
+            serial: serie ?? (gleicheAdresse ? alt.serial : null),
             extras: alt?.extras,
           ),
         );
@@ -210,6 +226,7 @@ class TerminalWarmhalter {
       'reachable': erreichbar,
       'checkedAt': geprueftAm?.toUtc().toIso8601String(),
       'confirmedAt': gemerkt.confirmedAt?.toUtc().toIso8601String(),
+      if (gemerkt.serial != null) 'serial': gemerkt.serial,
     };
   }
 

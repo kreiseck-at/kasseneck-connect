@@ -260,6 +260,7 @@ class TerminalConfig {
     this.tid,
     this.mac,
     this.confirmedAt,
+    this.serial,
     Map<String, Object?>? extras,
   }) : extras = Map<String, Object?>.unmodifiable(
          extras ?? const <String, Object?>{},
@@ -279,6 +280,9 @@ class TerminalConfig {
   /// bestätigt hat.
   final DateTime? confirmedAt;
 
+  /// Seriennummer des Terminals (`sn` der Diagnose); zusätzliche Kennung.
+  final String? serial;
+
   /// Felder einer neueren Fassung; sie überleben das Schreiben.
   final Map<String, Object?> extras;
 
@@ -289,6 +293,7 @@ class TerminalConfig {
     String? tid,
     String? mac,
     DateTime? confirmedAt,
+    String? serial,
   }) {
     return TerminalConfig(
       kind: kind ?? this.kind,
@@ -297,6 +302,7 @@ class TerminalConfig {
       tid: tid ?? this.tid,
       mac: mac ?? this.mac,
       confirmedAt: confirmedAt ?? this.confirmedAt,
+      serial: serial ?? this.serial,
       extras: extras,
     );
   }
@@ -310,6 +316,7 @@ class TerminalConfig {
     if (mac != null) 'mac': mac,
     if (confirmedAt != null)
       'confirmedAt': confirmedAt!.toUtc().toIso8601String(),
+    if (serial != null) 'serial': serial,
   };
 
   static const Set<String> _bekannteFelder = <String>{
@@ -319,6 +326,7 @@ class TerminalConfig {
     'tid',
     'mac',
     'confirmedAt',
+    'serial',
   };
 
   static TerminalConfig fromJson(Map<String, Object?> json) => TerminalConfig(
@@ -328,6 +336,7 @@ class TerminalConfig {
     tid: readString(json['tid']),
     mac: normalizeMac(readString(json['mac'])),
     confirmedAt: readDateTime(json['confirmedAt'])?.toUtc(),
+    serial: _kennungsText(json['serial']),
     extras: _unbekannte(json, _bekannteFelder),
   );
 

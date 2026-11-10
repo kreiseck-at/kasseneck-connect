@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:kasseneck_connect/kasseneck_connect.dart';
@@ -40,6 +41,34 @@ void main() {
       faelle.forEach((antwort, erwartet) {
         expect(tidBestaetigt(antwort, _tid), erwartet, reason: '$antwort');
       });
+    });
+
+    test('tidNormal: führende Nullen weg, nur bei reinen Ziffern', () {
+      final faelle = <String, String>{
+        '03600335': '3600335',
+        '0012345678': '12345678',
+        '12345678': '12345678',
+        ' 012 ': '12',
+        '0': '0',
+        '000': '0',
+        '': '',
+        'T0123': 'T0123',
+      };
+      faelle.forEach((roh, erwartet) {
+        expect(tidNormal(roh), erwartet, reason: roh);
+      });
+    });
+
+    test('terminalSerie: nur ein brauchbarer Text aus sn', () {
+      expect(
+        terminalSerie(<String, Object?>{'sn': 'P000000K00001'}),
+        'P000000K00001',
+      );
+      expect(terminalSerie(<String, Object?>{'sn': ''}), isNull);
+      expect(terminalSerie(<String, Object?>{'sn': 'mit leer'}), isNull);
+      expect(terminalSerie(<String, Object?>{'sn': 42}), isNull);
+      expect(terminalSerie(<String, Object?>{'mac': 'Unavailable'}), isNull);
+      expect(terminalSerie('kein Objekt'), isNull);
     });
 
     test('umleitungsZiel', () {
@@ -218,6 +247,29 @@ void main() {
       },
     );
 
+    test('die TID geht ohne führende Nullen ans Terminal (HPS lehnt '
+        '03600335 ab, nimmt 3600335)', () async {
+      final diagnose = await anAgent(
+        server.port,
+        'POST',
+        '/v1/terminal/diagnosis',
+        token: token,
+        rumpf: <String, Object?>{
+          'host': '127.0.0.1',
+          'port': hps.port,
+          'tid': '0$_tid',
+        },
+      );
+      expect(diagnose.ok, isTrue, reason: diagnose.text);
+      expect(hps.aufrufe.single.pfad, '/api/terminals/$_tid/diagnosis');
+      final zahlung = await zahle(hps.port, tid: '00$_tid');
+      expect(zahlung.ok, isTrue);
+      final rumpf =
+          jsonDecode(hps.an('/api/transaction/payment').single.rumpf)
+              as Map<String, Object?>;
+      expect((rumpf['transaction']! as Map<String, Object?>)['tid'], _tid);
+    });
+
     test('Zahlung an tote Adresse: genau einmal an die bestätigte Adresse '
         'derselben TID; endpoint nennt sie', () async {
       await merke();
@@ -352,6 +404,31 @@ void main() {
         expect((await rufe('/v1/terminal/abort', tx)).ok, isTrue);
         await zahlung;
         expect(hps.an('/api/terminals/'), isEmpty);
+      });
+
+      test('Aufhebung während der Zahlung: terminal_busy, nie ans Terminal '
+          '(HPS 1.14.4 hing dabei 30 s)', () async {
+        final zahlung = zahle(hps.port);
+        await warteBis(
+          () async => hps.an('/api/transaction/payment').isNotEmpty,
+          grund: 'Zahlung am Terminal',
+        );
+        final aufhebung = await anAgent(
+          server.port,
+          'POST',
+          '/v1/terminal/cancel',
+          token: token,
+          rumpf: <String, Object?>{
+            'host': '127.0.0.1',
+            'port': hps.port,
+            'tid': _tid,
+            'transactionId': '42',
+            'amountCents': 100,
+          },
+        );
+        expect(aufhebung.code, errorTerminalBusy);
+        await zahlung;
+        expect(hps.aufrufe.where((a) => a.methode == 'DELETE'), isEmpty);
       });
 
       test(

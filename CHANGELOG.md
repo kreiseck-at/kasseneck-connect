@@ -30,6 +30,9 @@ Kasse entscheidet an `features`.
   im Hintergrund), Terminal per TID; Terminal-Aufrufe ohne Verbindung laufen
   genau einmal an der bestätigten Adresse derselben TID. `endpoint` in jeder
   Terminal-Antwort, `locate` für Drucker und Terminal, `device_not_found`.
+- **TID ohne führende Nullen:** Connect schickt die TID so, wie das Terminal
+  sie annimmt (`03600335` → `3600335`; HPS 1.14.4 lehnt die Form mit Null
+  ab). Die Seriennummer des Terminals (`sn`) wird zusätzlich gemerkt.
 - **terminal_busy:** ein zweiter langer Terminal-Aufruf, Diagnose, Test oder
   Suche während einer Zahlung bekommt sofort `terminal_busy` (mit
   `terminalHttpStatus: 409`).

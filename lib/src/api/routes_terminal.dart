@@ -183,11 +183,13 @@ class _Terminal {
       );
     }
     if (merken) {
+      final bestaetigt = tid != null && tidBestaetigt(daten, tid);
       warmhalter?.merken(
         host,
         port,
         tid: tid,
-        bestaetigt: tid != null && tidBestaetigt(daten, tid),
+        bestaetigt: bestaetigt,
+        serie: bestaetigt ? terminalSerie(daten) : null,
       );
     }
     return okJson(<String, Object?>{'hps': daten, if (umleiten) ...endpoint()});
@@ -229,6 +231,15 @@ class _Terminal {
   }
 }
 
+/// Die TID aus dem Rumpf in der Form, die das Terminal annimmt.
+///
+/// Gerätetest HPS 1.14.4: `03600335` lehnt es mit `100108 Invalid TID` ab,
+/// `3600335` geht. Führende Nullen fallen deshalb weg (nur bei einer reinen
+/// Ziffernfolge, `0` bleibt `0`); gemerkt und verglichen wird ebenfalls diese
+/// Form. Das Paket der Kasse normiert genauso – hier doppelt, damit auch eine
+/// ältere Kasse zahlt.
+String _tidAus(Object? roh) => tidNormal(readString(roh)?.trim() ?? '');
+
 /// Host und Port aus dem Rumpf; `null` + fertige Fehlerantwort bei Unsinn.
 (String, int)? _ziel(Map<String, Object?> body) {
   final host = readString(body['host'])?.trim() ?? '';
@@ -256,7 +267,7 @@ Future<Response> _handleTest(_Terminal t, Request request) async {
   if (body.error != null) return body.error!;
   final ziel = _ziel(body.data!);
   if (ziel == null) return _zielFehler();
-  final tid = readString(body.data!['tid'])?.trim() ?? '';
+  final tid = _tidAus(body.data!['tid']);
   if (t.sperrtBei(request) &&
       t.belegung.belegt(tid: tid, host: ziel.$1, port: ziel.$2)) {
     return t.besetzt();
@@ -287,7 +298,7 @@ Future<Response> _handleDiagnosis(_Terminal t, Request request) async {
   if (body.error != null) return body.error!;
   final ziel = _ziel(body.data!);
   if (ziel == null) return _zielFehler();
-  final tid = readString(body.data!['tid'])?.trim() ?? '';
+  final tid = _tidAus(body.data!['tid']);
   if (!_tid.hasMatch(tid)) {
     return failJson(errorBadRequest, 'Es fehlt die Terminal-ID (tid).');
   }
@@ -324,7 +335,7 @@ Future<Response> _handlePayment(_Terminal t, Request request) async {
   final ziel = _ziel(daten);
   if (ziel == null) return _zielFehler();
 
-  final tid = readString(daten['tid'])?.trim() ?? '';
+  final tid = _tidAus(daten['tid']);
   final transactionId = readString(daten['transactionId'])?.trim() ?? '';
   final amountCents = daten['amountCents'];
   final tipCents = daten['tipCents'];
@@ -388,7 +399,7 @@ Future<Response> _handleRefund(_Terminal t, Request request) async {
   final ziel = _ziel(daten);
   if (ziel == null) return _zielFehler();
 
-  final tid = readString(daten['tid'])?.trim() ?? '';
+  final tid = _tidAus(daten['tid']);
   final transactionId = readString(daten['transactionId'])?.trim() ?? '';
   final originalTransactionId =
       readString(daten['originalTransactionId'])?.trim() ?? '';
@@ -476,7 +487,7 @@ Future<Response> _handleCancel(_Terminal t, Request request) async {
   final ziel = _ziel(daten);
   if (ziel == null) return _zielFehler();
 
-  final tid = readString(daten['tid'])?.trim() ?? '';
+  final tid = _tidAus(daten['tid']);
   final transactionId = readString(daten['transactionId'])?.trim() ?? '';
   final amountCents = daten['amountCents'];
   final currency = readString(daten['currency'])?.trim();
@@ -524,7 +535,7 @@ Future<Response> _mitTransaktion(
   if (body.error != null) return body.error!;
   final ziel = _ziel(body.data!);
   if (ziel == null) return _zielFehler();
-  final tid = readString(body.data!['tid'])?.trim() ?? '';
+  final tid = _tidAus(body.data!['tid']);
   final txId = readString(body.data!['transactionId'])?.trim() ?? '';
   if (!_tid.hasMatch(tid)) {
     return failJson(errorBadRequest, 'Es fehlt die Terminal-ID (tid).');
@@ -563,7 +574,7 @@ Future<Response> _handleDiscover(
 Future<Response> _handleLocate(_Terminal t, Request request) async {
   final body = await readJsonBody(request);
   if (body.error != null) return body.error!;
-  final tid = readString(body.data!['tid'])?.trim() ?? '';
+  final tid = _tidAus(body.data!['tid']);
   if (!_tid.hasMatch(tid)) {
     return failJson(errorBadRequest, 'Es fehlt die Terminal-ID (tid).');
   }

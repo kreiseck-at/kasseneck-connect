@@ -193,12 +193,13 @@ void main() {
         final gesehen = <AgentEvent>[];
         final abo = events.stream.listen(gesehen.add);
         addTearDown(abo.cancel);
-        final fund = await finder.suche(_tid);
+        final fund = await finder.suche('0$_tid');
         expect(fund?.port, richtig.port);
         expect(fund?.umgezogen, isTrue);
         final config = await store.load();
         expect(config.terminal?.port, richtig.port);
         expect(config.terminal?.confirmedAt, jetzt.toUtc());
+        expect(config.terminal?.serial, 'P000000K00001', reason: 'sn');
         expect(config.relocations.single.art, GeraeteArt.terminal);
         expect(config.relocations.single.kennung, _tid);
         await Future<void>.delayed(Duration.zero);

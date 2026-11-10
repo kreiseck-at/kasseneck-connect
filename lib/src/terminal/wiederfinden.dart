@@ -101,8 +101,10 @@ class TerminalWiederfinder {
 
   /// Sucht das Terminal [tid]; `null` ohne genau einen bestätigten Treffer,
   /// während eines langen Aufrufs oder abgeschaltet.
-  Future<TerminalFund?> suche(String tid) async {
-    final schluessel = tidNormal(tid);
+  Future<TerminalFund?> suche(String roheTid) async {
+    // Das Terminal nimmt die TID nur ohne führende Nullen an.
+    final tid = tidNormal(roheTid);
+    final schluessel = tid;
     final laufend = _laufend[schluessel];
     if (laufend != null) return laufend;
     final config = await store.load();
@@ -124,7 +126,7 @@ class TerminalWiederfinder {
   Future<TerminalFund?> _suchen(String tid) async {
     try {
       final ergebnis = await _suche();
-      final bestaetigt = <({String host, int port})>{};
+      final bestaetigt = <({String host, int port, String? serie})>{};
       for (final treffer in ergebnis.found) {
         // Der Reihe nach, nie gleichzeitig – wie die Kasse.
         if (_belegung.irgendeins) return null;
@@ -135,7 +137,11 @@ class TerminalWiederfinder {
             tid: tid,
           );
           if (tidBestaetigt(antwort, tid)) {
-            bestaetigt.add((host: treffer.host, port: treffer.port));
+            bestaetigt.add((
+              host: treffer.host,
+              port: treffer.port,
+              serie: terminalSerie(antwort),
+            ));
           }
         } on HpsWegFehler catch (e) {
           // Nicht erreichbar oder kein HPS: bestätigt nichts.
@@ -152,7 +158,8 @@ class TerminalWiederfinder {
         );
         return null;
       }
-      return _uebernimm(tid, bestaetigt.single.host, bestaetigt.single.port);
+      final fund = bestaetigt.single;
+      return _uebernimm(tid, fund.host, fund.port, fund.serie);
     } on Object catch (e) {
       // Ohne Fund bleibt es beim Verhalten von 1.4.2.
       _log?.warn('Terminal-Suche nach $tid gescheitert: $e');
@@ -160,7 +167,12 @@ class TerminalWiederfinder {
     }
   }
 
-  Future<TerminalFund> _uebernimm(String tid, String host, int port) async {
+  Future<TerminalFund> _uebernimm(
+    String tid,
+    String host,
+    int port,
+    String? serie,
+  ) async {
     final jetzt = _clock().toUtc();
     String? vorher;
     await store.mutate((config) {
@@ -173,6 +185,7 @@ class TerminalWiederfinder {
         tid: tid,
         mac: alt != null && alt.host == host ? alt.mac : null,
         confirmedAt: jetzt,
+        serial: serie ?? (alt != null && alt.host == host ? alt.serial : null),
         extras: alt?.extras,
       );
       final mitTerminal = config.copyWith(terminal: neu);
@@ -188,7 +201,7 @@ class TerminalWiederfinder {
       );
     });
     final fund = TerminalFund(tid: tid, host: host, port: port, vorher: vorher);
-    _warmhalter?.merken(host, port, tid: tid, bestaetigt: true);
+    _warmhalter?.merken(host, port, tid: tid, bestaetigt: true, serie: serie);
     if (fund.umgezogen) {
       _log?.info(
         'Terminal $tid: Adresse ${fund.vorher} → $host:$port, TID bestätigt',

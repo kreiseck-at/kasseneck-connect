@@ -10,6 +10,7 @@ class HpsAufruf {
   final String pfad;
   final DateTime beginn;
   DateTime? ende;
+  String rumpf = '';
 }
 
 /// Fake eines Hobex-HPS: antwortet je Pfad nach [antwort], auf Wunsch
@@ -55,7 +56,7 @@ class FakeHpsServer {
     _offen++;
     if (_offen > _hoechstOffen) _hoechstOffen = _offen;
     try {
-      await utf8.decoder.bind(anfrage).join();
+      aufruf.rumpf = await utf8.decoder.bind(anfrage).join();
       for (final eintrag in verzoegerung.entries) {
         if (aufruf.pfad.startsWith(eintrag.key)) {
           await Future<void>.delayed(eintrag.value);
@@ -78,7 +79,12 @@ class FakeHpsServer {
     ).firstMatch(pfad);
     if (diagnose != null) {
       return diagnose.group(1) == tid
-          ? <String, Object?>{'responseCode': '0', 'tid': tid}
+          ? <String, Object?>{
+              'responseCode': '0',
+              'tid': tid,
+              'sn': 'P000000K00001',
+              'mac': 'Unavailable',
+            }
           : <String, Object?>{
               'responseCode': '100108',
               'responseText': 'Invalid TID',

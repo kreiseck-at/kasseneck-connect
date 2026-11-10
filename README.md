@@ -476,6 +476,10 @@ Ab 1.5.0:
   nachweislich nichts gesendet. Nach `terminal_offline` oder `timeout` nie.
 - Jede Antwort der Terminal-Routen trägt `endpoint: {host, port, relocated}`,
   die tatsächlich benutzte Adresse.
+- Die TID geht ohne führende Nullen ans Terminal (HPS 1.14.4 lehnt
+  `03600335` mit „Invalid TID“ ab, nimmt `3600335`); gemerkt und verglichen
+  wird ebenso. Die Seriennummer des Terminals (`sn` der Diagnose) merkt sich
+  Connect als zusätzliche Kennung; die MAC kommt aus ARP.
 - Antwortet das Terminal dreimal hintereinander nicht auf die
   Wachhalte-Berührung, sucht Connect es im Hintergrund (Suche, dann Diagnose
   mit der TID je Treffer; höchstens alle 5 min, nie während einer Zahlung) und

@@ -70,6 +70,7 @@ Map<String, Object?> konfigurationFuerDiagnose(
       'host': t.host,
       'port': t.port,
       'tid': t.tid,
+      'serial': t.serial,
       'mac': t.mac,
       'confirmedAt': t.confirmedAt?.toIso8601String(),
     },

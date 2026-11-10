@@ -16,6 +16,11 @@ const int _stoppPapierende = 0x12 | 0x20;
 const int _rolleLeer = 0x12 | 0x60;
 const int _rolleFastLeer = 0x12 | 0x0C;
 
+/// Der Statusabruf über ePOS ist eine HTTP-Anfrage; unter Last (viele
+/// Testdateien zugleich) braucht sie länger als die 500 ms im Betrieb. Dann
+/// gälte der Zustand zu Recht als unbekannt – hier soll er ankommen.
+const Duration _eposBudget = Duration(seconds: 3);
+
 void main() {
   group('DLE EOT deuten (Epson ESC/POS, DLE EOT 2 und 4)', () {
     final faelle = <(int?, int?), (Papier, Deckel)>{
@@ -233,7 +238,7 @@ void main() {
     test(
       'Papierende in den Statusbits: kein Druckauftrag, paper_out',
       () async {
-        a = DruckAufbau.erstellen();
+        a = DruckAufbau.erstellen(budget: _eposBudget);
         epos = await FakeEposServer.start(status: '${0x00080000 | 2}');
         final id = await eposDrucker();
         final ergebnis = await a.queue.enqueue(id, 'job', beispielBon);
@@ -244,7 +249,7 @@ void main() {
     );
 
     test('fast leer: Druck geht, near_end', () async {
-      a = DruckAufbau.erstellen();
+      a = DruckAufbau.erstellen(budget: _eposBudget);
       epos = await FakeEposServer.start(status: '${0x00020000 | 2}');
       final id = await eposDrucker();
       expect((await a.queue.enqueue(id, 'job', beispielBon)).ok, isTrue);
@@ -255,7 +260,7 @@ void main() {
 
     test('Statusabruf scheitert (HTTP 500): unbekannt, gedruckt wird '
         'wie bisher', () async {
-      a = DruckAufbau.erstellen();
+      a = DruckAufbau.erstellen(budget: _eposBudget);
       epos = await FakeEposServer.start(mode: FakeEposMode.serverError);
       final id = await eposDrucker();
       final ergebnis = await a.queue.enqueue(id, 'job', beispielBon);
@@ -401,9 +406,8 @@ void main() {
       );
       await a.drucker(drucker.port);
       schnell.start();
-      await Future<void>.delayed(const Duration(milliseconds: 200));
+      await warteBis(() async => schnell.runden >= 2, grund: 'zwei Runden');
       await schnell.stop();
-      expect(schnell.runden, greaterThanOrEqualTo(2));
     });
   });
 

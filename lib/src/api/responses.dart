@@ -26,6 +26,9 @@ const String errorUpgradeRequired = 'upgrade_required';
 /// kommen base64-kodiert im Rumpf.
 const int defaultJsonBodyLimit = 64 * 1024;
 
+/// Wiederfinden ohne eindeutigen Treffer (`locate`, ab 1.5.0).
+const String errorDeviceNotFound = 'device_not_found';
+
 /// Kopplungscode falsch oder verbraucht.
 const String errorPairInvalid = 'pair_invalid';
 

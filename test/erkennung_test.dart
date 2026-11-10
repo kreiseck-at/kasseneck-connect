@@ -6,6 +6,7 @@ import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
 import 'support/agent_klient.dart';
+import 'support/druck_aufbau.dart';
 import 'support/fake_printer.dart';
 import 'support/fake_process_runner.dart';
 
@@ -249,5 +250,33 @@ void main() {
     expect(eintrag.serial, 'X5ZT000123');
     expect(eintrag.mac, isNull);
     expect(prozesse.calls.where((c) => c.executable == 'arp'), isEmpty);
+  });
+
+  group('Kennungspflege', () {
+    test(
+      'nachAnlegen kommt zurück; zwei Anstöße teilen sich eine Abfrage',
+      () async {
+        final a = DruckAufbau.erstellen();
+        addTearDown(a.aufraeumen);
+        final id = await a.drucker(drucker.port);
+        final pflege = Kennungspflege(
+          store: a.store,
+          queue: a.queue,
+          lagen: a.registry.lagen,
+          clock: () => a.jetzt,
+          erkennung: DruckerErkennung(
+            abfrage: EscPosAbfrage(),
+            arp: a.arp,
+            schnittstellen: () async => a.schnittstellen,
+          ),
+        );
+        await Future.wait(<Future<void>>[
+          pflege.nachAnlegen(id),
+          pflege.nachAnlegen(id),
+        ]).timeout(const Duration(seconds: 5));
+        expect(drucker.abfrageVerbindungen, hasLength(1));
+        expect((await a.store.load()).printers.single.serial, 'X5ZT000123');
+      },
+    );
   });
 }

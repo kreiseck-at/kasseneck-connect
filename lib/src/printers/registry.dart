@@ -40,7 +40,9 @@ class PrinterRegistry {
     PrinterDriver Function(PrinterConfig printer)? driverFactory,
     this.probeTimeout = defaultProbeTimeout,
     DruckerLagen? lagen,
-  }) : _log = log,
+    SocketConnector? verbinden,
+  }) : _verbinden = verbinden,
+       _log = log,
        _events = events,
        _random = random ?? Random.secure(),
        _driverFactory = driverFactory,
@@ -51,6 +53,10 @@ class PrinterRegistry {
   final EventBus? _events;
   final Random _random;
   final PrinterDriver Function(PrinterConfig printer)? _driverFactory;
+
+  /// Verbindungsaufbau der 9100-Treiber (Tests ersetzen ihn); `null`:
+  /// `Socket.connect`.
+  final SocketConnector? _verbinden;
 
   /// Zeitlimit einer Zustandsabfrage.
   final Duration probeTimeout;
@@ -191,7 +197,11 @@ class PrinterRegistry {
 
     switch (printer.kind) {
       case PrinterKind.tcp9100:
-        return Tcp9100Printer(printer.host, printer.port);
+        return Tcp9100Printer(
+          printer.host,
+          printer.port,
+          verbinden: _verbinden,
+        );
       case PrinterKind.epos:
         final https = printer.port == 443;
         final standard = https || printer.port == 80;

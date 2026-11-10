@@ -11,6 +11,7 @@ import '../printers/funde.dart';
 import '../printers/queue.dart';
 import '../printers/registry.dart';
 import '../printers/statustakt.dart';
+import '../printers/wiederfinden.dart';
 import 'context.dart';
 import 'responses.dart';
 import 'routes_print.dart';
@@ -40,6 +41,7 @@ RouteRegistrar printerRoutes({
   Kennungspflege? kennung,
   FundGedaechtnis? funde,
   DruckerStatusDienst? status,
+  DruckerWiederfinder? wiederfinder,
 }) {
   return (Router router, AgentContext ctx) {
     final search = discovery ?? PrinterDiscovery(log: ctx.log);
@@ -72,6 +74,12 @@ RouteRegistrar printerRoutes({
       router.post(
         '/v1/printers/<id>/status',
         (Request r, String id) => handlePrinterStatus(status, id),
+      );
+    }
+    if (wiederfinder != null) {
+      router.post(
+        '/v1/printers/<id>/locate',
+        (Request r, String id) => handleLocatePrinter(wiederfinder, id),
       );
     }
   };
@@ -161,6 +169,39 @@ Future<Response> handlePrinterStatus(
     return failJson(errorPrinterUnknown, 'Diesen Drucker gibt es nicht.');
   }
   return okJson(<String, Object?>{'printer': drucker});
+}
+
+/// `POST /v1/printers/{id}/locate` — sucht den Drucker gründlich unter einer
+/// neuen Adresse und übernimmt sie, wenn es genau einen bestätigten Treffer
+/// gibt. Antwort: `{relocated: true, from, to, printer}`; ohne eindeutigen
+/// Treffer `device_not_found`.
+Future<Response> handleLocatePrinter(
+  DruckerWiederfinder wiederfinder,
+  String id,
+) async {
+  final vorher = await wiederfinder.registry.find(id);
+  if (vorher == null) {
+    return failJson(errorPrinterUnknown, 'Diesen Drucker gibt es nicht.');
+  }
+  if (!vorher.hatKennung) {
+    return failJson(
+      errorDeviceNotFound,
+      'Der Drucker hat noch keine Kennung – Connect kann ihn nicht suchen.',
+    );
+  }
+  final neu = await wiederfinder.gruendlich(id, erzwingen: true);
+  if (neu == null || neu.host == vorher.host) {
+    return failJson(
+      errorDeviceNotFound,
+      'Der Drucker ist unter keiner anderen Adresse eindeutig zu finden.',
+    );
+  }
+  return okJson(<String, Object?>{
+    'relocated': true,
+    'from': '${vorher.host}:${vorher.port}',
+    'to': '${neu.host}:${neu.port}',
+    'printer': wiederfinder.registry.zusammenfassung(neu),
+  });
 }
 
 /// `POST /v1/printers/discover` — `{scan?: bool}`.

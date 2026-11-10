@@ -81,7 +81,7 @@ KennungsLage beurteileKennung({
   required bool frisch,
 }) {
   if (gespeicherteSerie != null && geseheneSerie != null) {
-    return gleicheSerie(gespeicherteSerie, geseheneSerie)
+    return gleicheKennung(gespeicherteSerie, geseheneSerie)
         ? KennungsLage.bestaetigt
         : KennungsLage.konflikt;
   }
@@ -90,10 +90,10 @@ KennungsLage beurteileKennung({
   return KennungsLage.unbekannt;
 }
 
-/// Seriennummern vergleicht Connect ohne Leerraum und Groß-/Kleinschreibung:
-/// derselbe Drucker nennt sie über mDNS und `GS I` nicht immer gleich
-/// geschrieben.
-bool gleicheSerie(String a, String b) => _normiert(a) == _normiert(b);
+/// Seriennummern und Modelle vergleicht Connect ohne Leerraum und
+/// Groß-/Kleinschreibung: dasselbe Gerät nennt sie über mDNS und `GS I` nicht
+/// immer gleich geschrieben.
+bool gleicheKennung(String a, String b) => _normiert(a) == _normiert(b);
 
 String _normiert(String text) =>
     text.replaceAll(RegExp(r'\s'), '').toUpperCase();

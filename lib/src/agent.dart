@@ -32,6 +32,7 @@ import 'printers/registry.dart';
 import 'printers/statustakt.dart';
 import 'printers/tcp9100.dart' show SocketConnector;
 import 'printers/vorpruefung.dart';
+import 'printers/wiederfinden.dart';
 import 'process_runner.dart';
 import 'terminal/warmhalten.dart';
 import 'tls/certificates.dart';
@@ -93,7 +94,9 @@ class Agent {
     String? betriebssystem,
     InterfaceProbe? schnittstellen,
     SocketConnector? geraeteVerbindung,
+    TcpProbe? geraeteProbe,
   }) : _clock = clock ?? DateTime.now,
+       _geraeteProbe = geraeteProbe ?? tcpReachable,
        _betriebssystem = betriebssystem ?? Platform.operatingSystem,
        _schnittstellen = schnittstellen ?? listLocalIpv4Interfaces,
        _geraeteVerbindung = geraeteVerbindung ?? Socket.connect,
@@ -157,6 +160,9 @@ class Agent {
 
   /// Verbindungsaufbau zu Druckern für Abfragen (Tests ersetzen ihn).
   final SocketConnector _geraeteVerbindung;
+
+  /// „Antwortet dort ein Port?“ fürs Wiederfinden (Tests ersetzen es).
+  final TcpProbe _geraeteProbe;
 
   /// Zugang zum Bluetooth-Hilfsprogramm; ohne ihn der dieses Rechners
   /// ([platformBluetoothHelper]). [stop] beendet ihn – auch einen
@@ -241,7 +247,13 @@ class Agent {
     final bus = _events ?? EventBus();
     _ownsEvents = _events == null;
     final registry =
-        _registry ?? PrinterRegistry(store: store, log: log, events: bus);
+        _registry ??
+        PrinterRegistry(
+          store: store,
+          log: log,
+          events: bus,
+          verbinden: _geraeteVerbindung,
+        );
     final queue =
         _queue ?? PrintQueue(registry: registry, events: bus, log: log);
     _printers = registry;
@@ -277,8 +289,22 @@ class Agent {
       clock: _clock,
     );
     _status = status;
+    final discovery = _discovery ?? PrinterDiscovery(log: log);
+    final wiederfinder = DruckerWiederfinder(
+      registry: registry,
+      arp: arp,
+      abfrage: abfrage,
+      suche: discovery,
+      schnittstellen: _schnittstellen,
+      events: bus,
+      tcp: _geraeteProbe,
+      log: log,
+      clock: _clock,
+    );
+    status.beiDauerndVerfehlt = wiederfinder.gruendlichImHintergrund;
     queue
       ..nachErfolg = kennung.nachKontakt
+      ..wiederfinder = wiederfinder
       ..vorpruefung = DruckVorpruefung(
         registry: registry,
         abfrage: abfrage,
@@ -286,6 +312,7 @@ class Agent {
         schnittstellen: _schnittstellen,
         log: log,
         clock: _clock,
+        schnellesWiederfinden: wiederfinder.schnell,
       );
 
     // Die Brücke steht ab hier, Bluetooth selbst startet erst mit dem ersten
@@ -356,7 +383,8 @@ class Agent {
         kennung: kennung,
         funde: funde,
         status: status,
-        discovery: _discovery ?? PrinterDiscovery(log: log),
+        wiederfinder: wiederfinder,
+        discovery: discovery,
       ),
       bluetoothRoutes(bridge: bluetooth),
       updateRoutes(),

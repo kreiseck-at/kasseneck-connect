@@ -138,10 +138,11 @@ class Kennungspflege {
   Future<void> _erkenne(String id, {required bool sofort}) {
     final laufend = _laufend[id];
     if (laufend != null) return laufend;
-    final arbeit = _arbeit(
-      id,
-      sofort: sofort,
-    ).whenComplete(() => _laufend.remove(id));
+    final arbeit = _arbeit(id, sofort: sofort).whenComplete(() {
+      // Block statt Pfeil: `remove` liefert genau diese Zukunft, und
+      // whenComplete wartete sonst auf sich selbst.
+      _laufend.remove(id);
+    });
     _laufend[id] = arbeit;
     return arbeit;
   }

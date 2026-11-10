@@ -60,6 +60,7 @@ export 'src/printers/registry.dart';
 export 'src/printers/statustakt.dart';
 export 'src/printers/tcp9100.dart';
 export 'src/printers/vorpruefung.dart';
+export 'src/printers/wiederfinden.dart';
 export 'src/printers/zustand.dart';
 export 'src/process_runner.dart';
 export 'src/terminal/discovery.dart';

@@ -7,6 +7,7 @@ import '../log/logger.dart';
 import 'driver.dart';
 import 'registry.dart';
 import 'vorpruefung.dart';
+import 'wiederfinden.dart';
 
 /// So lange gilt ein `jobId` als bereits erledigt.
 const Duration defaultIdempotencyWindow = Duration(seconds: 60);
@@ -76,6 +77,10 @@ class PrintQueue {
   /// Prüfung vor dem ersten Versuch (Kennung, Papier, Deckel). Ohne sie
   /// läuft jeder Auftrag genau wie bis 1.4.2.
   DruckVorpruefung? vorpruefung;
+
+  /// Sucht einen Drucker, der vor dem ersten Byte nicht erreichbar war, unter
+  /// einer neuen Adresse (nur zusammen mit [vorpruefung]).
+  DruckerWiederfinder? wiederfinder;
 
   /// Laufende Kette je Drucker — daran hängt sich der nächste Auftrag an.
   final Map<String, Future<void>> _chains = <String, Future<void>>{};
@@ -150,6 +155,7 @@ class PrintQueue {
       );
       try {
         final PrinterDriver driver;
+        PrinterConfig? zielDrucker;
         switch (await _vorbereiten(printerId, jobId)) {
           case _Unbekannt():
             // Kein Ergebnis merken: sobald der Drucker angelegt ist, soll
@@ -166,10 +172,11 @@ class PrintQueue {
             _jobs.remove(key);
             result = _fail(printerId, jobId, fehler, 0);
             return;
-          case _Bereit(:final treiber):
+          case _Bereit(:final treiber, :final ziel):
             driver = treiber;
+            zielDrucker = ziel;
         }
-        result = await _run(printerId, jobId, driver, bytes);
+        result = await _run(printerId, jobId, driver, bytes, ziel: zielDrucker);
         if (_worthRemembering(result)) {
           record.finish(result, _clock());
         } else {
@@ -205,7 +212,7 @@ class PrintQueue {
     final pruefung = vorpruefung;
     if (pruefung == null) {
       final driver = await registry.driverForId(printerId);
-      return driver == null ? const _Unbekannt() : _Bereit(driver);
+      return driver == null ? const _Unbekannt() : _Bereit(driver, null);
     }
     final config = await registry.store.load();
     PrinterConfig? drucker;
@@ -223,7 +230,7 @@ class PrintQueue {
             '${ziel.host}:${ziel.port}.',
           );
         }
-        return _Bereit(registry.driverFor(ziel));
+        return _Bereit(registry.driverFor(ziel), ziel);
     }
   }
 
@@ -247,8 +254,9 @@ class PrintQueue {
     String printerId,
     String jobId,
     PrinterDriver driver,
-    Uint8List bytes,
-  ) async {
+    Uint8List bytes, {
+    PrinterConfig? ziel,
+  }) async {
     for (var attempt = 1; attempt <= 2; attempt++) {
       try {
         // Das Zeitlimit steht hier zusätzlich zum Treiber: die Warteschlange
@@ -269,14 +277,32 @@ class PrintQueue {
         return const PrintResult.success();
       } on Object catch (e) {
         final failure = _asFailure(e, printerId);
+        final nichtsGesendet =
+            failure.code == errorPrinterOffline && !failure.mayHavePrinted;
         if (failure.retryable && attempt == 1) {
           _log?.warn(
             'Auftrag $jobId an $printerId: ${failure.code} — zweiter Versuch.',
           );
           // Erst die alte Verbindung wegwerfen, dann neu ansetzen.
           await driver.abort();
+          // Keine Verbindung vor dem ersten Byte: vielleicht hat der Drucker
+          // eine neue Adresse. Dort zu drucken ist sicher, denn nachweislich
+          // ging noch nichts hinaus.
+          final suche = wiederfinder;
+          if (nichtsGesendet && ziel != null && suche != null) {
+            final neu = await suche.schnell(ziel);
+            if (neu != null) {
+              _log?.info(
+                'Auftrag $jobId an $printerId geht an die neue Adresse '
+                '${neu.host}:${neu.port}.',
+              );
+              driver = registry.driverFor(neu);
+              ziel = neu;
+            }
+          }
           continue;
         }
+        if (nichtsGesendet) wiederfinder?.gruendlichImHintergrund(printerId);
         return _fail(printerId, jobId, failure, attempt);
       }
     }
@@ -390,9 +416,10 @@ final class _Abgelehnt extends _Vorbereitung {
   final PrinterFailure fehler;
 }
 
-/// Drucken mit [treiber].
+/// Drucken mit [treiber] an [ziel] (`null` auf dem Weg ohne Vorprüfung).
 final class _Bereit extends _Vorbereitung {
-  const _Bereit(this.treiber);
+  const _Bereit(this.treiber, this.ziel);
 
   final PrinterDriver treiber;
+  final PrinterConfig? ziel;
 }

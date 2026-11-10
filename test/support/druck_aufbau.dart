@@ -5,6 +5,7 @@ import 'package:kasseneck_connect/kasseneck_connect.dart';
 import 'package:path/path.dart' as p;
 
 import 'fake_process_runner.dart';
+import 'virtuelles_netz.dart';
 
 /// Ein Bon, wie ihn die Kasse schickt (ESC @, Text, Schnitt).
 final Uint8List beispielBon = Uint8List.fromList(<int>[
@@ -22,7 +23,9 @@ String arpZeile(String mac) =>
 class DruckAufbau {
   DruckAufbau._(this.temp, this.store, this.log, this.prozesse);
 
-  static DruckAufbau erstellen({DateTime? start}) {
+  /// Mit [netz] laufen alle Verbindungen, Proben und ARP-Ausgaben über das
+  /// virtuelle Kassen-Netz statt über Loopback.
+  static DruckAufbau erstellen({DateTime? start, VirtuellesNetz? netz}) {
     final temp = Directory.systemTemp.createTempSync('connect-druck-');
     final aufbau = DruckAufbau._(
       temp,
@@ -30,10 +33,33 @@ class DruckAufbau {
       AgentLog(Directory(p.join(temp.path, 'logs'))),
       FakeProcessRunner(),
     );
-    aufbau.jetzt = start ?? DateTime(2026, 11, 10, 9);
+    aufbau
+      ..netz = netz
+      ..jetzt = start ?? DateTime(2026, 11, 10, 9);
+    if (netz != null) {
+      aufbau.schnittstellen = const <LocalInterface>[VirtuellesNetz.eigene];
+      aufbau.prozesse.antwort = (programm, argumente) async {
+        if (programm != 'arp') return null;
+        final ausgabe = argumente.first == '-an'
+            ? netz.arpTabelle()
+            : netz.arpEinzeln(argumente.last);
+        return ProcessResult(1, 0, ausgabe, '');
+      };
+    }
     aufbau._bauen();
     return aufbau;
   }
+
+  /// Das virtuelle Netz, falls eines verwendet wird.
+  VirtuellesNetz? netz;
+
+  /// Funde der mDNS-Suche (für das Wiederfinden).
+  List<DiscoveredPrinter> mdnsFunde = const <DiscoveredPrinter>[];
+
+  /// Ob gerade eine Zahlung läuft (für das Wiederfinden).
+  bool zahlung = false;
+
+  late final DruckerWiederfinder wiederfinder;
 
   final Directory temp;
   final ConfigStore store;
@@ -61,17 +87,39 @@ class DruckAufbau {
       log: log,
       clock: () => jetzt,
     );
-    registry = PrinterRegistry(store: store, log: log, events: events);
+    final verbinden = netz?.verbinden;
+    registry = PrinterRegistry(
+      store: store,
+      log: log,
+      events: events,
+      verbinden: verbinden,
+    );
     queue = PrintQueue(registry: registry, events: events, log: log);
+    final abfrage = EscPosAbfrage(verbinden: verbinden);
+    wiederfinder = DruckerWiederfinder(
+      registry: registry,
+      arp: arp,
+      abfrage: abfrage,
+      suche: PrinterDiscovery(mdns: (_) async => mdnsFunde),
+      schnittstellen: () async => schnittstellen,
+      events: events,
+      tcp: netz?.tcp ?? tcpReachable,
+      zahlungLaeuft: () => zahlung,
+      log: log,
+      clock: () => jetzt,
+    );
     vorpruefung = DruckVorpruefung(
       registry: registry,
-      abfrage: EscPosAbfrage(),
+      abfrage: abfrage,
       arp: arp,
       schnittstellen: () async => schnittstellen,
       log: log,
       clock: () => jetzt,
+      schnellesWiederfinden: wiederfinder.schnell,
     );
-    queue.vorpruefung = vorpruefung;
+    queue
+      ..vorpruefung = vorpruefung
+      ..wiederfinder = wiederfinder;
   }
 
   /// Die MAC, die `arp` für 127.0.0.1 meldet (`null`: kein Eintrag).
@@ -82,12 +130,13 @@ class DruckAufbau {
     arp.vergiss('127.0.0.1');
   }
 
-  /// Legt einen Drucker auf [port] an.
+  /// Legt einen Drucker unter [host] (Vorgabe Loopback) auf [port] an.
   Future<String> drucker(
     int port, {
     String? serial,
     String? mac,
     String id = 'p_ab12cd34',
+    String host = '127.0.0.1',
   }) async {
     await store.mutate(
       (c) => c.copyWith(
@@ -97,7 +146,7 @@ class DruckAufbau {
             id: id,
             name: 'Bon',
             kind: PrinterKind.tcp9100,
-            host: '127.0.0.1',
+            host: host,
             port: port,
             serial: serial,
             mac: mac,

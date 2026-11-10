@@ -130,8 +130,8 @@ void main() {
       return ergebnis;
     }
 
-    Future<PrinterConfig> gespeichert() async =>
-        (await a.store.load()).printers.single;
+    Future<PrinterConfig> gespeichert([String id = 'p_ab12cd34']) async =>
+        (await a.store.load()).printers.singleWhere((d) => d.id == id);
 
     test('keine Verbindung vor dem ersten Byte: per ARP gefunden, der Bon geht '
         'an die neue Adresse, still', () async {
@@ -289,6 +289,41 @@ void main() {
           expect(config.tokenHashes, hasLength(5));
         },
       );
+
+      test('Kandidat unter der Adresse eines anderen Druckers: die gründliche '
+          'Suche fragt erst, wenn dessen Warteschlange frei ist; die schnelle '
+          'lässt ihn aus', () async {
+        final anderer = await FakeTcpPrinter.start(
+          dleEot: _gesund,
+          gsI: const <int, String>{68: 'X5ZT000777'},
+        );
+        addTearDown(anderer.stop);
+        netz.stelle('192.168.0.62', 9100, anderer.port, mac: _mac);
+        await a.drucker(
+          9100,
+          host: '192.168.0.62',
+          id: 'p_anderer',
+          serial: 'X5ZT000777',
+        );
+        final id = await a.drucker(9100, host: _alt, serial: _serie, mac: _mac);
+
+        // Schnell (im Auftrag): der andere Drucker wird nicht gefragt.
+        netz.entferne(_neu);
+        expect(await a.wiederfinder.schnell((await gespeichert(id))), isNull);
+        expect(anderer.connections, 0);
+
+        // Gründlich: wartet, solange der andere Drucker druckt.
+        final halten = Completer<void>();
+        final bon = a.queue.exclusive('p_anderer', () => halten.future);
+        final suche = a.wiederfinder.gruendlich(id, erzwingen: true);
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+        expect(anderer.connections, 0, reason: 'nie neben seinem Bon');
+        halten.complete();
+        await bon;
+        expect(await suche, isNull, reason: 'andere Seriennummer');
+        expect(anderer.connections, 1);
+        expect(anderer.hoechstGleichzeitig, 1);
+      });
 
       test('Statustakt: nach zwei Fehlversuchen gründliche Suche', () async {
         final id = await a.drucker(9100, host: _alt, serial: _serie);

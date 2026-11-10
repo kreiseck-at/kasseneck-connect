@@ -9,6 +9,7 @@ import 'abfrage.dart';
 import 'discovery.dart';
 import 'erkennung.dart' show macImSelbenNetz;
 import 'kennung.dart';
+import 'queue.dart';
 import 'registry.dart';
 
 /// Zeitbudget des schnellen Wiederfindens (Spec 1.3: höchstens 4 s). Es läuft
@@ -99,6 +100,7 @@ class DruckerWiederfinder {
     required EscPosAbfrage abfrage,
     required PrinterDiscovery suche,
     required InterfaceProbe schnittstellen,
+    PrintQueue? queue,
     EventBus? events,
     TcpProbe tcp = tcpReachable,
     bool Function()? zahlungLaeuft,
@@ -106,7 +108,8 @@ class DruckerWiederfinder {
     DateTime Function()? clock,
     this.schnellBudget = schnellesWiederfindenBudget,
     this.scanBudget = defaultScanBudget,
-  }) : _arp = arp,
+  }) : _queue = queue,
+       _arp = arp,
        _abfrage = abfrage,
        _suche = suche,
        _schnittstellen = schnittstellen,
@@ -117,6 +120,11 @@ class DruckerWiederfinder {
        _clock = clock ?? DateTime.now;
 
   final PrinterRegistry registry;
+
+  /// Warteschlangen der Drucker: Kandidaten unter der Adresse eines anderen
+  /// eingerichteten Druckers fragt die gründliche Suche über dessen
+  /// Warteschlange – nie neben einem seiner Bons.
+  final PrintQueue? _queue;
   final ArpTabelle _arp;
   final EscPosAbfrage _abfrage;
   final PrinterDiscovery _suche;
@@ -249,6 +257,7 @@ class DruckerWiederfinder {
           eintrag.key,
           eintrag.value,
           rest,
+          imAuftrag: true,
         );
         if (kandidat != null) kandidaten.add(kandidat);
       }
@@ -279,7 +288,13 @@ class DruckerWiederfinder {
             _schnittstellen,
             frist: rest(),
           );
-          final kandidat = await _pruefe(drucker, fund.host, mac, rest);
+          final kandidat = await _pruefe(
+            drucker,
+            fund.host,
+            mac,
+            rest,
+            imAuftrag: true,
+          );
           if (kandidat != null) kandidaten.add(kandidat);
         }
       }
@@ -321,6 +336,7 @@ class DruckerWiederfinder {
         host,
         tabelle[host],
         () => kandidatAbfrageBudget,
+        imAuftrag: false,
       );
       if (kandidat != null) kandidaten.add(kandidat);
     }
@@ -329,21 +345,32 @@ class DruckerWiederfinder {
 
   /// Ein Kandidat unter [host]: mit gespeicherter Seriennummer nach `GS I 68`
   /// gefragt (nur 9100), sonst nur, wenn der Druckport antwortet.
+  ///
+  /// Gehört die Adresse einem anderen eingerichteten Drucker, fragt die
+  /// gründliche Suche über dessen Warteschlange ([imAuftrag] `false`); die
+  /// schnelle läuft selbst in einer Warteschlange und lässt solche Kandidaten
+  /// aus – zwei Warteschlangen, die aufeinander warten, gäbe es so nie.
   Future<DruckerKandidat?> _pruefe(
     PrinterConfig drucker,
     String host,
     String? mac,
-    Duration Function() rest,
-  ) async {
+    Duration Function() rest, {
+    required bool imAuftrag,
+  }) async {
     if (rest() <= Duration.zero) return null;
+    final anderer = await _andererDruckerUnter(host, drucker);
+    if (anderer != null && (imAuftrag || _queue == null)) return null;
     if (drucker.serial != null) {
       if (drucker.kind != PrinterKind.tcp9100) return null;
-      final antworten = await _abfrage.frage(
+      Future<EscPosAntworten> fragen() => _abfrage.frage(
         host,
         drucker.port,
         fragen: const <EscPosFrage>{EscPosFrage.seriennummer},
         budget: rest() < kandidatAbfrageBudget ? rest() : kandidatAbfrageBudget,
       );
+      final antworten = anderer == null
+          ? await fragen()
+          : await _queue!.exclusive(anderer.id, fragen);
       return DruckerKandidat(
         host: host,
         port: drucker.port,
@@ -353,6 +380,22 @@ class DruckerWiederfinder {
     }
     if (!await _tcp(host, drucker.port, _kurz(rest()))) return null;
     return DruckerKandidat(host: host, port: drucker.port, mac: mac);
+  }
+
+  /// Der eingerichtete Drucker (nicht [drucker]) unter [host]:Port von
+  /// [drucker], sonst `null`.
+  Future<PrinterConfig?> _andererDruckerUnter(
+    String host,
+    PrinterConfig drucker,
+  ) async {
+    for (final eintrag in await registry.list()) {
+      if (eintrag.id != drucker.id &&
+          eintrag.host == host &&
+          eintrag.port == drucker.port) {
+        return eintrag;
+      }
+    }
+    return null;
   }
 
   static Duration _kurz(Duration rest) =>

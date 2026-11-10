@@ -335,6 +335,7 @@ class Agent {
       abfrage: abfrage,
       suche: discovery,
       schnittstellen: _schnittstellen,
+      queue: queue,
       events: bus,
       tcp: _geraeteProbe,
       zahlungLaeuft: () => belegung.irgendeins,

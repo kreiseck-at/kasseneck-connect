@@ -102,6 +102,7 @@ class DruckAufbau {
       abfrage: abfrage,
       suche: PrinterDiscovery(mdns: (_) async => mdnsFunde),
       schnittstellen: () async => schnittstellen,
+      queue: queue,
       events: events,
       tcp: netz?.tcp ?? tcpReachable,
       zahlungLaeuft: () => zahlung,

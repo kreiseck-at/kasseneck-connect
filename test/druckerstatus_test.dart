@@ -97,6 +97,47 @@ void main() {
       expect(deckel.message, 'Drucker: Deckel offen – bitte schließen.');
     });
 
+    test(
+      'ein unveränderter Zustand meldet kein zweites printer.state',
+      () async {
+        final bus = EventBus();
+        addTearDown(bus.close);
+        final gesehen = <AgentEvent>[];
+        final abo = bus.stream.listen(gesehen.add);
+        addTearDown(abo.cancel);
+        final temp = Directory.systemTemp.createTempSync('connect-zustand-');
+        addTearDown(() => temp.deleteSync(recursive: true));
+        final registry = PrinterRegistry(
+          store: ConfigStore.forDirectory(temp),
+          events: bus,
+        );
+        final jetzt = DateTime.utc(2026, 11, 10, 9);
+        const fastLeer = DruckerZustand(
+          papier: Papier.fastLeer,
+          deckel: Deckel.zu,
+          bereitschaft: Bereitschaft.bereit,
+        );
+        registry
+          ..noteZustand('p1', fastLeer, jetzt)
+          ..noteZustand(
+            'p1',
+            const DruckerZustand(
+              papier: Papier.fastLeer,
+              deckel: Deckel.zu,
+              bereitschaft: Bereitschaft.bereit,
+            ),
+            jetzt,
+          )
+          ..noteZustand('p1', DruckerZustand.nichtBereit, jetzt);
+        await Future<void>.delayed(Duration.zero);
+        expect(gesehen.map((e) => e.data['readiness']), <String>[
+          'ready',
+          'not_ready',
+        ]);
+        expect(fastLeer.toString(), contains('near_end'));
+      },
+    );
+
     test('Vertragsnamen', () {
       expect(Papier.values.map((p) => p.wireName), <String>[
         'ok',
@@ -385,6 +426,41 @@ void main() {
       await Future<void>.delayed(const Duration(milliseconds: 50));
       expect(drucker.connections, 2);
       expect(drucker.abfrageVerbindungen, hasLength(1), reason: 'kein Byte');
+    });
+
+    test('ePOS im Takt: Statusbits, ohne Antwort offline', () async {
+      final epos = await FakeEposServer.start(status: '${0x00020000 | 2}');
+      addTearDown(epos.stop);
+      await a.store.mutate(
+        (c) => c.copyWith(
+          printers: <PrinterConfig>[
+            PrinterConfig(
+              id: 'p_epos',
+              name: 'ePOS',
+              kind: PrinterKind.epos,
+              host: '127.0.0.1',
+              port: epos.port,
+            ),
+          ],
+        ),
+      );
+      kasse = a.jetzt;
+      final langsam = DruckerStatusDienst(
+        registry: a.registry,
+        queue: a.queue,
+        abfrage: EscPosAbfrage(),
+        kasseZuletzt: () => kasse,
+        clock: () => a.jetzt,
+        budget: _eposBudget,
+      );
+      await langsam.runde();
+      var eintrag = (await a.registry.summaries()).single;
+      expect(eintrag['paper'], 'near_end');
+      expect(eintrag['state'], 'online');
+      await epos.stop();
+      await langsam.runde();
+      eintrag = (await a.registry.summaries()).single;
+      expect(eintrag['state'], 'offline');
     });
 
     test('auf Zuruf: sofort, mit Papier und Deckel', () async {

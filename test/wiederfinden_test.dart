@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:kasseneck_connect/kasseneck_connect.dart';
 import 'package:test/test.dart';
@@ -202,6 +203,58 @@ void main() {
       final id = await a.drucker(9100, host: _alt, serial: _serie);
       expect((await drucke(id)).ok, isTrue);
       expect((await gespeichert()).host, _neu);
+    });
+
+    test('mDNS nennt nur das Modell: mit derselben MAC an einem offenen '
+        'Druckport übernommen', () async {
+      // ARP-Tabelle ohne den neuen Ort, die Einzelabfrage kennt ihn.
+      netz.macs.remove(_neu);
+      final tabelle = Map<String, String>.of(netz.macs);
+      a.prozesse.antwort = (programm, argumente) async {
+        if (programm != 'arp') return null;
+        if (argumente.first == '-an') {
+          return ProcessResult(
+            1,
+            0,
+            tabelle.entries
+                .map((e) => '? (${e.key}) at ${e.value} on en0\n')
+                .join(),
+            '',
+          );
+        }
+        final ip = argumente.last;
+        final mac = ip == _neu ? _mac : tabelle[ip];
+        return ProcessResult(
+          1,
+          0,
+          mac == null ? '$ip ($ip) -- no entry\n' : '? ($ip) at $mac on en0\n',
+          '',
+        );
+      };
+      a.mdnsFunde = <DiscoveredPrinter>[
+        const DiscoveredPrinter(
+          host: _neu,
+          port: 9100,
+          kind: PrinterKind.tcp9100,
+          model: 'TM-T20III',
+        ),
+      ];
+      await a.store.mutate(
+        (c) => c.copyWith(
+          printers: <PrinterConfig>[
+            PrinterConfig(
+              id: 'p_ab12cd34',
+              name: 'Bon',
+              kind: PrinterKind.tcp9100,
+              host: _alt,
+              model: 'TM-T20III',
+              mac: _mac,
+            ),
+          ],
+        ),
+      );
+      final neu = await a.wiederfinder.schnell(await gespeichert());
+      expect(neu?.host, _neu);
     });
 
     test('printer_relocate aus: keine Suche, Fehler wie 1.4.2', () async {

@@ -246,6 +246,24 @@ void main() {
       testOn: '!windows',
     );
 
+    test('nicht lesbare Datei: Logzeile, kein Abbruch', () {
+      // Als root sind Rechte wirkungslos – dann gibt es nichts zu prüfen.
+      if ('${Process.runSync('id', <String>['-u']).stdout}'.trim() == '0') {
+        markTestSkipped('läuft als root');
+        return;
+      }
+      final datei = File(p.join(temp.path, 'launchd.err.log'))
+        ..writeAsStringSync('x' * 2000);
+      Process.runSync('chmod', <String>['000', datei.path]);
+      addTearDown(() => Process.runSync('chmod', <String>['600', datei.path]));
+      final log = AgentLog(Directory(p.join(temp.path, 'logs')));
+      expect(
+        () => kuerzeLaunchdLogs(temp, log: log, grenze: 1000, rest: 100),
+        returnsNormally,
+      );
+      expect(log.file.readAsStringSync(), contains('ließ sich nicht kürzen'));
+    }, testOn: '!windows');
+
     test('fehlende Dateien stören nicht', () {
       expect(() => kuerzeLaunchdLogs(temp), returnsNormally);
     });

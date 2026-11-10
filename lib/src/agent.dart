@@ -34,7 +34,11 @@ import 'printers/tcp9100.dart' show SocketConnector;
 import 'printers/vorpruefung.dart';
 import 'printers/wiederfinden.dart';
 import 'process_runner.dart';
+import 'terminal/belegung.dart';
+import 'terminal/discovery.dart';
+import 'terminal/hps.dart';
 import 'terminal/warmhalten.dart';
+import 'terminal/wiederfinden.dart';
 import 'tls/certificates.dart';
 import 'tls/trust.dart';
 import 'update/feed.dart';
@@ -372,11 +376,39 @@ class Agent {
       unawaited(updater.cleanup());
     }
     _context = ctx;
-    _warmhalter = TerminalWarmhalter(store: store, log: log);
-    _warmhalter!.startAus(await store.load());
+    // Terminal: eine Belegung für alle Kassen und Tabs, Wachhalter mit TID,
+    // Suche nach drei Fehlberührungen.
+    final belegung = TerminalBelegung(clock: _clock);
+    final warmhalter = TerminalWarmhalter(
+      store: store,
+      log: log,
+      belegung: belegung,
+      clock: _clock,
+      macLesen: (host) => macImSelbenNetz(host, arp, _schnittstellen),
+    );
+    final hps = HpsBridge(log: log);
+    final terminalSuche = TerminalWiederfinder(
+      store: store,
+      bridge: hps,
+      belegung: belegung,
+      warmhalter: warmhalter,
+      events: bus,
+      log: log,
+      clock: _clock,
+      suche: () =>
+          discoverTerminals(bridge: hps, log: log, interfaces: _schnittstellen),
+    );
+    warmhalter.beiDauerndUnerreichbar = terminalSuche.imHintergrund;
+    ctx.terminalZustand = warmhalter.statusFeld;
+    _warmhalter = warmhalter..startAus(await store.load());
     _routes = <RouteRegistrar>[
       eventRoutes(),
-      terminalRoutes(warmhalter: _warmhalter),
+      terminalRoutes(
+        bridge: hps,
+        warmhalter: warmhalter,
+        belegung: belegung,
+        wiederfinder: terminalSuche,
+      ),
       printerRoutes(
         registry: registry,
         queue: queue,

@@ -80,6 +80,10 @@ class AgentContext {
   /// die beiden Felder weg. [Agent] setzt es beim Start.
   SystemInfoReader? systemInfo;
 
+  /// Das gemerkte Terminal für die Langform des Status (`terminal`); `null`
+  /// lässt das Feld weg.
+  Map<String, Object?>? Function(TerminalConfig? gemerkt)? terminalZustand;
+
   /// Aktualisieren auf einen Klick (`/v1/update`); `null` ohne – dann gibt es
   /// die Pfade nicht und `features` nennt `update` nicht.
   ConnectUpdater? updater;

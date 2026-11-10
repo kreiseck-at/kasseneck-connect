@@ -77,6 +77,8 @@ Future<Response> handleStatus(AgentContext ctx, Request request) async {
     if (tls != null) body['tls'] = tls;
     final bluetooth = ctx.bluetooth;
     if (bluetooth != null) body['bluetooth'] = await bluetooth.summary();
+    final terminal = ctx.terminalZustand?.call(config.terminal);
+    if (terminal != null) body['terminal'] = terminal;
   }
 
   return okJson(body);

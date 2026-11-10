@@ -5,6 +5,7 @@ import 'package:test/test.dart';
 
 import 'support/druck_aufbau.dart';
 import 'support/fake_printer.dart';
+import 'support/virtuelles_netz.dart';
 
 /// Gerätetest TM-T20III (10.11.2026): mit offenem Deckel oder ohne Papier
 /// nimmt der Drucker die Verbindung an und beantwortet `DLE EOT` gar nicht –
@@ -139,11 +140,15 @@ void main() {
 
     test('nimmt keine Verbindung an: printer_offline wie 1.4.2, nicht '
         'not_ready', () async {
-      final id = await a.drucker(drucker.port, statusCapableAt: seit);
-      await drucker.stop();
-      final ergebnis = await a.queue.enqueue(id, 'beleg-1', beispielBon);
+      final netz = DruckAufbau.erstellen(netz: VirtuellesNetz());
+      addTearDown(netz.aufraeumen);
+      final id = await netz.drucker(
+        9100,
+        host: '192.168.0.50',
+        statusCapableAt: seit,
+      );
+      final ergebnis = await netz.queue.enqueue(id, 'beleg-1', beispielBon);
       expect(ergebnis.code, errorPrinterOffline);
-      drucker = await FakeTcpPrinter.start(dleEot: _gesund);
     });
   });
 

@@ -3,8 +3,8 @@ import 'dart:io';
 import 'package:kasseneck_connect/kasseneck_connect.dart';
 import 'package:test/test.dart';
 
+import 'support/ablehnen.dart';
 import 'support/fake_printer.dart';
-import 'support/port_zu.dart';
 
 /// Antworten eines gesunden Epson-TM (Papier da, Deckel zu).
 const Map<int, int> gesund = <int, int>{2: 0x12, 4: 0x12};
@@ -123,13 +123,9 @@ void main() {
 
   test('keine Verbindung: ohneVerbindung, wirft nicht', () async {
     drucker = await FakeTcpPrinter.start();
-    final server = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
-    final port = server.port;
-    await server.close();
-    await erwartePortZu(() => Socket.connect('127.0.0.1', port));
-    final antworten = await abfrage.frage(
-      '127.0.0.1',
-      port,
+    final antworten = await EscPosAbfrage(verbinden: verbindenOhneTote).frage(
+      toteAdresse,
+      9100,
       fragen: EscPosFrage.values.toSet(),
       budget: const Duration(milliseconds: 500),
     );

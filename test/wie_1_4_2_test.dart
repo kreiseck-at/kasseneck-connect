@@ -5,6 +5,7 @@ import 'package:kasseneck_connect/kasseneck_connect.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
+import 'support/ablehnen.dart';
 import 'support/agent_klient.dart';
 import 'support/druck_aufbau.dart';
 import 'support/fake_printer.dart';
@@ -24,6 +25,7 @@ void main() {
     List<LocalInterface> netz = const <LocalInterface>[
       LocalInterface(name: 'lo0', address: '127.0.0.2'),
     ],
+    SocketConnector? verbinden,
   }) async {
     agent = Agent(
       store: store,
@@ -35,6 +37,7 @@ void main() {
       startProcess: prozesse.starter,
       betriebssystem: 'macos',
       schnittstellen: () async => netz,
+      geraeteVerbindung: verbinden,
     );
     await agent.start();
     token = await agent.context.pairing.issueToken();
@@ -205,16 +208,20 @@ void main() {
     });
 
     test('Drucker aus: printer_offline mit derselben Form wie 1.4.2', () async {
-      await starten();
-      final id = await drucker142();
-      await drucker.stop();
-      final antwort = await drucke(id, 'beleg-1');
+      await starten(verbinden: verbindenOhneTote);
+      final saved = await agent.printers.upsert(
+        PrinterConfig(
+          id: '',
+          name: 'Bon',
+          kind: PrinterKind.tcp9100,
+          host: toteAdresse,
+        ),
+      );
+      final antwort = await drucke(saved.id, 'beleg-1');
       expect(antwort.ok, isFalse);
       expect(antwort.code, errorPrinterOffline);
       expect(antwort.detail!['jobId'], 'beleg-1');
       expect(antwort.detail!.containsKey('mayHavePrinted'), isFalse);
-      // tearDown stoppt ihn noch einmal – das muss gehen.
-      drucker = await FakeTcpPrinter.start();
     });
   });
 }

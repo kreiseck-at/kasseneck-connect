@@ -4,6 +4,7 @@ import 'package:kasseneck_connect/kasseneck_connect.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
+import 'support/ablehnen.dart';
 import 'support/agent_klient.dart';
 import 'support/druck_aufbau.dart';
 import 'support/fake_epos.dart';
@@ -399,10 +400,15 @@ void main() {
     });
 
     test('zweimal nicht gesehen: genau einmal Suche anstoßen', () async {
-      final weg = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
-      final port = weg.port;
-      await weg.close();
-      await a.drucker(port);
+      // Eigener Dienst, dessen Verbindungen zur toten Adresse scheitern.
+      final dienst = DruckerStatusDienst(
+        registry: a.registry,
+        queue: a.queue,
+        abfrage: EscPosAbfrage(verbinden: verbindenOhneTote),
+        kasseZuletzt: () => kasse,
+        clock: () => a.jetzt,
+      )..beiDauerndVerfehlt = verfehlt.add;
+      await a.drucker(9100, host: toteAdresse);
       kasse = a.jetzt;
       await dienst.runde();
       expect(verfehlt, isEmpty);
@@ -457,7 +463,15 @@ void main() {
       var eintrag = (await a.registry.summaries()).single;
       expect(eintrag['paper'], 'near_end');
       expect(eintrag['state'], 'online');
-      await epos.stop();
+      final kaputt = await FakeEposServer.start(mode: FakeEposMode.serverError);
+      addTearDown(kaputt.stop);
+      await a.store.mutate(
+        (c) => c.copyWith(
+          printers: <PrinterConfig>[
+            c.printers.single.copyWith(port: kaputt.port),
+          ],
+        ),
+      );
       await langsam.runde();
       eintrag = (await a.registry.summaries()).single;
       expect(eintrag['state'], 'offline');

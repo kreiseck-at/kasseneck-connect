@@ -7,21 +7,12 @@ import 'package:path/path.dart' as p;
 import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'package:test/test.dart';
 
+import 'support/ablehnen.dart';
 import 'support/agent_klient.dart';
 import 'support/fake_hps.dart';
 import 'support/fake_process_runner.dart';
-import 'support/port_zu.dart';
 
 const String _tid = '12345678';
-
-/// Ein Port, auf dem sicher niemand annimmt (siehe `terminal_test.dart`).
-Future<int> _geschlossenerPort() async {
-  final server = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
-  final port = server.port;
-  await server.close();
-  await erwartePortZu(() => Socket.connect('127.0.0.1', port));
-  return port;
-}
 
 void main() {
   group('TID-Regeln (wie die Kasse)', () {
@@ -198,6 +189,7 @@ void main() {
               belegung: belegung,
               bridge: HpsBridge(
                 log: log,
+                verbinden: httpOhneTote,
                 verbindungTimeout: const Duration(milliseconds: 500),
                 zahlungTimeout: const Duration(seconds: 3),
                 kurzTimeout: const Duration(seconds: 3),
@@ -233,13 +225,17 @@ void main() {
       ),
     );
 
-    Future<AgentAntwort> zahle(int port, {String tid = _tid}) => anAgent(
+    Future<AgentAntwort> zahle(
+      int port, {
+      String tid = _tid,
+      String host = '127.0.0.1',
+    }) => anAgent(
       server.port,
       'POST',
       '/v1/terminal/payment',
       token: token,
       rumpf: <String, Object?>{
-        'host': '127.0.0.1',
+        'host': host,
         'port': port,
         'tid': tid,
         'amountCents': 100,
@@ -273,8 +269,8 @@ void main() {
     test('Zahlung an tote Adresse: genau einmal an die bestätigte Adresse '
         'derselben TID; endpoint nennt sie', () async {
       await merke();
-      final tot = await _geschlossenerPort();
-      final antwort = await zahle(tot);
+      const tot = 8080;
+      final antwort = await zahle(tot, host: toteAdresse);
       expect(antwort.ok, isTrue, reason: antwort.text);
       expect(antwort.json['endpoint'], <String, Object?>{
         'host': '127.0.0.1',
@@ -297,16 +293,22 @@ void main() {
     );
 
     test('andere TID, zu alt oder abgeschaltet: keine Umleitung', () async {
-      final tot = await _geschlossenerPort();
+      const tot = 8080;
       await merke(tid: '87654321');
-      expect((await zahle(tot)).code, errorTerminalUnreachable);
+      expect(
+        (await zahle(tot, host: toteAdresse)).code,
+        errorTerminalUnreachable,
+      );
       await merke(alter: umleitungHoechstalter + const Duration(minutes: 1));
-      expect((await zahle(tot)).code, errorTerminalUnreachable);
+      expect(
+        (await zahle(tot, host: toteAdresse)).code,
+        errorTerminalUnreachable,
+      );
       await merke();
       await store.mutate(
         (c) => c.copyWith(disabledFeatures: <String>['terminal_relocate']),
       );
-      final aus = await zahle(tot);
+      final aus = await zahle(tot, host: toteAdresse);
       expect(aus.code, errorTerminalUnreachable);
       expect(aus.json.containsKey('endpoint'), isFalse, reason: 'wie 1.4.2');
       expect(hps.aufrufe, isEmpty);

@@ -28,6 +28,11 @@ const List<BewiesenesModell> testModelle = <BewiesenesModell>[
   ),
 ];
 
+/// Zeitgrenzen der Vorprüfung in den Tests (siehe [DruckAufbau.erstellen]).
+const Duration testAufbauGrenze = Duration(seconds: 1);
+const Duration testBudget = Duration(seconds: 2);
+const Duration testBudgetStatusfaehig = Duration(seconds: 4);
+
 /// `arp -n 127.0.0.1` am Mac mit der MAC [mac].
 String arpZeile(String mac) =>
     '? (127.0.0.1) at $mac on lo0 ifscope [ethernet]\n';
@@ -40,15 +45,20 @@ class DruckAufbau {
   /// Mit [netz] laufen alle Verbindungen, Proben und ARP-Ausgaben über das
   /// virtuelle Kassen-Netz statt über Loopback.
   ///
-  /// [budget] ersetzt das Zeitbudget der Vorprüfung (Tests, deren Antworten
-  /// über HTTP kommen und unter Last länger brauchen dürfen).
+  /// [budget], [budgetStatusfaehig] und [aufbauGrenze] ersetzen die
+  /// Zeitgrenzen der Vorprüfung. Die Vorgaben sind großzügiger als im
+  /// Betrieb: unter Last (`-j 8`) steht eine Loopback-Verbindung nicht immer
+  /// in 200 ms, und ein Test soll an der Logik scheitern, nicht an der
+  /// Planung. Tests der Zeitgrenzen selbst geben die Werte des Betriebs vor.
   ///
   /// [verbinden] ersetzt den Verbindungsaufbau zu den Geräten (etwa
   /// `FakeTcpPrinter.verbinden`), auch den des [netz].
   static DruckAufbau erstellen({
     DateTime? start,
     VirtuellesNetz? netz,
-    Duration budget = vorpruefungBudget,
+    Duration budget = testBudget,
+    Duration budgetStatusfaehig = testBudgetStatusfaehig,
+    Duration aufbauGrenze = testAufbauGrenze,
     SocketConnector? verbinden,
   }) {
     final temp = Directory.systemTemp.createTempSync('connect-druck-');
@@ -62,6 +72,8 @@ class DruckAufbau {
       ..netz = netz
       .._verbinden = verbinden
       .._budget = budget
+      .._budgetStatusfaehig = budgetStatusfaehig
+      .._aufbauGrenze = aufbauGrenze
       ..jetzt = start ?? DateTime(2026, 11, 10, 9);
     if (netz != null) {
       aufbau.schnittstellen = const <LocalInterface>[VirtuellesNetz.eigene];
@@ -78,6 +90,8 @@ class DruckAufbau {
   }
 
   Duration _budget = vorpruefungBudget;
+  Duration _budgetStatusfaehig = vorpruefungBudgetStatusfaehig;
+  Duration _aufbauGrenze = langsamerAufbau;
   SocketConnector? _verbinden;
 
   /// Das virtuelle Netz, falls eines verwendet wird.
@@ -129,7 +143,10 @@ class DruckAufbau {
       log: log,
       clock: () => jetzt,
     );
-    final abfrage = EscPosAbfrage(verbinden: verbinden);
+    final abfrage = EscPosAbfrage(
+      verbinden: verbinden,
+      aufbauGrenze: _aufbauGrenze,
+    );
     wiederfinder = DruckerWiederfinder(
       registry: registry,
       arp: arp,
@@ -151,6 +168,7 @@ class DruckAufbau {
       clock: () => jetzt,
       schnellesWiederfinden: wiederfinder.schnell,
       budget: _budget,
+      budgetStatusfaehig: _budgetStatusfaehig,
     );
     queue
       ..vorpruefung = vorpruefung

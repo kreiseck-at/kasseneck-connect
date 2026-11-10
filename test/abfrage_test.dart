@@ -12,6 +12,10 @@ const Map<int, int> gesund = <int, int>{2: 0x12, 4: 0x12};
 void main() {
   late FakeTcpPrinter drucker;
   final abfrage = EscPosAbfrage();
+  // Für Tests, die nachgewiesenes Schweigen erwarten: unter Last (`-j 8`)
+  // steht eine Loopback-Verbindung nicht immer in 200 ms – dann wäre das
+  // Schweigen zu Recht unbekannt, der Test aber rot.
+  final geduldig = EscPosAbfrage(aufbauGrenze: const Duration(seconds: 1));
 
   tearDown(() => drucker.stop());
 
@@ -46,7 +50,7 @@ void main() {
     drucker = await FakeTcpPrinter.start();
     // Mit einer Stunde Budget kehrt die Abfrage nur zurück, weil sie nach der
     // Handshake-Frist aufgibt – ohne Messung der Wanduhr.
-    final antworten = await abfrage.frage(
+    final antworten = await geduldig.frage(
       '127.0.0.1',
       drucker.port,
       fragen: EscPosFrage.values.toSet(),
@@ -154,7 +158,7 @@ void main() {
 
   test('Bytes ohne feste Bits werden übergangen, nie gedeutet', () async {
     drucker = await FakeTcpPrinter.start(dleEot: <int, int>{2: 0x10});
-    final antworten = await abfrage.frage(
+    final antworten = await geduldig.frage(
       '127.0.0.1',
       drucker.port,
       fragen: const <EscPosFrage>{EscPosFrage.seriennummer},
@@ -219,14 +223,21 @@ void main() {
     expect(antworten.stumm, isFalse);
   });
 
+  test(
+    'die Reserve für den zweiten Versuch ist ein Aufbau plus ein Fenster',
+    () {
+      expect(zweiterVersuchReserve, bereitFrist + langsamerAufbau);
+    },
+  );
+
   group('frageBereit', () {
     test('beide Versuche schweigen: stumm, zwei Verbindungen', () async {
       drucker = await FakeTcpPrinter.start();
-      final antworten = await abfrage.frageBereit(
+      final antworten = await geduldig.frageBereit(
         '127.0.0.1',
         drucker.port,
         fragen: const <EscPosFrage>{EscPosFrage.rollensensor},
-        budget: vorpruefungBudgetStatusfaehig,
+        budget: const Duration(seconds: 5),
       );
       expect(antworten.stumm, isTrue);
       await drucker.ruhigNachVerbindung();

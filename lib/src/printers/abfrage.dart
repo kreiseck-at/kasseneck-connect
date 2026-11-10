@@ -112,10 +112,16 @@ class EscPosAntworten {
 /// Zeichen `ID` sonst als Seite aus. `DLE EOT` selbst besteht nur aus
 /// Steuerzeichen.
 class EscPosAbfrage {
-  EscPosAbfrage({SocketConnector? verbinden})
-    : _verbinden = verbinden ?? Socket.connect;
+  EscPosAbfrage({
+    SocketConnector? verbinden,
+    this.aufbauGrenze = langsamerAufbau,
+  }) : _verbinden = verbinden ?? Socket.connect;
 
   final SocketConnector _verbinden;
+
+  /// Ab dieser Aufbauzeit ist Schweigen unbekannt ([langsamerAufbau]; Tests
+  /// unter Last geben mehr vor).
+  final Duration aufbauGrenze;
 
   /// Stellt [fragen] an [host]:[port]; alles zusammen höchstens [budget].
   ///
@@ -170,7 +176,7 @@ class EscPosAbfrage {
           stumm:
               offline.geschwiegen &&
               fenster >= handshake &&
-              aufbau <= langsamerAufbau,
+              aufbau <= aufbauGrenze,
         );
       }
       final rolle = fragen.contains(EscPosFrage.rollensensor)
@@ -225,7 +231,7 @@ class EscPosAbfrage {
         fragen: fragen,
         budget: budget - uhr.elapsed,
         handshake: bereitFrist,
-        reserve: letzter ? Duration.zero : zweiterVersuchReserve,
+        reserve: letzter ? Duration.zero : bereitFrist + aufbauGrenze,
       );
       if (!antworten.stumm || letzter) return antworten;
     }

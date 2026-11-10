@@ -349,9 +349,15 @@ void main() {
     setUp(() {
       zeitgrenzen = <Duration>[];
       // Das virtuelle Netz liefert die ARP-Tabelle (veralteter Eintrag);
-      // jede Verbindung läuft in die Zeitgrenze.
+      // jede Verbindung läuft in die Zeitgrenze. Zeitgrenzen des Betriebs.
       final netz = VirtuellesNetz()..macs[aus] = _mac;
-      a = DruckAufbau.erstellen(netz: netz, verbinden: zeitueberschreitung);
+      a = DruckAufbau.erstellen(
+        netz: netz,
+        verbinden: zeitueberschreitung,
+        budget: vorpruefungBudget,
+        budgetStatusfaehig: vorpruefungBudgetStatusfaehig,
+        aufbauGrenze: langsamerAufbau,
+      );
     });
 
     tearDown(() => a.aufraeumen());

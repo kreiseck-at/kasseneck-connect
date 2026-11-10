@@ -346,11 +346,11 @@ void main() {
       dienst = DruckerStatusDienst(
         registry: a.registry,
         queue: a.queue,
-        abfrage: EscPosAbfrage(),
+        abfrage: EscPosAbfrage(aufbauGrenze: testAufbauGrenze),
         kasseZuletzt: () => kasse,
         clock: () => a.jetzt,
         log: a.log,
-        budget: const Duration(milliseconds: 500),
+        budget: testBudget,
       )..beiDauerndVerfehlt = verfehlt.add;
     });
 

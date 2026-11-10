@@ -321,11 +321,12 @@ void main() {
       final dienst = DruckerStatusDienst(
         registry: a.registry,
         queue: a.queue,
-        abfrage: EscPosAbfrage(),
+        abfrage: EscPosAbfrage(aufbauGrenze: testAufbauGrenze),
         kasseZuletzt: () => a.jetzt,
         arp: a.arp,
         schnittstellen: () async => a.schnittstellen,
         clock: () => a.jetzt,
+        budget: testBudgetStatusfaehig,
       );
       drucker.dleEot.clear();
       await dienst.runde();

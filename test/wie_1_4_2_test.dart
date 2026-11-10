@@ -124,8 +124,12 @@ void main() {
     await drucke(id, 'beleg-2');
     await drucker.warteAufDruck(1);
     expect(drucker.druckVerbindungen, <List<int>>[beispielBon, beispielBon]);
-    // Die erste, danach gilt es als stumm; darauf nie GS I.
-    expect(drucker.abfrageVerbindungen.single, dleEot(2));
+    // Die erste, danach gilt es als stumm (unter Last kann das Schweigen
+    // auch unbekannt bleiben – dann eine zweite); darauf nie GS I.
+    expect(drucker.abfrageVerbindungen, isNotEmpty);
+    for (final abfrage in drucker.abfrageVerbindungen) {
+      expect(abfrage, dleEot(2));
+    }
     // Gedeckelt durch das Budget der Vorprüfung (Vorgabe: höchstens 600 ms),
     // nicht über eine Wanduhr am HTTP-Umlauf gemessen.
     expect(

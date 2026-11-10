@@ -7,6 +7,8 @@ import '../events/bus.dart';
 import '../log/logger.dart';
 import 'driver.dart';
 import 'epos.dart';
+import 'kennung.dart';
+import 'lage.dart';
 import 'tcp9100.dart';
 
 /// Zeichenvorrat der Drucker-IDs (Base32 ohne verwechselbare Zeichen).
@@ -36,10 +38,12 @@ class PrinterRegistry {
     Random? random,
     PrinterDriver Function(PrinterConfig printer)? driverFactory,
     this.probeTimeout = defaultProbeTimeout,
+    DruckerLagen? lagen,
   }) : _log = log,
        _events = events,
        _random = random ?? Random.secure(),
-       _driverFactory = driverFactory;
+       _driverFactory = driverFactory,
+       lagen = lagen ?? DruckerLagen();
 
   final ConfigStore store;
   final AgentLog? _log;
@@ -51,6 +55,9 @@ class PrinterRegistry {
   final Duration probeTimeout;
 
   final Map<String, PrinterState> _states = <String, PrinterState>{};
+
+  /// Was Connect im Lauf über jeden Drucker weiß (Kennung, Papier, Deckel).
+  final DruckerLagen lagen;
 
   /// Alle konfigurierten Drucker in Reihenfolge der Konfiguration.
   Future<List<PrinterConfig>> list() async => (await store.load()).printers;
@@ -77,6 +84,7 @@ class PrinterRegistry {
   /// gleichzeitige Anfragen nicht doch zwei Einträge erzeugen.
   Future<PrinterConfig> upsert(PrinterConfig printer) async {
     late PrinterConfig saved;
+    var neuesGeraet = true;
 
     await store.mutate((config) {
       final printers = config.printers.toList();
@@ -85,16 +93,51 @@ class PrinterRegistry {
           : printer;
       final index = printers.indexWhere((e) => e.id == saved.id);
       if (index >= 0) {
+        saved = behalteKennung(printers[index], saved);
+        neuesGeraet = !_gleicheAdresse(printers[index], saved);
         printers[index] = saved;
       } else {
         printers.add(saved);
       }
       return config.copyWith(printers: printers);
     });
+    // Neue Adresse, womöglich ein anderes Gerät: was Connect im Lauf über
+    // das alte wusste, gilt nicht mehr.
+    if (neuesGeraet) lagen.vergiss(saved.id);
 
     _log?.info('Drucker ${saved.id} gespeichert (${saved.kind.wireName}).');
     return saved;
   }
+
+  /// Der neue Eintrag [neu] mit Kennung und fremden Feldern des bisherigen
+  /// [alt], solange Adresse und Anbindung gleich bleiben.
+  ///
+  /// Die Kasse schickt beim erneuten Einrichten denselben Drucker noch einmal,
+  /// ohne Kennung; die soll dabei nicht verloren gehen. Zeigt der Eintrag auf
+  /// eine andere Adresse, kann dort ein anderes Gerät stehen – dann beginnt
+  /// die Kennung neu.
+  static PrinterConfig behalteKennung(PrinterConfig alt, PrinterConfig neu) {
+    if (!_gleicheAdresse(alt, neu)) return neu;
+    return PrinterConfig(
+      id: neu.id,
+      name: neu.name,
+      kind: neu.kind,
+      host: neu.host,
+      port: neu.port,
+      devid: neu.devid,
+      model: alt.model,
+      serial: alt.serial,
+      mac: alt.mac,
+      identifiedAt: alt.identifiedAt,
+      identitySource: alt.identitySource,
+      extras: alt.extras,
+    );
+  }
+
+  static bool _gleicheAdresse(PrinterConfig a, PrinterConfig b) =>
+      a.host.toLowerCase() == b.host.toLowerCase() &&
+      a.port == b.port &&
+      a.kind == b.kind;
 
   /// ID des Druckers an derselben Adresse — sonst eine frische.
   String _idForAddress(List<PrinterConfig> printers, PrinterConfig wanted) {
@@ -117,6 +160,7 @@ class PrinterRegistry {
     });
     if (removed) {
       _states.remove(id);
+      lagen.vergiss(id);
       _log?.info('Drucker $id entfernt.');
     }
     return removed;
@@ -187,14 +231,32 @@ class PrinterRegistry {
     if (probe) {
       await Future.wait(printers.map(_probe));
     }
-    return printers
-        .map(
-          (printer) => <String, Object?>{
-            ...printer.toApiJson(),
-            'state': stateOf(printer.id).wireName,
-          },
-        )
-        .toList();
+    return printers.map(zusammenfassung).toList();
+  }
+
+  /// Ein Drucker für die API: die Felder aus 1.4.2 (`toApiJson`, `state`),
+  /// dazu ab 1.5.0 `identity` mit der Kennung und ihrer Lage.
+  ///
+  /// Neue Felder stehen nur da, wenn sie etwas sagen: ein Drucker, über den
+  /// nichts bekannt ist, sieht aus wie in 1.4.2 (fehlend heißt unbekannt).
+  Map<String, Object?> zusammenfassung(PrinterConfig printer) {
+    final kennung =
+        lagen.vorhanden(printer.id)?.kennung ?? KennungsLage.unbekannt;
+    final mitKennung =
+        printer.model != null ||
+        printer.hatKennung ||
+        kennung != KennungsLage.unbekannt;
+    return <String, Object?>{
+      ...printer.toApiJson(),
+      'state': stateOf(printer.id).wireName,
+      if (mitKennung)
+        'identity': <String, Object?>{
+          'model': printer.model,
+          'serial': printer.serial,
+          'mac': printer.mac,
+          'state': kennung.wireName,
+        },
+    };
   }
 
   Future<void> _probe(PrinterConfig printer) async {

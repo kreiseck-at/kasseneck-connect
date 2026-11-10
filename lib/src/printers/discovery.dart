@@ -5,6 +5,7 @@ import 'package:multicast_dns/multicast_dns.dart';
 
 import '../config/model.dart';
 import '../log/logger.dart';
+import 'kennung.dart';
 
 /// Dienste, unter denen sich Netzwerkdrucker im LAN melden.
 const List<String> printerServices = <String>[
@@ -45,6 +46,8 @@ class DiscoveredPrinter {
     required this.port,
     required this.kind,
     this.name,
+    this.model,
+    this.serial,
   });
 
   final String host;
@@ -54,6 +57,12 @@ class DiscoveredPrinter {
   /// Anzeigename aus mDNS; beim Netzscan gibt es keinen.
   final String? name;
 
+  /// Modell aus den TXT-Einträgen des Dienstes (ab 1.5.0, `identity`).
+  final String? model;
+
+  /// Seriennummer aus den TXT-Einträgen, falls das Gerät eine nennt.
+  final String? serial;
+
   /// Schlüssel für die Doppelbereinigung.
   String get key => '$host:$port';
 
@@ -62,6 +71,8 @@ class DiscoveredPrinter {
     'port': port,
     if (name != null) 'name': name,
     'kind': kind.wireName,
+    if (model != null) 'model': model,
+    if (serial != null) 'serial': serial,
   };
 
   @override
@@ -278,17 +289,36 @@ class PrinterDiscovery {
           ResourceRecordQuery.service(ptr.domainName),
           timeout: timeout,
         )) {
+          final kennung = await _kennungOf(client, ptr.domainName, timeout);
           found.add(
             DiscoveredPrinter(
               host: await _addressOf(client, srv.target, timeout),
               port: srv.port,
               kind: kindForService(service),
               name: serviceLabel(ptr.domainName, service),
+              model: kennung.model,
+              serial: kennung.serial,
             ),
           );
         }
       }
     }
+  }
+
+  /// Modell und Seriennummer aus den TXT-Einträgen des Dienstes; ohne
+  /// Antwort keine.
+  Future<ErkannteKennung> _kennungOf(
+    MDnsClient client,
+    String domainName,
+    Duration timeout,
+  ) async {
+    await for (final txt in client.lookup<TxtResourceRecord>(
+      ResourceRecordQuery.text(domainName),
+      timeout: timeout,
+    )) {
+      return kennungAusTxt(txt.text);
+    }
+    return ErkannteKennung.keine;
   }
 
   /// Löst den Hostnamen auf; ohne Antwort bleibt der Name stehen.

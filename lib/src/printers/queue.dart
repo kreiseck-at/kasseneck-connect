@@ -45,6 +45,7 @@ class PrintQueue {
     this.jobTimeout = defaultPrintTimeout,
     this.idempotencyWindow = defaultIdempotencyWindow,
     this.attemptGrace = defaultAttemptGrace,
+    this.nachErfolg,
   }) : _events = events,
        _log = log,
        _clock = clock ?? DateTime.now;
@@ -64,11 +65,37 @@ class PrintQueue {
   /// Zuschlag, bevor die Warteschlange einen Versuch selbst abbricht.
   final Duration attemptGrace;
 
+  /// Wird nach jedem gelungenen Druck mit der Drucker-ID gerufen (etwa um die
+  /// Kennung eines Druckers nachzutragen, der noch keine hat). Darf nicht
+  /// warten lassen und nicht werfen; was er anstößt, läuft für sich.
+  void Function(String printerId)? nachErfolg;
+
   /// Laufende Kette je Drucker — daran hängt sich der nächste Auftrag an.
   final Map<String, Future<void>> _chains = <String, Future<void>>{};
 
   /// Bekannte Aufträge je `printerId|jobId` (laufend oder kürzlich erledigt).
   final Map<String, _JobRecord> _jobs = <String, _JobRecord>{};
+
+  /// Führt [aufgabe] in der Kette von [printerId] aus: nach allen Aufträgen,
+  /// die schon warten, und nie neben einem.
+  ///
+  /// Für alles, was außer dem Druck mit dem Gerät spricht (Kennung, Status,
+  /// Wiederfinden): Viele Bondrucker nehmen nur eine Verbindung zugleich an,
+  /// und eine Abfrage neben einem laufenden Bon verzögerte ihn oder risse ihn
+  /// ab. Ein Fehler der Aufgabe erreicht den Aufrufer, nie die Kette.
+  Future<T> exclusive<T>(String printerId, Future<T> Function() aufgabe) {
+    final completer = Completer<T>();
+    final previous = _chains[printerId] ?? Future<void>.value();
+    final chain = previous.then((_) async {
+      try {
+        completer.complete(await aufgabe());
+      } on Object catch (error, stackTrace) {
+        completer.completeError(error, stackTrace);
+      }
+    });
+    _chains[printerId] = chain.catchError((Object _) {});
+    return completer.future;
+  }
 
   /// Schlüssel eines Auftrags: ohne den Drucker verschluckte die Idempotenz
   /// den zweiten Bon derselben Bestellung auf einem anderen Gerät.
@@ -190,6 +217,7 @@ class PrintQueue {
             .timeout(jobTimeout + attemptGrace);
 
         registry.noteState(printerId, PrinterState.online);
+        nachErfolg?.call(printerId);
         _events.publish(eventPrintDone, <String, Object?>{
           'printerId': printerId,
           'jobId': jobId,

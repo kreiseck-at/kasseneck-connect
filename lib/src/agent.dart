@@ -21,10 +21,15 @@ import 'config/store.dart';
 import 'downloads.dart';
 import 'events/bus.dart';
 import 'log/logger.dart';
+import 'net/arp.dart';
 import 'pairing/pairing.dart';
+import 'printers/abfrage.dart';
 import 'printers/discovery.dart';
+import 'printers/erkennung.dart';
+import 'printers/funde.dart';
 import 'printers/queue.dart';
 import 'printers/registry.dart';
+import 'printers/tcp9100.dart' show SocketConnector;
 import 'process_runner.dart';
 import 'terminal/warmhalten.dart';
 import 'tls/certificates.dart';
@@ -83,7 +88,13 @@ class Agent {
     ProcessRunner? runProcess,
     ProcessStarter? startProcess,
     LocalCertificates? certificates,
+    String? betriebssystem,
+    InterfaceProbe? schnittstellen,
+    SocketConnector? geraeteVerbindung,
   }) : _clock = clock ?? DateTime.now,
+       _betriebssystem = betriebssystem ?? Platform.operatingSystem,
+       _schnittstellen = schnittstellen ?? listLocalIpv4Interfaces,
+       _geraeteVerbindung = geraeteVerbindung ?? Socket.connect,
        _pairing = pairing,
        _extraRoutes = extraRoutes,
        _openBrowser = openBrowser,
@@ -134,6 +145,16 @@ class Agent {
   final PrinterRegistry? _registry;
   final PrintQueue? _queue;
   final PrinterDiscovery? _discovery;
+
+  /// Betriebssystem für `arp` und die Schlafsperre (Tests setzen es fest).
+  final String _betriebssystem;
+
+  /// Eigene Schnittstellen: daran entscheidet sich, ob eine MAC aus der
+  /// ARP-Tabelle zählt (nur im selben Netz).
+  final InterfaceProbe _schnittstellen;
+
+  /// Verbindungsaufbau zu Druckern für Abfragen (Tests ersetzen ihn).
+  final SocketConnector _geraeteVerbindung;
 
   /// Zugang zum Bluetooth-Hilfsprogramm; ohne ihn der dieses Rechners
   /// ([platformBluetoothHelper]). [stop] beendet ihn – auch einen
@@ -222,6 +243,30 @@ class Agent {
         _queue ?? PrintQueue(registry: registry, events: bus, log: log);
     _printers = registry;
 
+    // Kennung der Drucker (ab 1.5.0): Funde der Suche, GS I, ARP.
+    final arp = ArpTabelle(
+      start: _startProcess,
+      betriebssystem: _betriebssystem,
+      log: log,
+      clock: _clock,
+    );
+    final abfrage = EscPosAbfrage(verbinden: _geraeteVerbindung);
+    final funde = FundGedaechtnis(clock: _clock);
+    final kennung = Kennungspflege(
+      store: store,
+      queue: queue,
+      lagen: registry.lagen,
+      log: log,
+      clock: _clock,
+      erkennung: DruckerErkennung(
+        abfrage: abfrage,
+        arp: arp,
+        schnittstellen: _schnittstellen,
+        funde: funde,
+      ),
+    );
+    queue.nachErfolg = kennung.nachKontakt;
+
     // Die Brücke steht ab hier, Bluetooth selbst startet erst mit dem ersten
     // Gerätezugriff bzw. der ersten Suche: der Start des Agenten (Anmeldung,
     // Autostart) soll macOS nie nach der Bluetooth-Freigabe fragen lassen.
@@ -287,6 +332,8 @@ class Agent {
       printerRoutes(
         registry: registry,
         queue: queue,
+        kennung: kennung,
+        funde: funde,
         discovery: _discovery ?? PrinterDiscovery(log: log),
       ),
       bluetoothRoutes(bridge: bluetooth),

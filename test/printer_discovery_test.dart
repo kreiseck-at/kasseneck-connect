@@ -1,9 +1,12 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:kasseneck_connect/kasseneck_connect.dart';
+import 'package:multicast_dns/multicast_dns.dart';
 import 'package:test/test.dart';
 
 void main() {
+  _txtTests();
   DiscoveredPrinter found(
     String host, {
     int port = 9100,
@@ -307,5 +310,96 @@ void main() {
     expect(kindForService('_printer._tcp.local'), PrinterKind.tcp9100);
     expect(kindForService('_pdl-datastream._tcp.local'), PrinterKind.tcp9100);
     expect(printerServices, hasLength(3));
+  });
+}
+
+/// mDNS ohne Netz: ein Drucker unter `_pdl-datastream`, der auf die
+/// TXT-Abfrage nie antwortet. Schreibt jede Abfrage samt Frist mit.
+class _StilleTxtMdns extends MDnsClient {
+  final List<(int, Duration)> anfragen = <(int, Duration)>[];
+
+  @override
+  Future<void> start({
+    InternetAddress? listenAddress,
+    NetworkInterfacesFactory? interfacesFactory,
+    int mDnsPort = 5353,
+    InternetAddress? mDnsAddress,
+    Function? onError,
+  }) async {}
+
+  @override
+  void stop() {}
+
+  @override
+  Stream<T> lookup<T extends ResourceRecord>(
+    ResourceRecordQuery query, {
+    Duration timeout = const Duration(seconds: 5),
+  }) {
+    anfragen.add((query.resourceRecordType, timeout));
+    final antwort = switch (query.resourceRecordType) {
+      ResourceRecordType.serverPointer
+          when query.fullyQualifiedName == '_pdl-datastream._tcp.local' =>
+        const PtrResourceRecord(
+          '_pdl-datastream._tcp.local',
+          0,
+          domainName: 'Bon._pdl-datastream._tcp.local',
+        ),
+      ResourceRecordType.service => const SrvResourceRecord(
+        'Bon._pdl-datastream._tcp.local',
+        0,
+        target: 'bon.local',
+        port: 9100,
+        priority: 0,
+        weight: 0,
+      ),
+      ResourceRecordType.addressIPv4 => IPAddressResourceRecord(
+        'bon.local',
+        0,
+        address: InternetAddress('192.168.0.50'),
+      ),
+      _ => null,
+    };
+    if (antwort != null) return Stream<T>.value(antwort as T);
+    // TXT: keine Antwort bis zur Frist.
+    return _bisZurFrist<T>(
+      query.resourceRecordType == ResourceRecordType.text
+          ? timeout
+          : Duration.zero,
+    );
+  }
+
+  static Stream<T> _bisZurFrist<T>(Duration frist) async* {
+    await Future<void>.delayed(frist);
+  }
+}
+
+void _txtTests() {
+  group('TXT-Abfrage der Suche', () {
+    test('eigene kurze Frist: ein Drucker ohne TXT hält die Suche nicht bis '
+        'zum Ende der mDNS-Frist auf', () async {
+      final mdns = _StilleTxtMdns();
+      final suche = PrinterDiscovery(
+        mdnsClient: () => mdns,
+        mdnsTimeout: const Duration(hours: 1),
+      );
+      final ergebnis = await suche.discover();
+      expect(ergebnis.printers.single.host, '192.168.0.50');
+      final txt = mdns.anfragen.where((a) => a.$1 == ResourceRecordType.text);
+      expect(txt.single.$2, mdnsTxtFrist);
+    });
+
+    test('printer_identity aus: keine TXT-Abfrage', () async {
+      final mdns = _StilleTxtMdns();
+      final suche = PrinterDiscovery(
+        mdnsClient: () => mdns,
+        mitKennung: () async => false,
+      );
+      final ergebnis = await suche.discover();
+      expect(ergebnis.printers.single.model, isNull);
+      expect(
+        mdns.anfragen.where((a) => a.$1 == ResourceRecordType.text),
+        isEmpty,
+      );
+    });
   });
 }

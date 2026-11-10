@@ -110,6 +110,13 @@ class ConfigPaths {
   /// Sperrdatei, über die sich mehrere Prozesse abstimmen.
   File get configLockFile => File(p.join(directory.path, 'config.lock'));
 
+  /// Zweite Ablage der Installationskennung (ab 1.5.0): eine Datei, die
+  /// 1.4.2 nie anfasst. Schreibt eine ältere Version die `config.json` nach
+  /// einem Zurückstufen ohne die Kennung, holt der nächste Start sie hier
+  /// zurück.
+  File get installationIdFile =>
+      File(p.join(directory.path, 'installation-id'));
+
   /// Verzeichnis der rotierenden Logdateien.
   Directory get logDirectory => Directory(p.join(directory.path, 'logs'));
 

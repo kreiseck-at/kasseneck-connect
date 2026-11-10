@@ -172,15 +172,47 @@ class AgentLog {
     }
     if (bytes == 0 || bytes + zusatz <= maxFileBytes) return;
     final day = _currentDay ?? _dayOf(_clock());
-    final name = naechsterTeilName(day, _archiveNames());
+    final ziel = teilReservieren(directory, day, _archiveNames());
+    if (ziel == null) return;
     try {
-      current.renameSync(p.join(directory.path, name));
+      current.renameSync(ziel.path);
     } on FileSystemException {
       // Gesperrt oder Platte voll: weiter in dieselbe Datei schreiben – ein
       // zu großes Log ist besser als ein Agent, der wegen des Logs stockt.
+      try {
+        ziel.deleteSync();
+      } on FileSystemException {
+        // Der leere Platzhalter bleibt; der nächste Teil nimmt die nächste
+        // Nummer.
+      }
       return;
     }
     _prune();
+  }
+
+  /// Reserviert den nächsten freien Teil des Tages [tag] in [verzeichnis]:
+  /// die Datei wird exklusiv angelegt, bevor das Log hineinwandert. Zwei
+  /// Prozesse (Agent und Kommandozeile), die zugleich rotieren, bekämen sonst
+  /// denselben Namen, und der zweite überschriebe den Teil des ersten.
+  /// `null`, wenn sich keiner anlegen lässt.
+  static File? teilReservieren(
+    Directory verzeichnis,
+    String tag,
+    Iterable<String> vorhanden,
+  ) {
+    final belegt = vorhanden.toSet();
+    for (var versuch = 0; versuch < 50; versuch++) {
+      final name = naechsterTeilName(tag, belegt);
+      final datei = File(p.join(verzeichnis.path, name));
+      try {
+        datei.createSync(exclusive: true);
+        return datei;
+      } on FileSystemException {
+        // Schon da (anderer Prozess war schneller) oder nicht anlegbar.
+        belegt.add(name);
+      }
+    }
+    return null;
   }
 
   List<String> _archiveNames() => directory

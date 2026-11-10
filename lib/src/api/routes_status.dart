@@ -65,7 +65,8 @@ Future<Response> handleStatus(AgentContext ctx, Request request) async {
     // Auch ohne Token: die Kasse muss vor dem Koppeln wissen, mit welchem
     // Connect sie spricht (zwei Benutzer am Rechner = zwei Connect). Die
     // Kennung verrät nichts über Geräte.
-    if (config.installationId != null) 'installationId': config.installationId,
+    if ((ctx.installationId ?? config.installationId) case final id?)
+      'installationId': id,
   };
 
   if (isAuthenticated(request)) {

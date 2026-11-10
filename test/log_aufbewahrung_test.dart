@@ -147,6 +147,50 @@ void main() {
       expect(zeilen, hasLength(12));
     });
 
+    test('zwei Prozesse rotieren zugleich: der Teil des anderen wird nie '
+        'überschrieben', () {
+      // Der andere Prozess hat Teil 1 eben angelegt – nach der Liste, die
+      // dieser Prozess noch kennt.
+      File(
+        p.join(temp.path, 'connect-2026-11-10-1.log'),
+      ).writeAsStringSync('Teil des anderen\n');
+      final ziel = AgentLog.teilReservieren(
+        temp,
+        '2026-11-10',
+        const <String>[],
+      );
+      expect(p.basename(ziel!.path), 'connect-2026-11-10-2.log');
+      expect(ziel.existsSync(), isTrue, reason: 'reserviert');
+      expect(
+        File(p.join(temp.path, 'connect-2026-11-10-1.log')).readAsStringSync(),
+        'Teil des anderen\n',
+      );
+    });
+
+    test('ein Logger, der nach einem fremden Teil rotiert, verliert keine '
+        'Zeile', () {
+      final log = AgentLog(
+        temp,
+        clock: () => DateTime(2026, 11, 10, 9),
+        maxFileBytes: 200,
+        maxTotalBytes: 100000,
+      );
+      for (var i = 0; i < 12; i++) {
+        if (i == 6) {
+          // Ein zweiter Prozess legt zwischendurch einen Teil an.
+          File(
+            p.join(temp.path, 'connect-2026-11-10-${dateien().length}.log'),
+          ).writeAsStringSync('fremd\n');
+        }
+        log.info('Zeile $i mit etwas Text, damit sie zählt');
+      }
+      final zeilen = dateien()
+          .expand((n) => File(p.join(temp.path, n)).readAsLinesSync())
+          .where((z) => z.contains('Zeile'))
+          .toList();
+      expect(zeilen, hasLength(12));
+    });
+
     test('alle Dateien zusammen bleiben unter der Gesamtgrenze', () {
       final log = AgentLog(
         temp,

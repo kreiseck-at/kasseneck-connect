@@ -70,6 +70,49 @@ void main() {
     });
   });
 
+  group('zweite Ablage installation-id', () {
+    File datei() => File(p.join(temp.path, 'installation-id'));
+
+    test('steht nach dem ersten Start auch in installation-id', () async {
+      final id = await sichereInstallationId(store, random: Random(4));
+      expect(datei().readAsStringSync().trim(), id);
+    });
+
+    test('schreibt eine ältere Version die config.json ohne Kennung, kommt '
+        'sie aus installation-id zurück', () async {
+      final id = await sichereInstallationId(store, random: Random(5));
+      // So sähe eine von 1.4.2 neu geschriebene config.json aus.
+      File(
+        p.join(temp.path, 'config.json'),
+      ).writeAsStringSync(jsonEncode(<String, Object?>{'port': 47120}));
+      expect(await sichereInstallationId(store, random: Random(6)), id);
+      expect((await store.load()).installationId, id);
+    });
+
+    test(
+      'eine verdorbene installation-id zählt nicht und wird ersetzt',
+      () async {
+        datei().writeAsStringSync('kein-uuid\n');
+        final id = await sichereInstallationId(store, random: Random(7));
+        expect(isInstallationId(id), isTrue);
+        expect(datei().readAsStringSync().trim(), id);
+      },
+    );
+
+    test('nichts lesbar oder schreibbar: eine Kennung für diesen Lauf, der '
+        'Start scheitert nie', () async {
+      // Der Datenordner ist eine Datei: weder config.json noch
+      // installation-id lassen sich anlegen.
+      final kaputt = File(p.join(temp.path, 'kein-ordner'))
+        ..writeAsStringSync('');
+      final verdorben = ConfigStore.forDirectory(Directory(kaputt.path));
+      final log = AgentLog(Directory(p.join(temp.path, 'logs')));
+      final id = await sichereInstallationId(verdorben, log: log);
+      expect(isInstallationId(id), isTrue);
+      expect(log.file.readAsStringSync(), contains('für diesen Lauf $id'));
+    });
+  });
+
   group('Agent', () {
     test(
       'Status ohne Token nennt die Kennung, über Neustarts gleich',

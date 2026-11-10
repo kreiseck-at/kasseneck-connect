@@ -60,6 +60,10 @@ const int portFallbackRange = 8;
 /// So lange darf das höfliche Schließen dauern, bevor hart geschlossen wird.
 const Duration gracefulStopTimeout = Duration(seconds: 2);
 
+/// So lange wartet das Anhalten höchstens auf die Hintergrundarbeit
+/// (Statustakt, Suchen, Kennung, Schreibvorgänge, Sperren) – alles zusammen.
+const Duration anhaltenHoechstens = Duration(seconds: 5);
+
 /// Wie oft der Agent die Zertifikate prüft (und bei Bedarf erneuert). Dazu
 /// kommt die Prüfung bei jedem Start; erneuert wird 30 Tage vor Ablauf, ein
 /// Tag Takt reicht also auch, wenn der Rechner viel schläft.
@@ -263,7 +267,8 @@ class Agent {
     if (_server != null) return;
 
     // Vor allem anderen: die Kasse fragt die Kennung schon im ersten Status.
-    await sichereInstallationId(store, log: log);
+    // Wirft nie – ohne speicherbare Kennung gilt eine für diesen Lauf.
+    final installationId = await sichereInstallationId(store, log: log);
 
     // Der Druckstapel gehört zum Agenten: Registry, Warteschlange und Suche
     // hängen alle am selben Ereignisbus, den A4 an `/v1/events` weiterreicht.
@@ -277,6 +282,7 @@ class Agent {
       betriebssystem: _betriebssystem,
       start: _startProcess,
       log: log,
+      clock: _clock,
     );
     final vorgaenge = LaufendeVorgaenge(
       clock: _clock,
@@ -299,7 +305,8 @@ class Agent {
           verbinden: _geraeteVerbindung,
         );
     final queue =
-        _queue ?? PrintQueue(registry: registry, events: bus, log: log);
+        _queue ??
+        PrintQueue(registry: registry, events: bus, log: log, clock: _clock);
     _printers = registry;
 
     // Kennung der Drucker (ab 1.5.0): Funde der Suche, GS I, ARP.
@@ -330,11 +337,19 @@ class Agent {
       queue: queue,
       abfrage: abfrage,
       kasseZuletzt: () => _context?.kasseZuletzt,
+      arp: arp,
+      schnittstellen: _schnittstellen,
       log: log,
       clock: _clock,
     );
     _status = status;
-    final discovery = _discovery ?? PrinterDiscovery(log: log);
+    final discovery =
+        _discovery ??
+        PrinterDiscovery(
+          log: log,
+          mitKennung: () async =>
+              (await store.load()).aktiv(Neuerung.druckerKennung),
+        );
     final wiederfinder = DruckerWiederfinder(
       registry: registry,
       arp: arp,
@@ -449,6 +464,7 @@ class Agent {
     warmhalter.beiDauerndUnerreichbar = terminalSuche.imHintergrund;
     _terminalSuche = terminalSuche;
     ctx
+      ..installationId = installationId
       ..terminalZustand = warmhalter.statusFeld
       ..vorgaenge = vorgaenge
       ..neustart = _neustart
@@ -524,35 +540,53 @@ class Agent {
     }
   }
 
+  /// Wartet auf [arbeit], höchstens [anhaltenHoechstens]; was dann noch
+  /// läuft, bleibt zurück (Logzeile).
+  Future<void> _hoechstens(List<Future<void>> arbeit) async {
+    try {
+      await Future.wait(arbeit).timeout(anhaltenHoechstens);
+    } on TimeoutException {
+      log.warn(
+        'Anhalten: Hintergrundarbeit nach ${anhaltenHoechstens.inSeconds} s '
+        'nicht fertig – Connect hält trotzdem an.',
+      );
+    } on Object catch (e) {
+      log.warn('Anhalten: $e');
+    }
+  }
+
   /// Hält den Server an: erst höflich (laufende Anfragen dürfen zu Ende
   /// gehen), nach [gracefulStopTimeout] mit Nachdruck.
   Future<void> stop() async {
     _warmhalter?.stop();
-    await _status?.stop();
-    _status = null;
+    _vorgaenge?.stop();
+    _vorgaenge = null;
+    _tlsTimer?.cancel();
+    _tlsTimer = null;
+    // Kein caffeinate über das Ende des Agenten hinaus.
+    _schlafsperre?.frei();
     // Hintergrundarbeit zu Ende bringen: nach dem Anhalten schreibt nichts
-    // mehr in die config.json.
-    await _wiederfinder?.beenden();
-    await _terminalSuche?.beenden();
-    await _kennung?.erledigt();
-    await _warmhalter?.erledigt;
+    // mehr in die config.json. Eine laufende Zertifikatsprüfung bände sonst
+    // womöglich einen HTTPS-Zugang neu, nachdem hier alles zu ist. Alles
+    // zusammen höchstens [anhaltenHoechstens]: ein Neustart oder Update
+    // wartet nie ewig auf eine hängende Suche.
+    await _hoechstens(<Future<void>>[
+      if (_status case final status?) status.stop(),
+      if (_wiederfinder case final suche?) suche.beenden(),
+      if (_terminalSuche case final suche?) suche.beenden(),
+      if (_kennung case final kennung?) kennung.erledigt(),
+      if (_warmhalter case final warmhalter?) warmhalter.erledigt,
+      if (_printers case final drucker?) drucker.hintergrundErledigt(),
+      if (_schlafsperre case final sperre?) sperre.erledigt,
+      if (_betriebsLock case final lock?) lock.erledigt,
+      if (_tlsCheck case final pruefung?) pruefung,
+    ]);
+    _status = null;
     _wiederfinder = null;
     _terminalSuche = null;
     _kennung = null;
-    _vorgaenge?.stop();
-    _vorgaenge = null;
-    // Kein caffeinate über das Ende des Agenten hinaus.
-    _schlafsperre?.frei();
-    await _schlafsperre?.erledigt;
     _schlafsperre = null;
-    await _betriebsLock?.erledigt;
     _betriebsLock = null;
-    _tlsTimer?.cancel();
-    _tlsTimer = null;
-    // Eine laufende Zertifikatsprüfung zu Ende gehen lassen: sie bände sonst
-    // womöglich einen HTTPS-Zugang neu, nachdem hier alles zu ist.
-    final pendingCheck = _tlsCheck;
-    if (pendingCheck != null) await pendingCheck;
 
     final server = _server;
     final httpsServer = _httpsServer;

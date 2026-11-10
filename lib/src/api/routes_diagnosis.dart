@@ -34,7 +34,7 @@ Future<Response> handleDiagnosis(AgentContext ctx, Request request) async {
     'os': Platform.operatingSystem,
     'osVersion': system?.osVersion,
     'arch': system?.arch,
-    'installationId': config.installationId,
+    'installationId': ctx.installationId ?? config.installationId,
     'uptimeSeconds': ctx.uptimeSeconds,
     'port': ctx.port,
     'httpsPort': ctx.httpsPort,

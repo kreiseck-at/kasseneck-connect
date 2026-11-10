@@ -88,6 +88,10 @@ class AgentContext {
   /// Laufende Vorgänge (Druck, Zahlung) – prozessweit; `null` ohne.
   LaufendeVorgaenge? vorgaenge;
 
+  /// Die Installationskennung dieses Laufs (`sichereInstallationId`); `null`:
+  /// die aus der `config.json`.
+  String? installationId;
+
   /// Beendet Connect, damit der Autostart ihn neu startet; `null`, wo der
   /// Autostart einen beendeten Agenten nicht wieder startet.
   Future<void> Function()? neustart;

@@ -115,7 +115,8 @@ const String notReadyMessage =
 // n = 2 (Offline-Grund): Bit 2 = Deckel offen, Bit 5 = Druck wegen
 //   Papierende angehalten.
 // n = 4 (Rollensensor): Bit 2 und 3 = Papier fast leer, Bit 5 und 6 = Papier
-//   leer. Epson setzt beide Bits eines Paares; nur das volle Paar zählt.
+//   leer. Epson setzt beide Bits eines Paares; nur das volle Paar zählt, und
+//   „leer“ nur zusammen mit dem Stopp wegen Papierende aus n = 2.
 const int _deckelOffen = 0x04;
 const int _stoppPapierende = 0x20;
 const int _fastLeerPaar = 0x0C;
@@ -141,8 +142,14 @@ DruckerZustand zustandAusDleEot({int? offlineGrund, int? rollensensor}) {
 
   final Papier papier;
   if (rolle != null) {
+    // Papierende sperrt den Druck, deshalb zählt es nur doppelt belegt: der
+    // Rollensensor meldet „leer“ UND der Drucker hat deshalb angehalten
+    // (`DLE EOT 2`, Bit 5). Ein Byte mit gültigen festen Bits, das zufällig
+    // beide Sensorbits trägt, blockiert so keinen Bon.
     papier = (rolle & _leerPaar) == _leerPaar
-        ? Papier.leer
+        ? (offline != null && (offline & _stoppPapierende) != 0
+              ? Papier.leer
+              : Papier.unbekannt)
         : (rolle & _fastLeerPaar) == _fastLeerPaar
         ? Papier.fastLeer
         : Papier.ok;

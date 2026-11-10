@@ -38,15 +38,38 @@ sealed class VorpruefungsErgebnis {
   const VorpruefungsErgebnis();
 }
 
+/// Was die Abfrage-Verbindung vor dem Druck erlebte.
+enum AbfrageVerlauf {
+  /// Keine Abfrage-Verbindung (abgeschaltet, als stumm gemerkt, ePOS).
+  keine,
+
+  /// Der Drucker war eben unter der Adresse erreichbar: die Abfrage-Verbindung
+  /// stand, oder sie kam nicht zustande, während der eigene Bon dort noch
+  /// druckt. Lehnt er die Druckverbindung ab, gibt er nur die vorige noch
+  /// nicht frei – umgezogen ist er nicht.
+  ebenErreichbar,
+
+  /// Sie kam nicht zustande. Das zählt als erster Druckversuch – sonst
+  /// dauerte ein ausgeschalteter Drucker länger als bis 1.4.2.
+  ohneVerbindung,
+}
+
 /// Drucken an [ziel] – die eingerichtete oder eine eben wiedergefundene
 /// Adresse.
 final class DruckFreigabe extends VorpruefungsErgebnis {
-  const DruckFreigabe(this.ziel, {this.umgeleitet = false});
+  const DruckFreigabe(
+    this.ziel, {
+    this.umgeleitet = false,
+    this.abfrage = AbfrageVerlauf.keine,
+  });
 
   final PrinterConfig ziel;
 
   /// Ob [ziel] eine neue Adresse ist (nach bewiesenem Konflikt gefunden).
   final bool umgeleitet;
+
+  /// Was die Abfrage-Verbindung an [ziel] erlebte.
+  final AbfrageVerlauf abfrage;
 }
 
 /// Nicht drucken: es geht kein Byte hinaus.
@@ -112,10 +135,9 @@ class DruckVorpruefung {
     final statusAn = config.aktiv(Neuerung.druckerStatus);
     if (!kennungSchalter && !statusAn) return DruckFreigabe(drucker);
 
+    final statusfaehig = statusAn && drucker.statusCapableAt != null;
     final uhr = Stopwatch()..start();
-    final grenze = statusAn && drucker.statusCapableAt != null
-        ? budgetStatusfaehig
-        : budget;
+    final grenze = statusfaehig ? budgetStatusfaehig : budget;
     Duration rest() {
       final r = grenze - uhr.elapsed;
       return r.isNegative ? Duration.zero : r;
@@ -132,10 +154,11 @@ class DruckVorpruefung {
       );
     }
 
-    // 1. MAC aus der ARP-Tabelle: kein Byte an den Drucker.
+    // 1. MAC aus der ARP-Tabelle: kein Byte an den Drucker. Sie dient der
+    // Kennung und entscheidet mit, ob Schweigen „nicht bereit“ heißen darf.
     var mac = MacVergleich.unbekannt;
     String? geseheneMac;
-    if (kennungAn && drucker.mac != null) {
+    if (drucker.mac != null && (kennungAn || statusfaehig)) {
       geseheneMac = await macImSelbenNetz(
         drucker.host,
         _arp,
@@ -149,6 +172,7 @@ class DruckVorpruefung {
     // 2. Eine Abfrage für Seriennummer und Status zusammen.
     String? geseheneSerie;
     DruckerZustand? zustand;
+    var abfrage = AbfrageVerlauf.keine;
     switch (drucker.kind) {
       case PrinterKind.tcp9100:
         final fragSerie =
@@ -162,48 +186,40 @@ class DruckVorpruefung {
           if (statusAn) EscPosFrage.rollensensor,
           if (fragSerie) EscPosFrage.seriennummer,
         };
-        // Ein Drucker, der schon gültig geantwortet hat, wird immer gefragt:
-        // schweigt er, ist er nicht bereit (Gerätetest TM-T20III).
-        final statusfaehig = statusAn && drucker.statusCapableAt != null;
+        EscPosAntworten? antworten;
         if (statusfaehig) {
-          final antworten = await _abfrage.frageBereit(
+          // Ein Drucker, der schon gültig geantwortet hat, wird immer
+          // gefragt: schweigt er, ist er womöglich nicht bereit (Gerätetest
+          // TM-T20III).
+          antworten = await _abfrage.frageBereit(
             drucker.host,
             drucker.port,
             fragen: fragen,
             budget: rest(),
           );
-          geseheneSerie = antworten.seriennummer;
-          if (antworten.stumm) {
-            // Steht unter der Adresse nachweislich ein anderes Gerät (andere
-            // MAC), sagt sein Schweigen nichts über den eingerichteten
-            // Drucker – dann wie bis 1.4.2.
-            zustand = mac == MacVergleich.anders
-                ? null
-                : DruckerZustand.nichtBereit;
-          } else if (antworten.verbunden) {
-            zustand = zustandAusDleEot(
-              offlineGrund: antworten.offlineGrund,
-              rollensensor: antworten.rollensensor,
-            );
-          }
         } else if (fragen.isNotEmpty && !lage.stumm(jetzt)) {
-          final antworten = await _abfrage.frage(
+          antworten = await _abfrage.frage(
             drucker.host,
             drucker.port,
             fragen: fragen,
             budget: rest(),
           );
-          if (antworten.stumm) _alsStummMerken(drucker, lage, jetzt);
+        }
+        if (antworten != null) {
+          abfrage = antworten.verbunden || lage.druckt(jetzt)
+              ? AbfrageVerlauf.ebenErreichbar
+              : antworten.verbindungsFehler != null
+              ? AbfrageVerlauf.ohneVerbindung
+              : AbfrageVerlauf.keine;
           geseheneSerie = antworten.seriennummer;
-          if (antworten.offlineGrund != null) {
-            await registry.statusfaehigMerken(drucker, jetzt);
-          }
-          if (statusAn && antworten.verbunden && !antworten.stumm) {
-            zustand = zustandAusDleEot(
-              offlineGrund: antworten.offlineGrund,
-              rollensensor: antworten.rollensensor,
-            );
-          }
+          zustand = _deute(
+            drucker,
+            antworten,
+            lage,
+            jetzt,
+            mac: mac,
+            statusAn: statusAn,
+          );
         }
       case PrinterKind.epos:
         if (statusAn) zustand = await registry.eposZustand(drucker, rest());
@@ -219,14 +235,7 @@ class DruckVorpruefung {
       );
       switch (befund) {
         case KennungsLage.bestaetigt:
-          await _bestaetigt(
-            drucker,
-            lage,
-            jetzt,
-            mac,
-            geseheneMac,
-            geseheneSerie,
-          );
+          _bestaetigt(drucker, lage, jetzt, mac, geseheneMac, geseheneSerie);
         case KennungsLage.unbekannt:
           _hinweisEinmalJeTag(
             lage,
@@ -235,8 +244,16 @@ class DruckVorpruefung {
             '${drucker.port} nicht prüfbar – Druck wie bisher.',
           );
         case KennungsLage.konflikt:
-          // Papier und Deckel eines fremden Geräts zählen nicht.
-          return _konflikt(drucker, config, lage, geseheneSerie!, jetzt);
+          final neu = await _konflikt(
+            drucker,
+            config,
+            lage,
+            geseheneSerie!,
+            jetzt,
+          );
+          if (neu != null) return neu;
+        // Ohne Fund geht der Bon an die eingerichtete Adresse wie bis 1.4.2 –
+        // dann zählen Papier und Deckel des Geräts, das ihn dort bekommt.
       }
     }
 
@@ -251,17 +268,55 @@ class DruckVorpruefung {
         return DruckAbgelehnt(sperre);
       }
     }
-    return DruckFreigabe(drucker);
+    return DruckFreigabe(drucker, abfrage: abfrage);
   }
 
-  Future<void> _bestaetigt(
+  /// Papier, Deckel und Bereitschaft aus den Antworten einer 9100-Abfrage;
+  /// `null`, wenn sich am bekannten Stand nichts ändern soll.
+  DruckerZustand? _deute(
+    PrinterConfig drucker,
+    EscPosAntworten antworten,
+    DruckerLage lage,
+    DateTime jetzt, {
+    required MacVergleich mac,
+    required bool statusAn,
+  }) {
+    if (!antworten.verbunden) return null;
+    if (antworten.stumm) {
+      if (!statusAn || drucker.statusCapableAt == null) {
+        // Nie gültig geantwortet: ein Gerät ohne Echtzeitstatus. Ein Bon,
+        // der noch druckt, ist dafür kein Beweis.
+        if (!lage.druckt(jetzt)) _alsStummMerken(drucker, lage, jetzt);
+        return null;
+      }
+      return schweigenHeisstNichtBereit(mac: mac, lage: lage, jetzt: jetzt)
+          ? DruckerZustand.nichtBereit
+          : DruckerZustand.unbekannt;
+    }
+    if (antworten.offlineGrund == null) {
+      // Gefragt, aber nicht entscheidbar (zu wenig Zeit, langsamer Aufbau,
+      // Gegenstelle schloss): unbekannt, gedruckt wird wie bis 1.4.2.
+      return statusAn ? DruckerZustand.unbekannt : null;
+    }
+    // Antwortet unter der Adresse nachweislich ein anderes Gerät (andere MAC),
+    // sagt das nichts über den eingerichteten Drucker.
+    if (mac != MacVergleich.anders) registry.statusfaehigMerken(drucker, jetzt);
+    return statusAn
+        ? zustandAusDleEot(
+            offlineGrund: antworten.offlineGrund,
+            rollensensor: antworten.rollensensor,
+          )
+        : null;
+  }
+
+  void _bestaetigt(
     PrinterConfig drucker,
     DruckerLage lage,
     DateTime jetzt,
     MacVergleich mac,
     String? geseheneMac,
     String? geseheneSerie,
-  ) async {
+  ) {
     final warKonflikt = lage.kennung == KennungsLage.konflikt;
     lage
       ..kennung = KennungsLage.bestaetigt
@@ -274,7 +329,7 @@ class DruckVorpruefung {
       _log?.info('Drucker ${drucker.id}: Kennung wieder bestätigt.');
     }
     if (mac == MacVergleich.anders && geseheneSerie != null) {
-      await _neueMac(drucker, geseheneMac!);
+      _neueMac(drucker, geseheneMac!);
     }
   }
 
@@ -290,10 +345,11 @@ class DruckVorpruefung {
     );
   }
 
-  /// Bewiesen ein anderer Drucker unter der Adresse: erst schnell suchen,
-  /// sonst an die eingerichtete Adresse drucken wie bis 1.4.2. Die fremde
-  /// Kennung wird nie übernommen.
-  Future<VorpruefungsErgebnis> _konflikt(
+  /// Bewiesen ein anderer Drucker unter der Adresse: erst schnell suchen;
+  /// ohne Fund `null` – dann geht der Bon an die eingerichtete Adresse wie bis
+  /// 1.4.2. Die fremde Kennung wird nie übernommen (aufgelöst wird der
+  /// Konflikt durch eine Neueinrichtung, siehe [PrinterRegistry.upsert]).
+  Future<DruckFreigabe?> _konflikt(
     PrinterConfig drucker,
     AgentConfig config,
     DruckerLage lage,
@@ -325,14 +381,24 @@ class DruckVorpruefung {
       'Drucker ${drucker.id}: Druck an die eingerichtete Adresse wie bisher '
       '(Kennungskonflikt).',
     );
-    return DruckFreigabe(drucker);
+    return null;
   }
 
   /// Dieselbe Seriennummer unter einer anderen MAC: derselbe Drucker mit
-  /// anderem Netzanschluss (etwa WLAN statt LAN) – die MAC wird nachgezogen,
-  /// damit der nächste Bon ohne Frage geht.
-  Future<void> _neueMac(PrinterConfig drucker, String mac) async {
-    try {
+  /// anderem Netzanschluss (etwa WLAN statt LAN) – die MAC wird im
+  /// Hintergrund nachgezogen, damit der nächste Bon ohne Frage geht. Nicht,
+  /// wenn sie in der ARP-Tabelle auch unter einer anderen Adresse steht
+  /// (Repeater mit MAC-NAT): dann kennzeichnet sie kein Gerät.
+  void _neueMac(PrinterConfig drucker, String mac) {
+    registry.imHintergrund('Drucker ${drucker.id}: neue MAC', () async {
+      final tabelle = await _arp.alle();
+      if (adressenMitMac(tabelle, mac).any((h) => h != drucker.host)) {
+        _log?.info(
+          'Drucker ${drucker.id}: MAC $mac steht auch unter einer anderen '
+          'Adresse – nicht übernommen.',
+        );
+        return;
+      }
       await _store.mutate((config) {
         final printers = config.printers.toList();
         final index = printers.indexWhere((p) => p.id == drucker.id);
@@ -344,10 +410,7 @@ class DruckVorpruefung {
       _log?.info(
         'Drucker ${drucker.id}: neue MAC $mac, Seriennummer bestätigt.',
       );
-    } on Object catch (e) {
-      // Ohne neue MAC fragt der nächste Bon wieder GS I – kein Schaden.
-      _log?.warn('Drucker ${drucker.id}: MAC ließ sich nicht speichern: $e');
-    }
+    });
   }
 
   void _hinweisEinmalJeTag(DruckerLage lage, DateTime jetzt, String text) {

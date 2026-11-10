@@ -41,7 +41,9 @@ class PrinterRegistry {
     this.probeTimeout = defaultProbeTimeout,
     DruckerLagen? lagen,
     SocketConnector? verbinden,
+    HttpVerbinder? eposVerbinden,
   }) : _verbinden = verbinden,
+       _eposVerbinden = eposVerbinden,
        _log = log,
        _events = events,
        _random = random ?? Random.secure(),
@@ -57,6 +59,10 @@ class PrinterRegistry {
   /// Verbindungsaufbau der 9100-Treiber (Tests ersetzen ihn); `null`:
   /// `Socket.connect`.
   final SocketConnector? _verbinden;
+
+  /// Verbindungsaufbau der ePOS-Treiber (Tests ersetzen ihn); `null`: der
+  /// des `HttpClient`.
+  final HttpVerbinder? _eposVerbinden;
 
   /// Zeitlimit einer Zustandsabfrage.
   final Duration probeTimeout;
@@ -77,6 +83,32 @@ class PrinterRegistry {
     return null;
   }
 
+  /// Laufende Schreibvorgänge im Hintergrund ([imHintergrund]).
+  final Set<Future<void>> _hintergrund = <Future<void>>{};
+
+  /// Führt [arbeit] im Hintergrund aus: Druck und Statustakt warten nie auf
+  /// die `config.json` – hielte ein anderer Prozess die Sperre, stünde sonst
+  /// der Bon. Fehler landen im Log. [hintergrundErledigt] wartet darauf.
+  void imHintergrund(String was, Future<void> Function() arbeit) {
+    late final Future<void> lauf;
+    lauf = Future<void>(arbeit)
+        .catchError((Object e) {
+          _log?.warn('$was: $e');
+        })
+        .whenComplete(() {
+          // Block statt Pfeil: `remove` liefert einen Wahrheitswert.
+          _hintergrund.remove(lauf);
+        });
+    _hintergrund.add(lauf);
+  }
+
+  /// Wartet auf alle Schreibvorgänge im Hintergrund (Anhalten, Tests).
+  Future<void> hintergrundErledigt() async {
+    while (_hintergrund.isNotEmpty) {
+      await Future.wait(_hintergrund.toList());
+    }
+  }
+
   /// Legt einen Drucker an oder ersetzt ihn.
   ///
   /// Ist [printer].id leer, vergibt der Agent eine neue ID — die Kasse denkt
@@ -91,7 +123,7 @@ class PrinterRegistry {
   /// gleichzeitige Anfragen nicht doch zwei Einträge erzeugen.
   Future<PrinterConfig> upsert(PrinterConfig printer) async {
     late PrinterConfig saved;
-    var neuesGeraet = true;
+    var konfliktAufgeloest = false;
 
     await store.mutate((config) {
       final printers = config.printers.toList();
@@ -100,19 +132,35 @@ class PrinterRegistry {
           : printer;
       final index = printers.indexWhere((e) => e.id == saved.id);
       if (index >= 0) {
-        saved = behalteKennung(printers[index], saved);
-        neuesGeraet = !_gleicheAdresse(printers[index], saved);
+        // Ein Konflikt heißt: unter der Adresse steht nachweislich ein anderes
+        // Gerät. Richtet die Kasse den Drucker dort neu ein, ist es gewollt –
+        // die alte Kennung gilt nicht mehr.
+        final konflikt =
+            lagen.vorhanden(saved.id)?.kennung == KennungsLage.konflikt &&
+            _gleicheAdresse(printers[index], saved);
+        konfliktAufgeloest = konflikt && printers[index].hatKennung;
+        saved = behalteKennung(
+          printers[index],
+          saved,
+          kennungVerwerfen: konflikt,
+        );
         printers[index] = saved;
       } else {
         printers.add(saved);
       }
       return config.copyWith(printers: printers);
     });
-    // Neue Adresse, womöglich ein anderes Gerät: was Connect im Lauf über
-    // das alte wusste, gilt nicht mehr.
-    if (neuesGeraet) lagen.vergiss(saved.id);
+    // Eine ausdrückliche Einrichtung beginnt den Laufzeitstand neu (Papier,
+    // Kennungslage, „stumm“): womöglich steht dort ein anderes Gerät.
+    lagen.vergiss(saved.id);
 
     _log?.info('Drucker ${saved.id} gespeichert (${saved.kind.wireName}).');
+    if (konfliktAufgeloest) {
+      _log?.info(
+        'Drucker ${saved.id}: Kennungskonflikt durch Neueinrichtung '
+        'aufgelöst – die Kennung wird neu ermittelt.',
+      );
+    }
     return saved;
   }
 
@@ -120,11 +168,21 @@ class PrinterRegistry {
   /// [alt], solange Adresse und Anbindung gleich bleiben.
   ///
   /// Die Kasse schickt beim erneuten Einrichten denselben Drucker noch einmal,
-  /// ohne Kennung; die soll dabei nicht verloren gehen. Zeigt der Eintrag auf
-  /// eine andere Adresse, kann dort ein anderes Gerät stehen – dann beginnt
-  /// die Kennung neu.
-  static PrinterConfig behalteKennung(PrinterConfig alt, PrinterConfig neu) {
+  /// ohne Kennung; die soll dabei nicht verloren gehen – außer mit
+  /// [kennungVerwerfen] (Neueinrichtung im Kennungskonflikt). Zeigt der
+  /// Eintrag auf eine andere Adresse, kann dort ein anderes Gerät stehen –
+  /// dann beginnt die Kennung neu.
+  ///
+  /// `statusCapableAt` übernimmt die Neueinrichtung nie: hängt unter der
+  /// Adresse inzwischen ein Gerät, das nie auf `DLE EOT` antwortet, hieße sein
+  /// Schweigen sonst „nicht bereit“. Die nächste gültige Antwort setzt es neu.
+  static PrinterConfig behalteKennung(
+    PrinterConfig alt,
+    PrinterConfig neu, {
+    bool kennungVerwerfen = false,
+  }) {
     if (!_gleicheAdresse(alt, neu)) return neu;
+    final kennung = !kennungVerwerfen;
     return PrinterConfig(
       id: neu.id,
       name: neu.name,
@@ -132,12 +190,11 @@ class PrinterRegistry {
       host: neu.host,
       port: neu.port,
       devid: neu.devid,
-      model: alt.model,
-      serial: alt.serial,
-      mac: alt.mac,
-      identifiedAt: alt.identifiedAt,
-      identitySource: alt.identitySource,
-      statusCapableAt: alt.statusCapableAt,
+      model: kennung ? alt.model : null,
+      serial: kennung ? alt.serial : null,
+      mac: kennung ? alt.mac : null,
+      identifiedAt: kennung ? alt.identifiedAt : null,
+      identitySource: kennung ? alt.identitySource : null,
       extras: alt.extras,
     );
   }
@@ -211,6 +268,7 @@ class PrinterRegistry {
           port: standard ? null : printer.port,
           https: https,
           devid: printer.devid ?? defaultEposDevid,
+          verbinden: _eposVerbinden,
         );
     }
   }
@@ -236,10 +294,20 @@ class PrinterRegistry {
     });
   }
 
-  /// Merkt sich: [drucker] antwortet auf `DLE EOT` (`statusCapableAt`).
-  /// Einmal je Drucker und Adresse; wirft nie.
-  Future<void> statusfaehigMerken(PrinterConfig drucker, DateTime am) async {
+  /// Merkt sich im Hintergrund: [drucker] antwortet auf `DLE EOT`
+  /// (`statusCapableAt`). Einmal je Drucker und Adresse; wirft nie.
+  void statusfaehigMerken(PrinterConfig drucker, DateTime am) {
     if (drucker.statusCapableAt != null) return;
+    imHintergrund(
+      'Drucker ${drucker.id}: Statusfähigkeit',
+      () => _statusfaehigSchreiben(drucker, am),
+    );
+  }
+
+  Future<void> _statusfaehigSchreiben(
+    PrinterConfig drucker,
+    DateTime am,
+  ) async {
     try {
       await store.mutate((config) {
         final printers = config.printers.toList();

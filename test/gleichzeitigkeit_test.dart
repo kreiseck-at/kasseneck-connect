@@ -415,7 +415,6 @@ void main() {
 
     final erwartet = <String>{};
     var zahlungenOk = 0;
-    var langsamsterStatus = Duration.zero;
     var nummer = 0;
 
     Future<void> kasse(int k) async {
@@ -437,14 +436,12 @@ void main() {
           );
           expect(antwort.ok, isTrue);
         } else if (wahl < 65) {
-          final uhr = Stopwatch()..start();
           final antwort = await anAgent(
             a.agent.port,
             'GET',
             '/v1/status',
             token: token,
           );
-          if (uhr.elapsed > langsamsterStatus) langsamsterStatus = uhr.elapsed;
           expect(antwort.ok, isTrue);
         } else if (wahl < 80) {
           final antwort = await a.zahle(token, hps.port, ++nummer);
@@ -546,8 +543,8 @@ void main() {
       }
     }
 
-    // Status antwortet immer sofort.
-    expect(langsamsterStatus, lessThan(const Duration(seconds: 1)));
+    // Dass der Status nie wartet, prüft „Status antwortet, während …“ in
+    // betrieb_api_test über die Reihenfolge, nicht über eine Wanduhr.
 
     // Alle Sperren wieder frei, kein caffeinate übrig, Datei gültig.
     await warteBis(() async => !a.agent.context.vorgaenge!.laufen);

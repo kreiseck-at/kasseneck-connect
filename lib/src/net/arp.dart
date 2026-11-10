@@ -49,6 +49,19 @@ Map<String, String> arpTabelleAusAusgabe(String ausgabe) {
   return tabelle;
 }
 
+/// Alle Adressen, unter denen [mac] in [tabelle] steht.
+///
+/// Steht eine MAC unter mehr als einer Adresse (WLAN-Repeater mit MAC-NAT,
+/// Bridge, Router mit Proxy-ARP), kennzeichnet sie kein einzelnes Gerät.
+Set<String> adressenMitMac(Map<String, String> tabelle, String? mac) {
+  final gesucht = normalizeMac(mac);
+  if (gesucht == null) return const <String>{};
+  return <String>{
+    for (final eintrag in tabelle.entries)
+      if (normalizeMac(eintrag.value) == gesucht) eintrag.key,
+  };
+}
+
 /// Ob [ip] im selben Netz wie eine eigene Schnittstelle liegt.
 ///
 /// Die MAC aus der ARP-Tabelle stimmt nur dort: liegt das Gerät hinter einem

@@ -27,9 +27,13 @@ void main() {
     final faelle = <(int?, int?), (Papier, Deckel)>{
       (_ok, _ok): (Papier.ok, Deckel.zu),
       (_deckelOffen, _ok): (Papier.ok, Deckel.offen),
-      (_ok, _rolleLeer): (Papier.leer, Deckel.zu),
+      // Papierende nur doppelt belegt: Rollensensor leer UND Stopp wegen
+      // Papierende. Der Sensor allein ist unbekannt und sperrt nie.
+      (_stoppPapierende, _rolleLeer): (Papier.leer, Deckel.zu),
+      (_ok, _rolleLeer): (Papier.unbekannt, Deckel.zu),
       (_ok, _rolleFastLeer): (Papier.fastLeer, Deckel.zu),
-      (_ok, 0x12 | 0x6C): (Papier.leer, Deckel.zu),
+      (_stoppPapierende, 0x12 | 0x6C): (Papier.leer, Deckel.zu),
+      (_ok, 0x12 | 0x6C): (Papier.unbekannt, Deckel.zu),
       // Nur ein Bit eines Paares: nicht plausibel, also nicht gemeldet.
       (_ok, 0x12 | 0x20): (Papier.ok, Deckel.zu),
       (_ok, 0x12 | 0x40): (Papier.ok, Deckel.zu),
@@ -41,7 +45,7 @@ void main() {
       (0x04, 0x60): (Papier.unbekannt, Deckel.unbekannt),
       (0x93, 0xF3): (Papier.unbekannt, Deckel.unbekannt),
       (null, null): (Papier.unbekannt, Deckel.unbekannt),
-      (null, _rolleLeer): (Papier.leer, Deckel.unbekannt),
+      (null, _rolleLeer): (Papier.unbekannt, Deckel.unbekannt),
     };
     faelle.forEach((roh, erwartet) {
       test('$roh → $erwartet', () {
@@ -180,7 +184,9 @@ void main() {
     test('Papier leer: kein Byte des Bons, paper_out; nach dem Einlegen geht '
         'derselbe Auftrag', () async {
       final id = await a.drucker(drucker.port);
-      drucker.dleEot[4] = _rolleLeer;
+      drucker.dleEot
+        ..[2] = _stoppPapierende
+        ..[4] = _rolleLeer;
       final ergebnis = await drucke(id, jobId: 'beleg-7');
       expect(ergebnis.ok, isFalse);
       expect(ergebnis.code, errorPaperOut);
@@ -191,7 +197,9 @@ void main() {
       expect(eintrag['paper'], 'out');
       expect(eintrag['state'], 'online');
 
-      drucker.dleEot[4] = _ok;
+      drucker.dleEot
+        ..[2] = _ok
+        ..[4] = _ok;
       final nochmal = await drucke(id, jobId: 'beleg-7');
       expect(nochmal.ok, isTrue, reason: 'nicht als erledigt gemerkt');
       expect(drucker.druckVerbindungen.single, beispielBon);
@@ -224,7 +232,9 @@ void main() {
     test('printer_status aus: keine Abfrage, auch bei leerem Papier', () async {
       await a.abschalten(<Neuerung>[Neuerung.druckerStatus]);
       final id = await a.drucker(drucker.port);
-      drucker.dleEot[4] = _rolleLeer;
+      drucker.dleEot
+        ..[2] = _stoppPapierende
+        ..[4] = _rolleLeer;
       expect((await drucke(id)).ok, isTrue);
       expect(drucker.abfrageVerbindungen, isEmpty);
     });
@@ -240,12 +250,25 @@ void main() {
       ]);
     });
 
-    test('Konflikt: Papier eines fremden Geräts blockiert nicht', () async {
+    test('Konflikt ohne Fund: der Bon ginge an das Gerät unter der Adresse – '
+        'dessen Papierende sperrt', () async {
       final id = await a.drucker(drucker.port, serial: 'X5ZT000123');
       drucker
         ..gsI[68] = 'X5ZT000999'
+        ..dleEot[2] = _stoppPapierende
         ..dleEot[4] = _rolleLeer;
-      expect((await drucke(id)).ok, isTrue);
+      final ergebnis = await drucke(id);
+      expect(ergebnis.code, errorPaperOut);
+      expect(drucker.druckVerbindungen, isEmpty);
+      expect(a.registry.lagen.von(id).kennung, KennungsLage.konflikt);
+
+      // Papier nachgelegt: gedruckt wird an die eingerichtete Adresse wie bis
+      // 1.4.2, der Konflikt bleibt sichtbar.
+      drucker.dleEot
+        ..[2] = _ok
+        ..[4] = _ok;
+      expect((await drucke(id, jobId: 'job-2')).ok, isTrue);
+      expect(a.registry.lagen.von(id).kennung, KennungsLage.konflikt);
     });
   });
 
@@ -509,7 +532,7 @@ void main() {
     setUp(() async {
       temp = Directory.systemTemp.createTempSync('connect-status-api-');
       drucker = await FakeTcpPrinter.start(
-        dleEot: const <int, int>{2: _ok, 4: _rolleLeer},
+        dleEot: const <int, int>{2: _stoppPapierende, 4: _rolleLeer},
       );
       agent = Agent(
         store: ConfigStore.forDirectory(temp),

@@ -172,18 +172,6 @@ class PrinterConfig {
     );
   }
 
-  /// Derselbe Drucker ohne Kennung (neue Adresse von Hand: dort kann ein
-  /// anderes Gerät stehen).
-  PrinterConfig ohneKennung() => PrinterConfig(
-    id: id,
-    name: name,
-    kind: kind,
-    host: host,
-    port: port,
-    devid: devid,
-    extras: extras,
-  );
-
   /// Die Felder, die schon 1.4.2 an die Kasse gab – unverändert in Form und
   /// Reihenfolge (`GET /v1/printers`, `PUT /v1/printers`, Status).
   Map<String, Object?> toApiJson() => <String, Object?>{
@@ -387,20 +375,22 @@ class AdressWechsel {
   final String von;
   final String nach;
 
+  /// Form in `config.json` und Diagnose – englisch wie das Ereignis
+  /// `printer.relocated` (`kind`, `from`, `to`).
   Map<String, Object?> toJson() => <String, Object?>{
     'at': at.toUtc().toIso8601String(),
-    'art': art.wireName,
+    'kind': art.wireName,
     if (art == GeraeteArt.drucker) 'id': kennung else 'tid': kennung,
-    'von': von,
-    'nach': nach,
+    'from': von,
+    'to': nach,
   };
 
   /// `null` bei einem unbrauchbaren Eintrag (er wird übersprungen).
   static AdressWechsel? fromJson(Map<String, Object?> json) {
     final at = readDateTime(json['at']);
-    final art = GeraeteArt.fromWireName(json['art']);
-    final von = readString(json['von']);
-    final nach = readString(json['nach']);
+    final art = GeraeteArt.fromWireName(json['kind']);
+    final von = readString(json['from']);
+    final nach = readString(json['to']);
     if (at == null || art == null || von == null || nach == null) return null;
     final kennung = readString(
       art == GeraeteArt.drucker ? json['id'] : json['tid'],

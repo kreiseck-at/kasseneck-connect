@@ -77,7 +77,13 @@ class DruckerErkennung {
       if (antworten.offlineGrund != null) statusfaehigAm = _clock();
     }
 
-    final mac = await macImSelbenNetz(drucker.host, _arp, _schnittstellen);
+    var mac = await macImSelbenNetz(drucker.host, _arp, _schnittstellen);
+    // Steht die MAC auch unter einer anderen Adresse (Repeater mit MAC-NAT,
+    // Bridge), kennzeichnet sie kein Gerät und wird nicht gespeichert.
+    if (mac != null &&
+        adressenMitMac(await _arp.alle(), mac).any((h) => h != drucker.host)) {
+      mac = null;
+    }
     return ErkannteKennung(
       model: model,
       modelQuelle: modelQuelle,

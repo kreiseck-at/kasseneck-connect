@@ -3,8 +3,12 @@ import 'dart:async';
 import '../config/model.dart';
 import '../config/neuerungen.dart';
 import '../log/logger.dart';
+import '../net/arp.dart';
 import 'abfrage.dart';
+import 'discovery.dart' show InterfaceProbe;
 import 'driver.dart';
+import 'erkennung.dart' show macImSelbenNetz;
+import 'kennung.dart';
 import 'lage.dart';
 import 'queue.dart';
 import 'registry.dart';
@@ -42,11 +46,15 @@ class DruckerStatusDienst {
     required EscPosAbfrage abfrage,
     required DateTime? Function() kasseZuletzt,
     this.beiDauerndVerfehlt,
+    ArpTabelle? arp,
+    InterfaceProbe? schnittstellen,
     AgentLog? log,
     DateTime Function()? clock,
     this.abstand = statusTaktAbstand,
     this.budget = statusAbrufBudget,
   }) : _abfrage = abfrage,
+       _arp = arp,
+       _schnittstellen = schnittstellen,
        _kasseZuletzt = kasseZuletzt,
        _log = log,
        _clock = clock ?? DateTime.now;
@@ -54,6 +62,12 @@ class DruckerStatusDienst {
   final PrinterRegistry registry;
   final PrintQueue queue;
   final EscPosAbfrage _abfrage;
+
+  /// ARP-Tabelle und Schnittstellen für den MAC-Vergleich: nur bei gleicher
+  /// MAC (oder frisch bestätigter Kennung) heißt Schweigen „nicht bereit“.
+  /// Ohne sie zählt allein die frische Kennung.
+  final ArpTabelle? _arp;
+  final InterfaceProbe? _schnittstellen;
   final DateTime? Function() _kasseZuletzt;
   final AgentLog? _log;
   final DateTime Function() _clock;
@@ -101,8 +115,15 @@ class DruckerStatusDienst {
       final config = await registry.store.load();
       if (!config.aktiv(Neuerung.statusTakt) || !kasseOffen) return;
       runden++;
+      final jetzt = _clock();
       await Future.wait(
         config.printers.map((drucker) async {
+          // Ein Bon aus diesem Prozess druckt womöglich noch: der Drucker war
+          // eben erreichbar, und eine Abfrage jetzt bewiese nichts.
+          if (registry.lagen.vorhanden(drucker.id)?.druckt(jetzt) ?? false) {
+            _zaehle(drucker.id, true);
+            return;
+          }
           final erreichbar = await queue.exclusive(
             drucker.id,
             () => _abfragen(drucker, config),
@@ -172,24 +193,34 @@ class DruckerStatusDienst {
           drucker.id,
           antworten.verbunden ? PrinterState.online : PrinterState.offline,
         );
-        if (antworten.offlineGrund != null && !statusfaehig) {
-          await registry.statusfaehigMerken(drucker, jetzt);
-        }
-        if (antworten.stumm && statusfaehig) {
-          registry.noteZustand(drucker.id, DruckerZustand.nichtBereit, jetzt);
-        } else if (antworten.stumm) {
-          _alsStumm(drucker, lage, jetzt);
-        } else if (antworten.verbunden) {
+        if (!antworten.verbunden) return false;
+        final mac = await _macVergleich(drucker);
+        if (antworten.stumm) {
+          if (!statusfaehig) {
+            if (!lage.druckt(jetzt)) _alsStumm(drucker, lage, jetzt);
+            return true;
+          }
           registry.noteZustand(
             drucker.id,
-            zustandAusDleEot(
-              offlineGrund: antworten.offlineGrund,
-              rollensensor: antworten.rollensensor,
-            ),
+            schweigenHeisstNichtBereit(mac: mac, lage: lage, jetzt: jetzt)
+                ? DruckerZustand.nichtBereit
+                : DruckerZustand.unbekannt,
             jetzt,
           );
+          return true;
         }
-        return antworten.verbunden;
+        if (antworten.offlineGrund != null && mac != MacVergleich.anders) {
+          registry.statusfaehigMerken(drucker, jetzt);
+        }
+        registry.noteZustand(
+          drucker.id,
+          zustandAusDleEot(
+            offlineGrund: antworten.offlineGrund,
+            rollensensor: antworten.rollensensor,
+          ),
+          jetzt,
+        );
+        return true;
       case PrinterKind.epos:
         final zustand = await registry.eposZustand(drucker, budget);
         registry.noteState(
@@ -199,6 +230,17 @@ class DruckerStatusDienst {
         if (zustand != null) registry.noteZustand(drucker.id, zustand, jetzt);
         return zustand != null;
     }
+  }
+
+  /// Gespeicherte gegen gesehene MAC (ohne ARP-Tabelle: unbekannt).
+  Future<MacVergleich> _macVergleich(PrinterConfig drucker) async {
+    final arp = _arp;
+    final schnittstellen = _schnittstellen;
+    if (drucker.mac == null || arp == null || schnittstellen == null) {
+      return MacVergleich.unbekannt;
+    }
+    final gesehen = await macImSelbenNetz(drucker.host, arp, schnittstellen);
+    return vergleicheMac(drucker.mac, gesehen);
   }
 
   /// Nur der Verbindungstest wie bis 1.4.2 (`PrinterDriver.status`).

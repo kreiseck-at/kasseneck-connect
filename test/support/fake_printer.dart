@@ -61,6 +61,28 @@ class FakeTcpPrinter {
   /// Verzögerung jeder Antwort.
   Duration antwortVerzug = Duration.zero;
 
+  /// So lange druckt der Fake nach dem Ende einer Druckverbindung; solange
+  /// beantwortet er `DLE EOT` erst danach (voller Puffer, Druckwerk läuft –
+  /// Annahme zum TM-T20III, Gerätetest offen).
+  Duration druckDauer = Duration.zero;
+  DateTime _druecktBis = DateTime.fromMillisecondsSinceEpoch(0);
+
+  /// Wie ein Drucker, der nur eine Verbindung zugleich annimmt: über
+  /// [verbinden] wird abgelehnt, solange eine offen ist und noch
+  /// [freigabeVerzug] nach ihrem Schließen.
+  bool eineVerbindung = false;
+
+  /// Siehe [eineVerbindung].
+  Duration freigabeVerzug = Duration.zero;
+  DateTime _freiAb = DateTime.fromMillisecondsSinceEpoch(0);
+
+  /// Verbindungsaufbau über [verbinden] dauert so lange (WLAN wacht auf,
+  /// verlorenes SYN).
+  Duration aufbauVerzug = Duration.zero;
+
+  /// Wie oft [verbinden] abgelehnt hat.
+  int abgelehnt = 0;
+
   final ServerSocket _server;
 
   /// Verhalten dieses Fakes.
@@ -143,6 +165,41 @@ class FakeTcpPrinter {
     return true;
   }
 
+  /// Verbindungsaufbau zu diesem Fake mit seinem Verhalten ([aufbauVerzug],
+  /// [eineVerbindung]) – für `EscPosAbfrage` und `PrinterRegistry`. Jede
+  /// Adresse führt hierher.
+  Future<Socket> verbinden(String host, int port, {Duration? timeout}) async {
+    if (aufbauVerzug > Duration.zero) {
+      if (timeout != null && timeout < aufbauVerzug) {
+        await Future<void>.delayed(timeout);
+        throw TimeoutException('Fake-Drucker: Aufbau zu langsam', timeout);
+      }
+      await Future<void>.delayed(aufbauVerzug);
+    }
+    if (eineVerbindung &&
+        (_gleichzeitig > 0 || DateTime.now().isBefore(_freiAb))) {
+      abgelehnt++;
+      throw SocketException(
+        'Connection refused',
+        osError: const OSError('Connection refused', 61),
+        port: port,
+      );
+    }
+    // Schon gezählt, bevor die Annahme hier ankommt: sonst rutschte ein
+    // zweiter Aufbau im selben Augenblick durch.
+    _gleichzeitig++;
+    _vorgemerkt++;
+    try {
+      return await Socket.connect(InternetAddress.loopbackIPv4, this.port);
+    } on Object {
+      _gleichzeitig--;
+      _vorgemerkt--;
+      rethrow;
+    }
+  }
+
+  int _vorgemerkt = 0;
+
   void _handle(Socket socket) {
     // Antworten an eine schon geschlossene Gegenstelle scheitern über `done`;
     // das ist hier gewollt und kein Testfehler.
@@ -150,22 +207,31 @@ class FakeTcpPrinter {
     _connections++;
     final verbindung = FakeVerbindung(DateTime.now());
     verbindungen.add(verbindung);
-    _gleichzeitig++;
+    if (_vorgemerkt > 0) {
+      _vorgemerkt--;
+    } else {
+      _gleichzeitig++;
+    }
     if (_gleichzeitig > _hoechstGleichzeitig) {
       _hoechstGleichzeitig = _gleichzeitig;
     }
     var geschlossen = false;
+    var druckdaten = false;
     void zu() {
       if (geschlossen) return;
       geschlossen = true;
       _gleichzeitig--;
-      verbindung.ende = DateTime.now();
+      final jetzt = DateTime.now();
+      verbindung.ende = jetzt;
+      _freiAb = jetzt.add(freigabeVerzug);
+      if (druckdaten && druckDauer > Duration.zero) {
+        _druecktBis = jetzt.add(druckDauer);
+      }
     }
 
     switch (mode) {
       case FakePrinterMode.accept:
         final offen = <int>[];
-        var druckdaten = false;
         _reads.add(
           socket.listen(
             (daten) {
@@ -221,10 +287,13 @@ class FakeTcpPrinter {
       offen.removeRange(0, 3);
       if (antwort != null) {
         final senden = antwort;
-        if (antwortVerzug == Duration.zero) {
+        var verzug = antwortVerzug;
+        final druckt = _druecktBis.difference(DateTime.now());
+        if (a == 0x10 && druckt > verzug) verzug = druckt;
+        if (verzug == Duration.zero) {
           _schreibe(socket, senden);
         } else {
-          _timer.add(Timer(antwortVerzug, () => _schreibe(socket, senden)));
+          _timer.add(Timer(verzug, () => _schreibe(socket, senden)));
         }
       }
     }

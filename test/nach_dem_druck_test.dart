@@ -1,0 +1,284 @@
+import 'dart:async';
+import 'dart:io';
+import 'dart:typed_data';
+
+import 'package:kasseneck_connect/kasseneck_connect.dart';
+import 'package:test/test.dart';
+
+import 'support/druck_aufbau.dart';
+import 'support/fake_printer.dart';
+import 'support/virtuelles_netz.dart';
+
+const Map<int, int> _gesund = <int, int>{1: 0x16, 2: 0x12, 3: 0x12, 4: 0x12};
+const String _mac = '00:26:ab:00:00:01';
+const String _serie = 'X5ZT000123';
+
+/// Ein langer Bon (Tagesabschluss): 8 KB Text.
+final Uint8List _langerBon = Uint8List.fromList(<int>[
+  0x1B, 0x40, //
+  ...List<int>.filled(8000, 0x41),
+  0x0A, 0x1D, 0x56, 0x01,
+]);
+
+/// Was rund um einen Bon geschieht: ein Drucker, der noch druckt, ist nicht
+/// „nicht bereit“; einer, der die vorige Verbindung noch hält, ist nicht
+/// umgezogen; einer, der aus ist, kostet nicht länger als bis 1.4.2.
+void main() {
+  group('Schweigen kurz nach dem eigenen Bon', () {
+    late DruckAufbau a;
+    late FakeTcpPrinter drucker;
+    final seit = DateTime.utc(2026, 11, 1, 9);
+
+    setUp(() async {
+      drucker = await FakeTcpPrinter.start(dleEot: _gesund);
+      a = DruckAufbau.erstellen(verbinden: drucker.verbinden);
+      a.arpMac = _mac;
+    });
+
+    tearDown(() async {
+      await a.aufraeumen();
+      await drucker.stop();
+    });
+
+    Future<PrintResult> drucke(String id, {Uint8List? bytes}) async {
+      final vorher = drucker.druckVerbindungen.length;
+      final ergebnis = await a.drucke(id, bytes: bytes);
+      if (ergebnis.ok) await drucker.warteAufDruck(vorher);
+      return ergebnis;
+    }
+
+    test('der Drucker schweigt, solange er druckt: der nächste Bon geht wie '
+        'bis 1.4.2, nicht printer_not_ready', () async {
+      // Die Uhr der Vorprüfung steht: der lange Bon „druckt“ für sie noch.
+      drucker.druckDauer = const Duration(seconds: 5);
+      final id = await a.drucker(
+        drucker.port,
+        statusCapableAt: seit,
+        mac: _mac,
+      );
+      expect((await drucke(id, bytes: _langerBon)).ok, isTrue);
+      final zweiter = await drucke(id);
+      expect(zweiter.ok, isTrue, reason: '${zweiter.code}');
+      expect(drucker.druckVerbindungen, hasLength(2));
+      expect((await a.registry.summaries()).single['readiness'], 'unknown');
+    });
+
+    test('nach dem Nachlauf heißt Schweigen wieder „nicht bereit“', () async {
+      final id = await a.drucker(
+        drucker.port,
+        statusCapableAt: seit,
+        mac: _mac,
+      );
+      expect((await drucke(id, bytes: _langerBon)).ok, isTrue);
+      drucker.dleEot.clear(); // Deckel auf
+      a.jetzt = a.jetzt.add(druckNachlauf(_langerBon.length));
+      expect((await a.drucke(id)).code, errorPrinterNotReady);
+    });
+
+    test('der Nachlauf wächst mit dem Bon und ist mindestens 3 s', () {
+      expect(druckNachlauf(0), druckNachlaufMindestens);
+      expect(druckNachlaufMindestens, const Duration(seconds: 3));
+      // 25 KB Tagesabschluss: großzügig mehr als eine halbe Minute.
+      expect(druckNachlauf(25000), greaterThan(const Duration(seconds: 25)));
+    });
+
+    test('ein Gerät, das kurz nach dem Bon schweigt, gilt nicht für zehn '
+        'Minuten als stumm', () async {
+      drucker.dleEot.clear();
+      final id = await a.drucker(drucker.port);
+      a.registry.lagen.von(id).druckGesendet(_langerBon.length, a.jetzt);
+      expect((await drucke(id)).ok, isTrue);
+      expect(a.registry.lagen.von(id).stumm(a.jetzt), isFalse);
+      // Ohne eigenen Bon davor schon.
+      a.jetzt = a.jetzt.add(druckNachlauf(_langerBon.length));
+      expect((await drucke(id)).ok, isTrue);
+      expect(a.registry.lagen.von(id).stumm(a.jetzt), isTrue);
+    });
+
+    test('der Statustakt fragt nicht, solange der eigene Bon druckt; danach '
+        'schon', () async {
+      final id = await a.drucker(
+        drucker.port,
+        statusCapableAt: seit,
+        mac: _mac,
+      );
+      final dienst = DruckerStatusDienst(
+        registry: a.registry,
+        queue: a.queue,
+        abfrage: EscPosAbfrage(verbinden: drucker.verbinden),
+        kasseZuletzt: () => a.jetzt,
+        arp: a.arp,
+        schnittstellen: () async => a.schnittstellen,
+        clock: () => a.jetzt,
+      );
+      expect((await drucke(id, bytes: _langerBon)).ok, isTrue);
+      await drucker.ruhigNachVerbindung();
+      final vorher = drucker.connections;
+      await dienst.runde();
+      expect(drucker.connections, vorher, reason: 'keine Abfrage');
+      expect(a.registry.lagen.von(id).verfehltInFolge, 0);
+
+      a.jetzt = a.jetzt.add(druckNachlauf(_langerBon.length));
+      await dienst.runde();
+      expect(drucker.connections, vorher + 1);
+      expect((await a.registry.summaries()).single['readiness'], 'ready');
+      expect(id, isNotEmpty);
+    });
+
+    test(
+      'Abfrage auf Zuruf direkt nach dem Bon: Schweigen ist unbekannt',
+      () async {
+        final id = await a.drucker(
+          drucker.port,
+          statusCapableAt: seit,
+          mac: _mac,
+        );
+        final dienst = DruckerStatusDienst(
+          registry: a.registry,
+          queue: a.queue,
+          abfrage: EscPosAbfrage(verbinden: drucker.verbinden),
+          kasseZuletzt: () => a.jetzt,
+          arp: a.arp,
+          schnittstellen: () async => a.schnittstellen,
+          clock: () => a.jetzt,
+        );
+        expect((await drucke(id, bytes: _langerBon)).ok, isTrue);
+        drucker.dleEot.clear();
+        final eintrag = await dienst.jetzt(id);
+        expect(eintrag!['readiness'], 'unknown');
+      },
+    );
+  });
+
+  group('Druckverbindung direkt nach der Abfrage abgelehnt', () {
+    late DruckAufbau a;
+    late FakeTcpPrinter drucker;
+
+    setUp(() async {
+      // Nimmt nur eine Verbindung zugleich an und gibt die vorige erst
+      // 200 ms nach dem Schließen frei.
+      drucker = await FakeTcpPrinter.start(dleEot: _gesund)
+        ..eineVerbindung = true
+        ..freigabeVerzug = const Duration(milliseconds: 200);
+      a = DruckAufbau.erstellen(verbinden: drucker.verbinden);
+    });
+
+    tearDown(() async {
+      await a.aufraeumen();
+      await drucker.stop();
+    });
+
+    test(
+      'kurz warten, dieselbe Adresse noch einmal, ohne Wiederfinden',
+      () async {
+        final id = await a.drucker(drucker.port, serial: _serie, mac: _mac);
+        drucker.gsI[68] = _serie;
+        final ergebnis = await a.drucke(id);
+        expect(ergebnis.ok, isTrue, reason: '${ergebnis.code}');
+        await drucker.warteAufDruck(0);
+        expect(drucker.abgelehnt, 1);
+        expect(drucker.druckVerbindungen.single, beispielBon);
+        expect(a.wiederfinder.suchen, 0);
+        expect(nachAbfrageWarten, greaterThan(drucker.freigabeVerzug));
+      },
+    );
+
+    test('der Fake hält immer nur eine Verbindung', () async {
+      final id = await a.drucker(drucker.port, serial: _serie, mac: _mac);
+      drucker.gsI[68] = _serie;
+      for (var i = 0; i < 3; i++) {
+        expect((await a.drucke(id)).ok, isTrue);
+      }
+      expect(drucker.hoechstAngenommen, 1);
+    });
+  });
+
+  group('ausgeschalteter Drucker: nie länger als bis 1.4.2', () {
+    const aus = '192.168.0.50';
+
+    /// Verbindungsaufbau, der wie bei einem ausgeschalteten Gerät in die
+    /// Zeitgrenze läuft – ohne zu warten; die Zeitgrenzen werden gezählt.
+    late List<Duration> zeitgrenzen;
+    late DruckAufbau a;
+
+    Future<Socket> zeitueberschreitung(
+      String host,
+      int port, {
+      Duration? timeout,
+    }) {
+      zeitgrenzen.add(timeout ?? defaultConnectTimeout);
+      return Future<Socket>.error(
+        const SocketException('Connection timed out'),
+      );
+    }
+
+    setUp(() {
+      zeitgrenzen = <Duration>[];
+      // Das virtuelle Netz liefert die ARP-Tabelle (veralteter Eintrag);
+      // jede Verbindung läuft in die Zeitgrenze.
+      final netz = VirtuellesNetz()..macs[aus] = _mac;
+      a = DruckAufbau.erstellen(netz: netz, verbinden: zeitueberschreitung);
+    });
+
+    tearDown(() => a.aufraeumen());
+
+    Duration summe(Iterable<Duration> d) =>
+        d.fold(Duration.zero, (x, y) => x + y);
+
+    test('die Abfrage ohne Verbindung zählt als erster Versuch: '
+        'Zeitgrenzen zusammen höchstens die zweier Druckversuche', () async {
+      final id = await a.drucker(
+        9100,
+        host: aus,
+        serial: _serie,
+        mac: _mac,
+        statusCapableAt: DateTime.utc(2026, 11, 1),
+      );
+      final ergebnis = await a.drucke(id);
+      expect(ergebnis.code, errorPrinterOffline);
+      // Abfrage plus ein Druckversuch.
+      expect(zeitgrenzen, hasLength(2));
+      expect(zeitgrenzen.last, defaultConnectTimeout);
+      expect(
+        summe(zeitgrenzen) + schnellesWiederfindenBudget,
+        lessThanOrEqualTo(
+          defaultConnectTimeout * 2 + const Duration(seconds: 1),
+        ),
+      );
+      // Mit MAC nur ARP: kein mDNS, keine weitere Verbindung.
+      expect(a.wiederfinder.schnelleSuchen, 1);
+    });
+
+    test('zwei Aufträge hintereinander (zwei Kassen): das schnelle '
+        'Wiederfinden läuft einmal, beide zusammen unter 1.4.2', () async {
+      final id = await a.drucker(
+        9100,
+        host: aus,
+        serial: _serie,
+        mac: _mac,
+        statusCapableAt: DateTime.utc(2026, 11, 1),
+      );
+      final beide = await Future.wait(<Future<PrintResult>>[
+        a.queue.enqueue(id, 'beleg-1', beispielBon),
+        a.queue.enqueue(id, 'beleg-2', beispielBon),
+      ]);
+      expect(beide.map((r) => r.code), <String?>[
+        errorPrinterOffline,
+        errorPrinterOffline,
+      ]);
+      expect(zeitgrenzen, hasLength(4));
+      expect(summe(zeitgrenzen), lessThan(defaultConnectTimeout * 4));
+      expect(a.wiederfinder.schnelleSuchen, 1);
+    });
+
+    test('wie 1.4.2 (alle Neuerungen aus): zwei Druckversuche', () async {
+      await a.abschalten(Neuerung.values);
+      final id = await a.drucker(9100, host: aus, serial: _serie, mac: _mac);
+      expect((await a.drucke(id)).code, errorPrinterOffline);
+      expect(zeitgrenzen, <Duration>[
+        defaultConnectTimeout,
+        defaultConnectTimeout,
+      ]);
+    });
+  });
+}

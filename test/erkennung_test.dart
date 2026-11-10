@@ -129,6 +129,38 @@ void main() {
     expect((await gespeichert(id)).serial, 'X5ZT000123');
   });
 
+  test('Kennungskonflikt: eine Neueinrichtung derselben Adresse übernimmt '
+      'die Kennung des Geräts dort neu', () async {
+    // Ohne MAC (ARP kennt das Gerät nicht): die Seriennummer ist die Kennung.
+    prozesse.stdoutOf['-n'] = '127.0.0.1 (127.0.0.1) -- no entry\n';
+    final id = await anlegen();
+    await warteAufKennung(id);
+    // Gerät getauscht: unter der Adresse nennt sich ein anderer Drucker.
+    drucker.gsI[68] = 'X5ZT000999';
+    final druck = await anAgent(
+      agent.port,
+      'POST',
+      '/v1/print',
+      token: token,
+      rumpf: <String, Object?>{
+        'printerId': id,
+        'jobId': 'beleg-1',
+        'bytes': base64Encode(beispielBon),
+      },
+    );
+    expect(druck.ok, isTrue, reason: 'nie blockieren');
+    expect(agent.printers.lagen.von(id).kennung, KennungsLage.konflikt);
+    expect((await gespeichert(id)).serial, 'X5ZT000123');
+
+    // Die Kasse richtet den Drucker dort neu ein: gewollt.
+    expect(await anlegen(), id);
+    await warteBis(
+      () async => (await gespeichert(id)).serial == 'X5ZT000999',
+      grund: 'neue Kennung von $id',
+    );
+    expect(agent.printers.lagen.von(id).kennung, isNot(KennungsLage.konflikt));
+  });
+
   test('PUT mit neuer Adresse verliert die Kennung', () async {
     final id = await anlegen();
     await warteAufKennung(id);
@@ -251,6 +283,31 @@ void main() {
     expect(eintrag.mac, isNull);
     expect(prozesse.calls.where((c) => c.executable == 'arp'), isEmpty);
   });
+
+  test('eine MAC, die auch unter einer anderen Adresse steht (Repeater mit '
+      'MAC-NAT), wird nicht gespeichert', () async {
+    prozesse.stdoutOf['-an'] =
+        '$_arpLoopback'
+        '? (127.0.0.9) at 0:26:ab:0:0:1 on lo0 ifscope [ethernet]\n';
+    final id = await anlegen();
+    await warteAufKennung(id);
+    final eintrag = await gespeichert(id);
+    expect(eintrag.serial, 'X5ZT000123');
+    expect(eintrag.mac, isNull);
+  });
+
+  test(
+    'steht sie nur unter der eigenen Adresse, wird sie gespeichert',
+    () async {
+      prozesse.stdoutOf['-an'] = _arpLoopback;
+      final id = await anlegen();
+      await warteBis(
+        () async => (await gespeichert(id)).mac != null,
+        grund: 'MAC von $id',
+      );
+      expect((await gespeichert(id)).mac, '00:26:ab:00:00:01');
+    },
+  );
 
   group('Kennungspflege', () {
     test(

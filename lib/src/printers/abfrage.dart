@@ -21,6 +21,17 @@ const Duration bereitFrist = Duration(milliseconds: 500);
 /// wieder aufwacht.
 const int bereitVersuche = 2;
 
+/// Dauert der Verbindungsaufbau länger, ist das Netz langsam (verlorenes SYN,
+/// WLAN wacht auf), und Schweigen danach sagt nichts über Deckel und Papier:
+/// es gilt als unbekannt. Im LAN steht eine Verbindung in wenigen
+/// Millisekunden, im WLAN selten nach mehr als 50 ms.
+const Duration langsamerAufbau = Duration(milliseconds: 200);
+
+/// So viel Zeit hält der erste Versuch von [EscPosAbfrage.frageBereit] für den
+/// zweiten frei: ein Aufbau, der nicht langsam ist, und ein volles
+/// Antwortfenster.
+const Duration zweiterVersuchReserve = Duration(milliseconds: 700);
+
 /// Was eine Abfrage-Verbindung wissen will.
 enum EscPosFrage {
   /// `DLE EOT 2`: Deckel, Stopp wegen Papierende.
@@ -41,6 +52,7 @@ enum EscPosFrage {
 class EscPosAntworten {
   const EscPosAntworten({
     required this.verbunden,
+    this.stumm = false,
     this.verbindungsFehler,
     this.offlineGrund,
     this.rollensensor,
@@ -51,6 +63,7 @@ class EscPosAntworten {
   /// Keine Verbindung zustande gekommen.
   const EscPosAntworten.ohneVerbindung(Object fehler)
     : verbunden = false,
+      stumm = false,
       verbindungsFehler = fehler,
       offlineGrund = null,
       rollensensor = null,
@@ -75,9 +88,16 @@ class EscPosAntworten {
   /// Gültiger `GS I 68`-Rahmen; sonst `null`.
   final String? seriennummer;
 
-  /// Verbunden, aber keine gültige Antwort auf `DLE EOT` – ein Gerät, das kein
-  /// ESC/POS spricht oder Echtzeitbefehle abgeschaltet hat.
-  bool get stumm => verbunden && offlineGrund == null;
+  /// Das Gerät hat auf `DLE EOT 2` nachweislich geschwiegen: der Befehl ging
+  /// hinaus, das volle Antwortfenster verstrich bei offener Verbindung, und
+  /// der Aufbau war nicht langsam ([langsamerAufbau]). Nur dann sagt Schweigen
+  /// etwas: ein Gerät, das kein ESC/POS spricht, bzw. ein statusfähiger
+  /// Drucker, der nicht bereit ist.
+  ///
+  /// Alles andere ohne gültige Antwort – zu wenig Zeit, langsamer Aufbau,
+  /// Gegenstelle schließt sofort – ist unbekannt (`stumm` `false`,
+  /// [offlineGrund] `null`), und dann wird gedruckt wie bis 1.4.2.
+  final bool stumm;
 }
 
 /// Fragt einen ESC/POS-Drucker über eine EIGENE, kurze Verbindung auf seinem
@@ -99,6 +119,9 @@ class EscPosAbfrage {
 
   /// Stellt [fragen] an [host]:[port]; alles zusammen höchstens [budget].
   ///
+  /// [handshake] ist das Antwortfenster für `DLE EOT 2`. Es endet spätestens
+  /// [reserve] vor dem Ende des Budgets (Platz für einen weiteren Versuch);
+  /// wird es dadurch kürzer, kann Schweigen nicht mehr als `stumm` gelten.
   /// Was bis dahin nicht gültig beantwortet ist, bleibt `null` (unbekannt).
   /// Wirft nie.
   Future<EscPosAntworten> frage(
@@ -107,6 +130,7 @@ class EscPosAbfrage {
     required Set<EscPosFrage> fragen,
     required Duration budget,
     Duration handshake = handshakeFrist,
+    Duration reserve = Duration.zero,
   }) async {
     final uhr = Stopwatch()..start();
     Duration rest() {
@@ -114,6 +138,9 @@ class EscPosAbfrage {
       return r.isNegative ? Duration.zero : r;
     }
 
+    // Ohne Zeit wird nicht verbunden – und das ist keine Aussage über den
+    // Drucker (kein Verbindungsfehler).
+    if (budget <= Duration.zero) return const EscPosAntworten(verbunden: false);
     final Socket socket;
     try {
       socket = await _verbinden(host, port, timeout: rest());
@@ -122,6 +149,7 @@ class EscPosAbfrage {
     } on TimeoutException catch (e) {
       return EscPosAntworten.ohneVerbindung(e);
     }
+    final aufbau = uhr.elapsed;
 
     // Schreibfehler meldet ein Socket über `done`; sie zeigen sich hier schon
     // als ausbleibende Antwort (unbekannt) und dürfen nicht als unbehandelter
@@ -129,16 +157,28 @@ class EscPosAbfrage {
     socket.done.ignore();
     final leser = _Leser(socket);
     try {
+      final fenster = _kuerzer(handshake, rest() - reserve);
       final offline = await leser.statusByte(
         socket,
         dleEot(dleEotOfflineGrund),
-        rest() < handshake ? rest() : handshake,
+        fenster,
       );
-      if (offline == null) {
-        return const EscPosAntworten(verbunden: true);
+      final byte = offline.byte;
+      if (byte == null) {
+        return EscPosAntworten(
+          verbunden: true,
+          stumm:
+              offline.geschwiegen &&
+              fenster >= handshake &&
+              aufbau <= langsamerAufbau,
+        );
       }
       final rolle = fragen.contains(EscPosFrage.rollensensor)
-          ? await leser.statusByte(socket, dleEot(dleEotRollensensor), rest())
+          ? (await leser.statusByte(
+              socket,
+              dleEot(dleEotRollensensor),
+              rest(),
+            )).byte
           : null;
       final modell = fragen.contains(EscPosFrage.modell)
           ? await leser.rahmen(socket, gsI(gsIModell), rest())
@@ -148,7 +188,7 @@ class EscPosAbfrage {
           : null;
       return EscPosAntworten(
         verbunden: true,
-        offlineGrund: offline,
+        offlineGrund: byte,
         rollensensor: rolle,
         modell: modell,
         seriennummer: serie,
@@ -165,8 +205,11 @@ class EscPosAbfrage {
 
   /// Fragt einen Drucker, der schon gültig geantwortet hat: je Versuch
   /// [bereitFrist] auf die erste Antwort, bei Schweigen ein zweiter Versuch
-  /// auf neuer Verbindung (höchstens [bereitVersuche]). Liefert die letzten
-  /// Antworten; `stumm` heißt dann „nicht bereit“.
+  /// auf neuer Verbindung (höchstens [bereitVersuche]).
+  ///
+  /// `stumm` (also „nicht bereit“) steht nur, wenn JEDER Versuch nachweislich
+  /// geschwiegen hat. Der erste hält dafür [zweiterVersuchReserve] frei; reicht
+  /// die Zeit trotzdem nicht, ist das Ergebnis unbekannt.
   Future<EscPosAntworten> frageBereit(
     String host,
     int port, {
@@ -174,20 +217,23 @@ class EscPosAbfrage {
     required Duration budget,
   }) async {
     final uhr = Stopwatch()..start();
-    var antworten = const EscPosAntworten(verbunden: false);
-    for (var versuch = 1; versuch <= bereitVersuche; versuch++) {
-      final rest = budget - uhr.elapsed;
-      if (rest <= Duration.zero) break;
-      antworten = await frage(
+    for (var versuch = 1; ; versuch++) {
+      final letzter = versuch >= bereitVersuche;
+      final antworten = await frage(
         host,
         port,
         fragen: fragen,
-        budget: rest,
+        budget: budget - uhr.elapsed,
         handshake: bereitFrist,
+        reserve: letzter ? Duration.zero : zweiterVersuchReserve,
       );
-      if (!antworten.stumm) break;
+      if (!antworten.stumm || letzter) return antworten;
     }
-    return antworten;
+  }
+
+  static Duration _kuerzer(Duration a, Duration b) {
+    final kurz = a < b ? a : b;
+    return kurz.isNegative ? Duration.zero : kurz;
   }
 }
 
@@ -239,22 +285,26 @@ class _Leser {
 
   /// Schickt [befehl] und liefert das erste Byte mit gültigen festen Bits
   /// (andere Bytes, etwa ASB-Blöcke, werden übergangen).
-  Future<int?> statusByte(
+  ///
+  /// `geschwiegen` heißt: gefragt, die ganze [frist] gewartet, und die
+  /// Verbindung stand bis zuletzt. Ohne Zeit wird gar nicht erst gefragt.
+  Future<({int? byte, bool geschwiegen})> statusByte(
     Socket socket,
     List<int> befehl,
     Duration frist,
   ) async {
-    // Ohne Zeit für die Antwort wird gar nicht erst gefragt.
-    if (frist <= Duration.zero) return null;
+    if (frist <= Duration.zero) return (byte: null, geschwiegen: false);
     _puffer.clear();
     socket.add(befehl);
     final uhr = Stopwatch()..start();
     while (true) {
       while (_puffer.isNotEmpty) {
         final byte = _puffer.removeAt(0);
-        if (istEchtzeitStatus(byte)) return byte;
+        if (istEchtzeitStatus(byte)) return (byte: byte, geschwiegen: false);
       }
-      if (!await _mehr(uhr, frist)) return null;
+      if (!await _mehr(uhr, frist)) {
+        return (byte: null, geschwiegen: !_beendet);
+      }
     }
   }
 

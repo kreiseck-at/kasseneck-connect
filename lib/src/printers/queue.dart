@@ -20,6 +20,13 @@ const Duration defaultIdempotencyWindow = Duration(seconds: 60);
 /// Sicherheitsnetz für einen Treiber, der gar nicht mehr antwortet.
 const Duration defaultAttemptGrace = Duration(seconds: 2);
 
+/// So lange wartet der zweite Versuch, wenn die Druckverbindung abgelehnt
+/// wurde, obwohl der Drucker eben erreichbar war (Abfrage-Verbindung oder
+/// eigener Bon): viele Bondrucker nehmen nur eine Verbindung zugleich an und
+/// geben die vorige erst kurz nach dem Schließen frei. Gesucht wird dann
+/// nicht.
+const Duration nachAbfrageWarten = Duration(milliseconds: 500);
+
 /// Nimmt Druckaufträge an und arbeitet sie **je Drucker seriell** ab.
 ///
 /// Zwei Regeln bestimmen das Verhalten:
@@ -162,6 +169,7 @@ class PrintQueue {
       try {
         final PrinterDriver driver;
         PrinterConfig? zielDrucker;
+        var abfrage = AbfrageVerlauf.keine;
         switch (await _vorbereiten(printerId, jobId)) {
           case _Unbekannt():
             // Kein Ergebnis merken: sobald der Drucker angelegt ist, soll
@@ -178,11 +186,19 @@ class PrintQueue {
             _jobs.remove(key);
             result = _fail(printerId, jobId, fehler, 0);
             return;
-          case _Bereit(:final treiber, :final ziel):
+          case _Bereit(:final treiber, :final ziel, :final verlauf):
             driver = treiber;
             zielDrucker = ziel;
+            abfrage = verlauf;
         }
-        result = await _run(printerId, jobId, driver, bytes, ziel: zielDrucker);
+        result = await _run(
+          printerId,
+          jobId,
+          driver,
+          bytes,
+          ziel: zielDrucker,
+          abfrage: abfrage,
+        );
         if (_worthRemembering(result)) {
           record.finish(result, _clock());
         } else {
@@ -219,7 +235,9 @@ class PrintQueue {
     final pruefung = vorpruefung;
     if (pruefung == null) {
       final driver = await registry.driverForId(printerId);
-      return driver == null ? const _Unbekannt() : _Bereit(driver, null);
+      return driver == null
+          ? const _Unbekannt()
+          : _Bereit(driver, null, AbfrageVerlauf.keine);
     }
     final config = await registry.store.load();
     PrinterConfig? drucker;
@@ -230,14 +248,14 @@ class PrintQueue {
     switch (await pruefung.pruefe(drucker, config)) {
       case DruckAbgelehnt(:final fehler):
         return _Abgelehnt(fehler);
-      case DruckFreigabe(:final ziel, :final umgeleitet):
+      case DruckFreigabe(:final ziel, :final umgeleitet, :final abfrage):
         if (umgeleitet) {
           _log?.info(
             'Auftrag $jobId an $printerId geht an die neue Adresse '
             '${ziel.host}:${ziel.port}.',
           );
         }
-        return _Bereit(registry.driverFor(ziel), ziel);
+        return _Bereit(registry.driverFor(ziel), ziel, abfrage);
     }
   }
 
@@ -257,14 +275,33 @@ class PrintQueue {
   }
 
   /// Ein Auftrag: höchstens zwei Versuche, dann steht das Ergebnis.
+  ///
+  /// Kam schon die Abfrage-Verbindung der Vorprüfung nicht zustande
+  /// ([AbfrageVerlauf.ohneVerbindung]), war sie der erste Versuch: es folgt
+  /// gleich die Suche und ein Druckversuch – ein ausgeschalteter Drucker kostet
+  /// so nicht länger als bis 1.4.2.
   Future<PrintResult> _run(
     String printerId,
     String jobId,
     PrinterDriver driver,
     Uint8List bytes, {
     PrinterConfig? ziel,
+    AbfrageVerlauf abfrage = AbfrageVerlauf.keine,
   }) async {
-    for (var attempt = 1; attempt <= 2; attempt++) {
+    var attempt = 1;
+    if (abfrage == AbfrageVerlauf.ohneVerbindung) {
+      _log?.warn(
+        'Auftrag $jobId an $printerId: schon die Abfrage fand keinen Drucker '
+        '– ein Druckversuch.',
+      );
+      final neu = await _anderswo(jobId, printerId, ziel);
+      if (neu != null) {
+        driver = registry.driverFor(neu);
+        ziel = neu;
+      }
+      attempt = 2;
+    }
+    for (; attempt <= 2; attempt++) {
       try {
         // Das Zeitlimit steht hier zusätzlich zum Treiber: die Warteschlange
         // verlässt sich nicht darauf, dass ein Treiber seine Zusage einhält.
@@ -274,6 +311,7 @@ class PrintQueue {
             .print(bytes, timeout: jobTimeout)
             .timeout(jobTimeout + attemptGrace);
 
+        _gesendet(printerId, bytes);
         registry.noteState(printerId, PrinterState.online);
         nachErfolg?.call(printerId);
         _events.publish(eventPrintDone, <String, Object?>{
@@ -284,38 +322,68 @@ class PrintQueue {
         return const PrintResult.success();
       } on Object catch (e) {
         final failure = _asFailure(e, printerId);
+        if (failure.mayHavePrinted) _gesendet(printerId, bytes);
         final nichtsGesendet =
             failure.code == errorPrinterOffline && !failure.mayHavePrinted;
+        // Eben war der Drucker erreichbar: er gibt nur die vorige Verbindung
+        // noch nicht frei.
+        final ebenErreichbar =
+            nichtsGesendet && abfrage == AbfrageVerlauf.ebenErreichbar;
         if (failure.retryable && attempt == 1) {
           _log?.warn(
             'Auftrag $jobId an $printerId: ${failure.code} — zweiter Versuch.',
           );
           // Erst die alte Verbindung wegwerfen, dann neu ansetzen.
           await driver.abort();
+          if (ebenErreichbar) {
+            await Future<void>.delayed(nachAbfrageWarten);
+            continue;
+          }
           // Keine Verbindung vor dem ersten Byte: vielleicht hat der Drucker
           // eine neue Adresse. Dort zu drucken ist sicher, denn nachweislich
           // ging noch nichts hinaus.
-          final suche = wiederfinder;
-          if (nichtsGesendet && ziel != null && suche != null) {
-            final neu = await suche.schnell(ziel);
+          if (nichtsGesendet) {
+            final neu = await _anderswo(jobId, printerId, ziel);
             if (neu != null) {
-              _log?.info(
-                'Auftrag $jobId an $printerId geht an die neue Adresse '
-                '${neu.host}:${neu.port}.',
-              );
               driver = registry.driverFor(neu);
               ziel = neu;
             }
           }
           continue;
         }
-        if (nichtsGesendet) wiederfinder?.gruendlichImHintergrund(printerId);
+        if (nichtsGesendet && !ebenErreichbar) {
+          wiederfinder?.gruendlichImHintergrund(printerId);
+        }
         return _fail(printerId, jobId, failure, attempt);
       }
     }
     // Unerreichbar: die Schleife kehrt in jedem Zweig zurück.
     throw StateError('Druckversuche ohne Ergebnis.');
   }
+
+  /// Sucht [ziel] schnell unter einer neuen Adresse; `null` ohne Fund (oder
+  /// ohne Wiederfinden, etwa auf dem Weg ohne Vorprüfung).
+  Future<PrinterConfig?> _anderswo(
+    String jobId,
+    String printerId,
+    PrinterConfig? ziel,
+  ) async {
+    final suche = wiederfinder;
+    if (ziel == null || suche == null) return null;
+    final neu = await suche.schnell(ziel);
+    if (neu != null) {
+      _log?.info(
+        'Auftrag $jobId an $printerId geht an die neue Adresse '
+        '${neu.host}:${neu.port}.',
+      );
+    }
+    return neu;
+  }
+
+  /// Merkt sich, dass gerade ein Bon an [printerId] hinausging: bis er
+  /// vermutlich gedruckt ist, gilt Schweigen des Druckers als unbekannt.
+  void _gesendet(String printerId, Uint8List bytes) =>
+      registry.lagen.von(printerId).druckGesendet(bytes.length, _clock());
 
   PrintResult _fail(
     String printerId,
@@ -426,8 +494,11 @@ final class _Abgelehnt extends _Vorbereitung {
 
 /// Drucken mit [treiber] an [ziel] (`null` auf dem Weg ohne Vorprüfung).
 final class _Bereit extends _Vorbereitung {
-  const _Bereit(this.treiber, this.ziel);
+  const _Bereit(this.treiber, this.ziel, this.verlauf);
 
   final PrinterDriver treiber;
   final PrinterConfig? ziel;
+
+  /// Was die Abfrage-Verbindung der Vorprüfung erlebte.
+  final AbfrageVerlauf verlauf;
 }

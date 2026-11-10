@@ -7,7 +7,6 @@ import '../log/logger.dart';
 import '../net/arp.dart';
 import 'abfrage.dart';
 import 'discovery.dart';
-import 'erkennung.dart' show macImSelbenNetz;
 import 'kennung.dart';
 import 'queue.dart';
 import 'registry.dart';
@@ -20,6 +19,12 @@ const Duration schnellesWiederfindenBudget = Duration(seconds: 4);
 /// Höchstens eine gründliche Suche je Drucker in diesem Abstand (Spec 1.3):
 /// ein ausgeschalteter Drucker soll keinen Dauerscan auslösen.
 const Duration gruendlichAbstand = Duration(minutes: 2);
+
+/// Höchstens ein schnelles Wiederfinden je Drucker in diesem Abstand: zwei
+/// Kassen, die an einen ausgeschalteten Drucker drucken, sollen nicht jede
+/// für sich bis zu 4 s suchen. Die gründliche Suche im Hintergrund findet ihn
+/// trotzdem.
+const Duration schnellAbstand = Duration(seconds: 60);
 
 /// Zeit für die Seriennummer eines Kandidaten (eigene Abfrage-Verbindung).
 const Duration kandidatAbfrageBudget = Duration(milliseconds: 800);
@@ -43,23 +48,30 @@ class DruckerKandidat {
     required this.port,
     this.mac,
     this.serie,
+    this.sprichtProtokoll = false,
   });
 
   final String host;
   final int port;
 
-  /// MAC aus der ARP-Tabelle, wenn bekannt.
+  /// MAC aus der ARP-Tabelle, wenn bekannt – nur gesetzt, wenn sie dort unter
+  /// keiner weiteren Adresse steht.
   final String? mac;
 
   /// Seriennummer, die das Gerät selbst genannt hat (mDNS-TXT oder `GS I`).
   final String? serie;
+
+  /// Ob das Gerät das Protokoll des Druckers spricht: gültige Antwort auf
+  /// `DLE EOT` (9100) bzw. eine ePOS-`<response>`. Ein offener Port allein
+  /// beweist nichts (Weboberfläche eines Repeaters).
+  final bool sprichtProtokoll;
 }
 
 /// Ob [kandidat] nachweislich [drucker] ist.
 ///
 /// Mit gespeicherter Seriennummer zählt nur dieselbe genannte Seriennummer;
-/// nur mit MAC dieselbe MAC (der Aufrufer nimmt nur erreichbare Kandidaten
-/// auf). Die bisherige Adresse ist nie ein Fund.
+/// nur mit MAC dieselbe MAC samt Protokollbeweis. Die bisherige Adresse ist
+/// nie ein Fund.
 bool kandidatBestaetigt(PrinterConfig drucker, DruckerKandidat kandidat) {
   if (kandidat.host == drucker.host && kandidat.port == drucker.port) {
     return false;
@@ -70,7 +82,28 @@ bool kandidatBestaetigt(PrinterConfig drucker, DruckerKandidat kandidat) {
     return serie != null && gleicheKennung(serial, serie);
   }
   return drucker.mac != null &&
+      kandidat.sprichtProtokoll &&
       vergleicheMac(drucker.mac, kandidat.mac) == MacVergleich.gleich;
+}
+
+/// Ob die Kennung, nach der [drucker] gesucht würde, ihn unter den
+/// eingerichteten Druckern [alle] eindeutig bezeichnet.
+///
+/// Ein Nachbau mit fest verdrahteter Seriennummer oder zwei Drucker hinter
+/// einem Repeater mit MAC-NAT tragen dieselbe Kennung – dann ist jeder Fund
+/// mehrdeutig, und übernommen wird nichts.
+bool kennungEindeutig(PrinterConfig drucker, Iterable<PrinterConfig> alle) {
+  final serial = drucker.serial;
+  for (final anderer in alle) {
+    if (anderer.id == drucker.id) continue;
+    if (serial != null) {
+      final serie = anderer.serial;
+      if (serie != null && gleicheKennung(serial, serie)) return false;
+    } else if (vergleicheMac(drucker.mac, anderer.mac) == MacVergleich.gleich) {
+      return false;
+    }
+  }
+  return true;
 }
 
 /// Der eine bestätigte Kandidat; `null` bei keinem oder bei mehreren
@@ -148,8 +181,14 @@ class DruckerWiederfinder {
   /// Letzte gründliche Suche je Drucker.
   final Map<String, DateTime> _letzteGruendliche = <String, DateTime>{};
 
+  /// Letztes schnelles Wiederfinden je Drucker.
+  final Map<String, DateTime> _letzteSchnelle = <String, DateTime>{};
+
   /// Wie viele Suchen wirklich liefen (Tests: „genau eine“).
   int suchen = 0;
+
+  /// Wie viele davon schnelle waren.
+  int schnelleSuchen = 0;
 
   /// Nach [beenden] beginnt keine Suche mehr, und keine übernimmt mehr eine
   /// Adresse.
@@ -171,7 +210,8 @@ class DruckerWiederfinder {
 
   /// Schnelles Wiederfinden (ARP, mDNS) für einen Auftrag; `null`, wenn es
   /// nicht genau einen bestätigten Treffer gibt. Läuft schon eine Suche, wird
-  /// auf sie gewartet – höchstens [schnellBudget].
+  /// auf sie gewartet – höchstens [schnellBudget]. Höchstens einmal je
+  /// [schnellAbstand].
   Future<PrinterConfig?> schnell(PrinterConfig drucker) async {
     final laufend = _laufend[drucker.id];
     if (laufend != null) {
@@ -183,6 +223,14 @@ class DruckerWiederfinder {
     if (inzwischen != null) {
       return inzwischen.timeout(schnellBudget, onTimeout: () => null);
     }
+    final zuletzt = _letzteSchnelle[drucker.id];
+    final jetzt = _clock();
+    if (zuletzt != null) {
+      final alter = jetzt.difference(zuletzt);
+      if (!alter.isNegative && alter < schnellAbstand) return null;
+    }
+    _letzteSchnelle[drucker.id] = jetzt;
+    schnelleSuchen++;
     return _einmal(drucker.id, () => _schnellSuchen(drucker));
   }
 
@@ -264,33 +312,36 @@ class DruckerWiederfinder {
       return r.isNegative ? Duration.zero : r;
     }
 
+    if (!await _eindeutig(drucker)) return null;
     final kandidaten = <DruckerKandidat>[];
-    // 1. ARP-Tabelle nach der gespeicherten MAC.
+    // 1. Mit MAC nur die ARP-Tabelle: kein Netzverkehr, Millisekunden. Was
+    // sie nicht kennt, findet die gründliche Suche im Hintergrund.
     if (drucker.mac != null) {
       final tabelle = await _arp.alle(frist: rest());
-      for (final eintrag in tabelle.entries) {
-        if (vergleicheMac(drucker.mac, eintrag.value) != MacVergleich.gleich) {
-          continue;
-        }
+      for (final host in _andereAdressenMitMac(drucker, tabelle)) {
         final kandidat = await _pruefe(
           drucker,
-          eintrag.key,
-          eintrag.value,
+          host,
+          tabelle,
           rest,
           imAuftrag: true,
         );
         if (kandidat != null) kandidaten.add(kandidat);
       }
+      return _uebernimmEinzigen(drucker, kandidaten, 'schnell');
     }
-    // 2. mDNS mit TXT: Seriennummer, sonst Modell und MAC.
-    if (einzigerKandidat(drucker, kandidaten) == null &&
-        rest() > Duration.zero) {
+    // 2. Ohne MAC: mDNS mit TXT – Seriennummer, sonst Modell und `GS I`.
+    if (rest() > Duration.zero) {
       final funde = await _suche.discover().timeout(
         rest(),
         onTimeout: () => const DiscoveryResult(printers: []),
       );
       for (final fund in funde.printers) {
         if (fund.port != drucker.port || fund.host == drucker.host) continue;
+        // Unter der Adresse eines anderen eingerichteten Druckers zählt nur
+        // eine über `GS I` gelesene Seriennummer – und die fragt die schnelle
+        // Suche dort nie (siehe [_pruefe]).
+        if (await _andererDruckerUnter(fund.host, drucker) != null) continue;
         if (fund.serial != null) {
           kandidaten.add(
             DruckerKandidat(
@@ -302,16 +353,10 @@ class DruckerWiederfinder {
         } else if (drucker.model != null &&
             fund.model != null &&
             gleicheKennung(drucker.model!, fund.model!)) {
-          final mac = await macImSelbenNetz(
-            fund.host,
-            _arp,
-            _schnittstellen,
-            frist: rest(),
-          );
           final kandidat = await _pruefe(
             drucker,
             fund.host,
-            mac,
+            const <String, String>{},
             rest,
             imAuftrag: true,
           );
@@ -323,6 +368,7 @@ class DruckerWiederfinder {
   }
 
   Future<PrinterConfig?> _gruendlichSuchen(PrinterConfig drucker) async {
+    if (!await _eindeutig(drucker)) return null;
     final uhr = Stopwatch()..start();
     final netze = scanInterfaces(await _schnittstellen());
     final offen = <String>[];
@@ -339,11 +385,10 @@ class DruckerWiederfinder {
     }
     // Nach dem Scan stehen frische Einträge in der ARP-Tabelle.
     final tabelle = await _arp.alle();
-    final mitGleicherMac = offen
-        .where(
-          (h) => vergleicheMac(drucker.mac, tabelle[h]) == MacVergleich.gleich,
-        )
-        .toList();
+    final mitGleicherMac = _andereAdressenMitMac(
+      drucker,
+      tabelle,
+    ).where(offen.contains).toList();
     // Mit MAC zuerst die Treffer mit derselben MAC; sonst (oder ohne MAC)
     // alle offenen Adressen nach der Seriennummer fragen.
     final zuFragen = mitGleicherMac.isNotEmpty || drucker.serial == null
@@ -354,7 +399,7 @@ class DruckerWiederfinder {
       final kandidat = await _pruefe(
         drucker,
         host,
-        tabelle[host],
+        tabelle,
         () => kandidatAbfrageBudget,
         imAuftrag: false,
       );
@@ -363,17 +408,48 @@ class DruckerWiederfinder {
     return _uebernimmEinzigen(drucker, kandidaten, 'gründlich');
   }
 
+  /// Ob die Kennung von [drucker] unter den eingerichteten Druckern eindeutig
+  /// ist ([kennungEindeutig]); sonst eine Logzeile und keine Suche.
+  Future<bool> _eindeutig(PrinterConfig drucker) async {
+    if (kennungEindeutig(drucker, await registry.list())) return true;
+    _log?.warn(
+      'Drucker ${drucker.id}: ein anderer eingerichteter Drucker trägt '
+      'dieselbe Kennung – Connect sucht ihn nicht unter neuer Adresse.',
+    );
+    return false;
+  }
+
+  /// Die Adressen außer der bisherigen, unter denen die MAC von [drucker] in
+  /// [tabelle] steht – leer, wenn es mehr als eine ist (Repeater mit
+  /// MAC-NAT, Bridge): dann kennzeichnet die MAC kein Gerät.
+  List<String> _andereAdressenMitMac(
+    PrinterConfig drucker,
+    Map<String, String> tabelle,
+  ) {
+    final adressen = adressenMitMac(
+      tabelle,
+      drucker.mac,
+    ).where((h) => h != drucker.host).toList();
+    if (adressen.length <= 1) return adressen;
+    _log?.info(
+      'Drucker ${drucker.id}: MAC ${drucker.mac} steht unter '
+      '${adressen.length} Adressen – keine Kennung.',
+    );
+    return const <String>[];
+  }
+
   /// Ein Kandidat unter [host]: mit gespeicherter Seriennummer nach `GS I 68`
-  /// gefragt (nur 9100), sonst nur, wenn der Druckport antwortet.
+  /// gefragt (nur 9100), sonst über MAC und Protokollbeweis.
   ///
-  /// Gehört die Adresse einem anderen eingerichteten Drucker, fragt die
-  /// gründliche Suche über dessen Warteschlange ([imAuftrag] `false`); die
-  /// schnelle läuft selbst in einer Warteschlange und lässt solche Kandidaten
-  /// aus – zwei Warteschlangen, die aufeinander warten, gäbe es so nie.
+  /// Gehört die Adresse einem anderen eingerichteten Drucker, zählt dort nur
+  /// eine über `GS I` gelesene Seriennummer: die gründliche Suche fragt sie
+  /// über dessen Warteschlange ([imAuftrag] `false`); die schnelle läuft
+  /// selbst in einer Warteschlange und lässt solche Kandidaten aus – zwei
+  /// Warteschlangen, die aufeinander warten, gäbe es so nie.
   Future<DruckerKandidat?> _pruefe(
     PrinterConfig drucker,
     String host,
-    String? mac,
+    Map<String, String> tabelle,
     Duration Function() rest, {
     required bool imAuftrag,
   }) async {
@@ -386,7 +462,7 @@ class DruckerWiederfinder {
         host,
         drucker.port,
         fragen: const <EscPosFrage>{EscPosFrage.seriennummer},
-        budget: rest() < kandidatAbfrageBudget ? rest() : kandidatAbfrageBudget,
+        budget: _hoechstens(rest(), kandidatAbfrageBudget),
       );
       final antworten = anderer == null
           ? await fragen()
@@ -394,12 +470,53 @@ class DruckerWiederfinder {
       return DruckerKandidat(
         host: host,
         port: drucker.port,
-        mac: mac,
         serie: antworten.seriennummer,
       );
     }
-    if (!await _tcp(host, drucker.port, _kurz(rest()))) return null;
-    return DruckerKandidat(host: host, port: drucker.port, mac: mac);
+    // Nur über die MAC: nie unter der Adresse eines anderen eingerichteten
+    // Druckers, und nur mit Protokollbeweis.
+    if (anderer != null) return null;
+    final mac = tabelle[host];
+    if (mac == null) return null;
+    if (!await _sprichtProtokoll(
+      drucker,
+      host,
+      _hoechstens(rest(), kandidatAbfrageBudget),
+    )) {
+      return null;
+    }
+    return DruckerKandidat(
+      host: host,
+      port: drucker.port,
+      mac: mac,
+      sprichtProtokoll: true,
+    );
+  }
+
+  /// Ob unter [host] ein Gerät das Protokoll von [drucker] spricht.
+  Future<bool> _sprichtProtokoll(
+    PrinterConfig drucker,
+    String host,
+    Duration frist,
+  ) async {
+    switch (drucker.kind) {
+      case PrinterKind.tcp9100:
+        // `DLE EOT` besteht nur aus Steuerzeichen: auch ein Gerät, das kein
+        // ESC/POS spricht, druckt davon nichts.
+        final antworten = await _abfrage.frage(
+          host,
+          drucker.port,
+          fragen: const <EscPosFrage>{},
+          budget: frist,
+        );
+        return antworten.offlineGrund != null;
+      case PrinterKind.epos:
+        final zustand = await registry.eposZustand(
+          drucker.copyWith(host: host),
+          frist,
+        );
+        return zustand != null;
+    }
   }
 
   /// Der eingerichtete Drucker (nicht [drucker]) unter [host]:Port von
@@ -418,8 +535,7 @@ class DruckerWiederfinder {
     return null;
   }
 
-  static Duration _kurz(Duration rest) =>
-      rest < defaultScanTimeout ? rest : defaultScanTimeout;
+  static Duration _hoechstens(Duration a, Duration b) => a < b ? a : b;
 
   Future<PrinterConfig?> _uebernimmEinzigen(
     PrinterConfig drucker,

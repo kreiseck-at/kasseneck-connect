@@ -51,6 +51,27 @@ class VirtuellesNetz {
     return Socket.connect('127.0.0.1', ziel, timeout: timeout);
   }
 
+  /// Dasselbe für `HttpClient.connectionFactory` (ePOS).
+  Future<ConnectionTask<Socket>> httpVerbinden(
+    Uri uri,
+    String? proxyHost,
+    int? proxyPort,
+  ) {
+    versuche[uri.host] = (versuche[uri.host] ?? 0) + 1;
+    final ziel = _geraete[uri.host]?[uri.port];
+    if (ziel == null) {
+      return Future<ConnectionTask<Socket>>.error(
+        SocketException(
+          'Connection refused',
+          osError: const OSError('Connection refused', 61),
+          address: InternetAddress.tryParse(uri.host),
+          port: uri.port,
+        ),
+      );
+    }
+    return Socket.startConnect('127.0.0.1', ziel);
+  }
+
   Future<bool> tcp(String host, int port, Duration timeout) async =>
       _geraete[host]?[port] != null;
 

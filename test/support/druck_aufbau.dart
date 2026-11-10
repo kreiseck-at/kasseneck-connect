@@ -28,10 +28,14 @@ class DruckAufbau {
   ///
   /// [budget] ersetzt das Zeitbudget der Vorprüfung (Tests, deren Antworten
   /// über HTTP kommen und unter Last länger brauchen dürfen).
+  ///
+  /// [verbinden] ersetzt den Verbindungsaufbau zu den Geräten (etwa
+  /// `FakeTcpPrinter.verbinden`), auch den des [netz].
   static DruckAufbau erstellen({
     DateTime? start,
     VirtuellesNetz? netz,
     Duration budget = vorpruefungBudget,
+    SocketConnector? verbinden,
   }) {
     final temp = Directory.systemTemp.createTempSync('connect-druck-');
     final aufbau = DruckAufbau._(
@@ -42,6 +46,7 @@ class DruckAufbau {
     );
     aufbau
       ..netz = netz
+      .._verbinden = verbinden
       .._budget = budget
       ..jetzt = start ?? DateTime(2026, 11, 10, 9);
     if (netz != null) {
@@ -59,6 +64,7 @@ class DruckAufbau {
   }
 
   Duration _budget = vorpruefungBudget;
+  SocketConnector? _verbinden;
 
   /// Das virtuelle Netz, falls eines verwendet wird.
   VirtuellesNetz? netz;
@@ -97,14 +103,20 @@ class DruckAufbau {
       log: log,
       clock: () => jetzt,
     );
-    final verbinden = netz?.verbinden;
+    final verbinden = _verbinden ?? netz?.verbinden;
     registry = PrinterRegistry(
       store: store,
       log: log,
       events: events,
       verbinden: verbinden,
+      eposVerbinden: netz?.httpVerbinden,
     );
-    queue = PrintQueue(registry: registry, events: events, log: log);
+    queue = PrintQueue(
+      registry: registry,
+      events: events,
+      log: log,
+      clock: () => jetzt,
+    );
     final abfrage = EscPosAbfrage(verbinden: verbinden);
     wiederfinder = DruckerWiederfinder(
       registry: registry,
@@ -192,8 +204,10 @@ class DruckAufbau {
       prozesse.calls.where((c) => c.executable == 'arp').length;
 
   Future<void> aufraeumen() async {
-    // Eine Suche im Hintergrund schriebe sonst noch in den Ordner.
+    // Eine Suche oder ein Schreibvorgang im Hintergrund schriebe sonst noch in
+    // den Ordner.
     await wiederfinder.beenden();
+    await registry.hintergrundErledigt();
     await events.close();
     temp.deleteSync(recursive: true);
   }

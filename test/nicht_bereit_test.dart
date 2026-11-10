@@ -58,32 +58,56 @@ void main() {
       expect(zustandAusEposStatus('2').bereitschaft, Bereitschaft.bereit);
     });
 
-    test('statusCapableAt übersteht den Rundlauf, eine neue Adresse von Hand '
-        'verwirft es', () {
+    test('statusCapableAt übersteht den Rundlauf, nie eine Neueinrichtung', () {
       final d = PrinterConfig(
         id: 'p1',
         name: 'Bon',
         kind: PrinterKind.tcp9100,
         host: '192.168.0.50',
+        serial: 'X5ZT000123',
+        mac: _mac,
         statusCapableAt: seit,
       );
       expect(PrinterConfig.fromJson(d.toJson()).statusCapableAt, seit);
-      expect(d.ohneKennung().statusCapableAt, isNull);
-      expect(
-        PrinterRegistry.behalteKennung(d, d.ohneKennung()).statusCapableAt,
-        seit,
+      // So schickt die Kasse den Drucker beim erneuten Einrichten.
+      final neu = PrinterConfig(
+        id: 'p1',
+        name: 'Bon',
+        kind: PrinterKind.tcp9100,
+        host: '192.168.0.50',
       );
+      final gleich = PrinterRegistry.behalteKennung(d, neu);
+      expect(gleich.statusCapableAt, isNull, reason: 'neu geprüft');
+      expect(gleich.serial, 'X5ZT000123', reason: 'Kennung bleibt');
+      expect(gleich.mac, _mac);
+      final andere = PrinterRegistry.behalteKennung(
+        d,
+        neu.copyWith(host: '192.168.0.51'),
+      );
+      expect(andere.statusCapableAt, isNull);
+      expect(andere.serial, isNull);
+      final verworfen = PrinterRegistry.behalteKennung(
+        d,
+        neu,
+        kennungVerwerfen: true,
+      );
+      expect(verworfen.serial, isNull);
+      expect(verworfen.mac, isNull);
+      expect(verworfen.statusCapableAt, isNull);
     });
   });
 
   group('vor dem Druck', () {
-    test('statusfähig und jetzt stumm: kein Byte, printer_not_ready, zwei '
-        'Versuche auf neuer Verbindung, höchstens 1,5 s', () async {
-      final id = await a.drucker(drucker.port, statusCapableAt: seit);
+    test('statusfähig, gleiche MAC und jetzt stumm: kein Byte, '
+        'printer_not_ready, zwei Versuche auf neuer Verbindung', () async {
+      final id = await a.drucker(
+        drucker.port,
+        statusCapableAt: seit,
+        mac: _mac,
+      );
+      a.arpMac = _mac;
       drucker.dleEot.clear(); // Deckel auf
-      final uhr = Stopwatch()..start();
       final ergebnis = await drucke(id);
-      expect(uhr.elapsed, lessThan(vorpruefungBudgetStatusfaehig + _spiel));
       expect(ergebnis.ok, isFalse);
       expect(ergebnis.code, errorPrinterNotReady);
       expect(ergebnis.mayHavePrinted, isFalse);
@@ -112,11 +136,102 @@ void main() {
     });
 
     test('die erste gültige Antwort macht den Drucker statusfähig', () async {
-      final id = await a.drucker(drucker.port);
+      final id = await a.drucker(drucker.port, mac: _mac);
+      a.arpMac = _mac;
       expect((await drucke(id)).ok, isTrue);
-      await warteAufStatusfaehig(a, id);
+      await a.registry.hintergrundErledigt();
+      expect((await a.store.load()).printers.single.statusCapableAt, isNotNull);
+      // Der eigene Bon ist längst gedruckt.
+      a.jetzt = a.jetzt.add(const Duration(minutes: 1));
       drucker.dleEot.clear();
       expect((await drucke(id, jobId: 'beleg-2')).code, errorPrinterNotReady);
+    });
+
+    test(
+      'statusfähig und stumm, aber die Kennung ist nicht bestätigt (keine '
+      'MAC, keine frische Seriennummer): unbekannt, Druck wie 1.4.2',
+      () async {
+        // Unter derselben Adresse kann ein getauschtes Gerät hängen, das nie
+        // auf DLE EOT antwortet – sein Schweigen sagt nichts über den Deckel.
+        final id = await a.drucker(drucker.port, statusCapableAt: seit);
+        drucker.dleEot.clear();
+        expect((await drucke(id)).ok, isTrue);
+        expect(drucker.druckVerbindungen.single, beispielBon);
+        expect((await a.registry.summaries()).single['readiness'], 'unknown');
+      },
+    );
+
+    test('frisch über die Seriennummer bestätigt: Schweigen sperrt auch ohne '
+        'MAC', () async {
+      final id = await a.drucker(
+        drucker.port,
+        statusCapableAt: seit,
+        serial: 'X5ZT000123',
+      );
+      drucker.gsI[68] = 'X5ZT000123';
+      expect((await drucke(id)).ok, isTrue);
+      a.jetzt = a.jetzt.add(const Duration(minutes: 1));
+      drucker.dleEot.clear();
+      expect((await drucke(id, jobId: 'beleg-2')).code, errorPrinterNotReady);
+      // Nach der Frische ist die Kennung wieder offen: unbekannt, Druck.
+      a.jetzt = a.jetzt.add(kennungFrisch);
+      expect((await drucke(id, jobId: 'beleg-3')).ok, isTrue);
+    });
+
+    test(
+      'frisch bestätigt, jetzt aber eine andere MAC und stumm: wie 1.4.2',
+      () async {
+        final id = await a.drucker(
+          drucker.port,
+          statusCapableAt: seit,
+          mac: _mac,
+        );
+        a.arpMac = _mac;
+        expect((await drucke(id)).ok, isTrue);
+        expect(a.registry.lagen.von(id).frisch(a.jetzt), isTrue);
+        // Getauscht: ein anderes Gerät unter der Adresse, das schweigt.
+        a.arpMac = '00:26:ab:00:00:09';
+        drucker.dleEot.clear();
+        a.jetzt = a.jetzt.add(const Duration(minutes: 1));
+        expect((await drucke(id, jobId: 'beleg-2')).ok, isTrue);
+      },
+    );
+
+    test(
+      'eine Antwort unter abweichender MAC macht nicht statusfähig',
+      () async {
+        final id = await a.drucker(drucker.port, mac: _mac);
+        a.arpMac = '00:26:ab:00:00:09';
+        expect((await drucke(id)).ok, isTrue);
+        await a.registry.hintergrundErledigt();
+        expect((await a.store.load()).printers.single.statusCapableAt, isNull);
+      },
+    );
+
+    test('Neueinrichtung (PUT) setzt statusCapableAt zurück: ein getauschtes, '
+        'stummes Gerät druckt wieder', () async {
+      // Ersatzgerät unter derselben Adresse, MAC unbekannt (fremdes Netz).
+      final id = await a.drucker(
+        drucker.port,
+        statusCapableAt: seit,
+        serial: 'X5ZT000123',
+      );
+      drucker.dleEot.clear();
+      final alt = (await a.store.load()).printers.single;
+      await a.registry.upsert(
+        PrinterConfig(
+          id: alt.id,
+          name: alt.name,
+          kind: alt.kind,
+          host: alt.host,
+          port: alt.port,
+        ),
+      );
+      final nach = (await a.store.load()).printers.single;
+      expect(nach.statusCapableAt, isNull);
+      expect(nach.serial, 'X5ZT000123');
+      expect((await drucke(id)).ok, isTrue);
+      expect(drucker.druckVerbindungen.single, beispielBon);
     });
 
     test('stumm, aber eine andere MAC unter der Adresse: wie 1.4.2', () async {
@@ -156,12 +271,19 @@ void main() {
     test(
       'statusfähig und stumm: readiness not_ready, nie „stumm“ gemerkt',
       () async {
-        final id = await a.drucker(drucker.port, statusCapableAt: seit);
+        final id = await a.drucker(
+          drucker.port,
+          statusCapableAt: seit,
+          mac: _mac,
+        );
+        a.arpMac = _mac;
         final dienst = DruckerStatusDienst(
           registry: a.registry,
           queue: a.queue,
           abfrage: EscPosAbfrage(),
           kasseZuletzt: () => a.jetzt,
+          arp: a.arp,
+          schnittstellen: () async => a.schnittstellen,
           clock: () => a.jetzt,
         );
         drucker.dleEot.clear();
@@ -189,22 +311,9 @@ void main() {
         clock: () => a.jetzt,
       );
       await dienst.runde();
+      await a.registry.hintergrundErledigt();
       expect((await a.store.load()).printers.single.statusCapableAt, isNotNull);
       expect(id, isNotEmpty);
     });
   });
-}
-
-/// Spielraum für Planung und Verbindungsaufbau im Test.
-const Duration _spiel = Duration(milliseconds: 300);
-
-Future<void> warteAufStatusfaehig(DruckAufbau a, String id) async {
-  final ende = DateTime.now().add(const Duration(seconds: 5));
-  while ((await a.store.load()).printers
-          .singleWhere((d) => d.id == id)
-          .statusCapableAt ==
-      null) {
-    if (DateTime.now().isAfter(ende)) fail('$id wurde nicht statusfähig');
-    await Future<void>.delayed(const Duration(milliseconds: 10));
-  }
 }

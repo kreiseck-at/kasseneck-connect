@@ -348,8 +348,6 @@ void main() {
       expect(kopie.identifiedAt, DateTime.utc(2026, 11, 10, 9));
       expect(kopie.identitySource, KennungsQuelle.escpos);
       expect(kopie.hatKennung, isTrue);
-      expect(kopie.ohneKennung().hatKennung, isFalse);
-      expect(kopie.ohneKennung().model, isNull);
     });
 
     test('die API-Form eines Druckers bleibt die von 1.4.2', () {
@@ -421,12 +419,12 @@ void main() {
 
       final roh = config.toJson();
       final liste = (roh['relocations']! as List<Object?>).toList()
-        ..add(<String, Object?>{'art': 'printer'})
+        ..add(<String, Object?>{'kind': 'printer'})
         ..add(<String, Object?>{
           'at': '2026-11-10T09:00:00Z',
-          'art': 'terminal',
-          'von': 'a',
-          'nach': 'b',
+          'kind': 'terminal',
+          'from': 'a',
+          'to': 'b',
         });
       final kopie = AgentConfig.fromJson(<String, Object?>{
         ...roh,
@@ -436,6 +434,14 @@ void main() {
       expect(kopie.relocations.last.kennung, 'p_24');
       expect(kopie.relocations.first.toJson()['tid'], '12345678');
       expect(kopie.relocations[1].toJson()['id'], 'p_6');
+      // Englisch wie das Ereignis printer.relocated.
+      expect(kopie.relocations.last.toJson(), <String, Object?>{
+        'at': '2026-11-10T09:24:00.000Z',
+        'kind': 'printer',
+        'id': 'p_24',
+        'from': '192.168.0.50:9100',
+        'to': '192.168.0.61:9100',
+      });
     });
 
     test('Schalter: Vorgabe an, abgeschaltet nur, was genannt ist', () {

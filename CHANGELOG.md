@@ -5,6 +5,39 @@ Alle nennenswerten Änderungen an Kasseneck Connect. Die Versionsnummer folgt
 `lib/src/version.dart` und wird über `GET /v1/status` sowie im Update-Feed
 gemeldet.
 
+## Unveröffentlicht
+
+Grundsatz: nie schlechter als 1.4.2. Jede Neuerung lässt sich in der
+`config.json` einzeln abschalten (`disabledFeatures`), abgeschaltet verhält
+sich Connect dort wie 1.4.2. Neue Felder, Routen und Codes sind additiv; die
+Kasse entscheidet an `features`.
+
+- **Installationskennung:** `installationId` (UUID v4) in `GET /v1/status`,
+  auch ohne Token.
+- **Gerätekennung der Drucker** aus mDNS-TXT, `GS I 67/68` und ARP; vor jedem
+  Bon die MAC, bei Abweichung die Seriennummer. Nur eine andere Seriennummer
+  beweist einen anderen Drucker; der Druck wird dadurch nie blockiert.
+  `POST /v1/printers/discover` nennt je Fund `model` und `serial`.
+- **Papier und Deckel** vor jedem Bon (`DLE EOT 2/4`, ePOS-Statusbits):
+  `paper_out` und `cover_open` statt eines stillen „gedruckt“, kein Byte
+  gesendet; „fast leer“ druckt. Statustakt alle 60 s bei offener Kasse,
+  `POST /v1/printers/{id}/status`, Felder `paper`, `cover`, `statusAt`.
+- **Wiederfinden:** Drucker unter neuer Adresse (schnell im Auftrag, gründlich
+  im Hintergrund), Terminal per TID; Terminal-Aufrufe ohne Verbindung laufen
+  genau einmal an der bestätigten Adresse derselben TID. `endpoint` in jeder
+  Terminal-Antwort, `locate` für Drucker und Terminal, `device_not_found`.
+- **terminal_busy:** ein zweiter langer Terminal-Aufruf, Diagnose, Test oder
+  Suche während einer Zahlung bekommt sofort `terminal_busy` (mit
+  `terminalHttpStatus: 409`).
+- **Sperren bei laufenden Vorgängen:** `update_device_busy`, Warten vor dem
+  Installer (Phase `waiting`), `betrieb.lock` samt Warten im postinstall,
+  `POST /v1/restart` mit `restart_busy`, Schlafsperre nur während Druck und
+  Zahlung. Jede Sperre läuft nach spätestens 6 min ab.
+- **Diagnose:** `GET /v1/diagnosis` nach Positivliste, Kopplungscodes
+  geschwärzt; `doctor` nennt abgeschaltete Neuerungen.
+- **Log:** 5 MB je Datei, 50 MB insgesamt; `launchd.*.log` beim Start gekürzt.
+- **Konfiguration:** Felder einer neueren Fassung überleben das Speichern.
+
 ## 1.4.2 — 2026-11-09
 
 - **Terminal: „nichts gesendet“ ist jetzt erkennbar.** Kommt keine Verbindung

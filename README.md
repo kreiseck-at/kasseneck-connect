@@ -206,7 +206,8 @@ kasseneck-connect <befehl>
 | `install-autostart` | Autostart einrichten und Agenten starten |
 | `uninstall-autostart` | Autostart entfernen und Agenten anhalten |
 | `zertifikat-vertrauen` | der lokalen Zertifizierungsstelle für HTTPS vertrauen (nur Mac; macOS fragt einmal nach Kennwort oder Touch ID) |
-| `doctor` | Diagnose ausgeben (Version, Pfade, Ports, HTTPS, Bluetooth, Drucker, Fehler) |
+| `betrieb-abwarten` | warten, bis kein Druck und keine Zahlung läuft (höchstens 5 min; das postinstall eines Updates ruft ihn vor dem Neustart) |
+| `doctor` | Diagnose ausgeben (Version, Pfade, Ports, HTTPS, Bluetooth, Drucker, abgeschaltete Neuerungen, Fehler) |
 | `version` | Version ausgeben |
 
 `run` läuft, bis SIGINT/SIGTERM kommt. Ist noch kein Gerät gekoppelt, erzeugt der
@@ -305,6 +306,10 @@ WebSocket-Upgrade).
 | WS | `/v1/events` | Ereignisstrom (siehe unten) |
 | GET | `/v1/update` | `{current, latest, available, platform, size, oneClick, progress, lastError}` – neueste Version aus `latest.json` (höchstens alle 6 h abgerufen, wartet nie länger als ~1 s); `progress` (`{version, phase, percent}`) und `lastError` (`{version, code, message}`) zum Abfragen statt Zuhören |
 | POST | `/v1/update` | Aktualisieren auf einen Klick (nur macOS, `oneClick`): lädt, prüft und öffnet den Installer → `{started: true}`, Fortschritt als Ereignis |
+| POST | `/v1/printers/{id}/status` | ab 1.5.0: Papier, Deckel und Erreichbarkeit sofort abfragen (über die Warteschlange) → `{printer}` |
+| POST | `/v1/printers/{id}/locate` | ab 1.5.0: Drucker gründlich unter neuer Adresse suchen → `{relocated, from, to, printer}` oder `device_not_found` |
+| GET | `/v1/diagnosis` | ab 1.5.0: Diagnose für den Support nach Positivliste (`?lines=200`, höchstens 500) |
+| POST | `/v1/restart` | ab 1.5.0, nur mit Fähigkeit `restart`: Connect beenden, der Autostart startet ihn neu → `{restarting: true}` |
 
 Beim Anlegen (`PUT /v1/printers` oder `PUT /v1/printers/neu`) vergibt der Agent
 die ID — die Kasse denkt sich keine aus. Zeigt dabei schon ein Drucker auf
@@ -361,10 +366,18 @@ auffallen.
 ```
 
 Bei einer Aktualisierung (`POST /v1/update`) kommen dazu `update.progress`
-(`{version, phase: download|check|ready, percent}`), `update.failed`
+(`{version, phase: download|check|waiting|ready, percent}`; `waiting` ab 1.5.0:
+ein Druck oder eine Zahlung läuft, der Installer öffnet danach), `update.failed`
 (`{version, code, message}`) und – unmittelbar bevor sich der Installer öffnet –
 `agent.restarting` (`{reason: "update", version}`): Der Installer beendet und
 startet Connect neu, die Verbindung ist danach kurz weg.
+
+Ab 1.5.0 trägt `printer.state` zusätzlich `paper`, `cover` und `statusAt`,
+sobald der Drucker sie gemeldet hat, und kommt auch bei einer Änderung von
+Papier oder Deckel. Neu sind `printer.relocated` (`{printerId, from, to}`) und
+`terminal.relocated` (`{tid, from, to}`) – nur für Log und Diagnose, die Kasse
+zeigt sie nicht. Vor `POST /v1/restart` kommt `agent.restarting`
+(`{reason: "restart"}`).
 
 Der Strom hat **keinen Puffer**: wer nicht zuhört, verpasst das Ereignis. Der
 belastbare Zustand steht in `GET /v1/status`; die Ereignisse sind nur die
@@ -396,6 +409,12 @@ schnelle Benachrichtigung obendrauf.
 | `timeout` | keine Bestätigung in der Zeit; mit `detail.mayHavePrinted = true` ist offen, ob der Bon lief |
 | `refused` | das Gerät lehnt ab (kein Papier, Deckel offen) |
 | `print_in_progress` | derselbe Auftrag läuft gerade noch |
+| `paper_out` | ab 1.5.0: Papierende vor dem Druck gemeldet – **kein Byte gesendet**, derselbe Auftrag geht nach dem Einlegen |
+| `cover_open` | ab 1.5.0: Deckel offen vor dem Druck – kein Byte gesendet |
+| `device_not_found` | ab 1.5.0: `locate` ohne eindeutigen Treffer |
+| `update_device_busy` | ab 1.5.0: ein Druck oder eine Zahlung läuft – danach aktualisieren (HTTP 409) |
+| `restart_busy` | ab 1.5.0: ein Druck oder eine Zahlung läuft (HTTP 409) |
+| `terminal_busy` | ab 1.5.0: Connect hält gerade einen langen Aufruf für dieses Terminal (siehe Kartenterminal) |
 | `internal_error` | der Agent selbst ist gestolpert (steht im Log) |
 
 Bei Druckfehlern steht in `detail.reason` zusätzlich, was das Gerät gemeldet hat
@@ -419,6 +438,7 @@ Zahlung ist `ok: true` mit `responseCode != "0"`, kein Fehler.
 | POST | `/v1/terminal/status` | `{host, port?, tid, transactionId}` – Stand einer Transaktion |
 | POST | `/v1/terminal/abort` | `{host, port?, tid, transactionId}` – Abbruch, solange keine Karte durchgezogen ist |
 | POST | `/v1/terminal/cancel` | `{host, port?, tid, transactionId, amountCents, currency?, language?}` – Aufhebung einer Zahlung |
+| POST | `/v1/terminal/locate` | ab 1.5.0: `{tid}` – Terminal dieser TID im Netz suchen und merken → `{tid, host, port, relocated, from?}` oder `device_not_found` |
 
 Transportfehler und was sie über den Ausgang sagen:
 
@@ -438,6 +458,27 @@ nur `terminal_unreachable` als „nichts gesendet“.
 Nach dem ersten erfolgreichen Kontakt hält Connect das Terminal wach (alle
 45 s ein TCP-Verbindungsaufbau ohne Daten), damit sein WLAN nicht einschläft;
 das Ziel steht in der `config.json` und gilt auch nach einem Neustart.
+
+Ab 1.5.0:
+
+- Zahlung, Gutschrift und Aufhebung **belegen** das Terminal. Ein zweiter
+  solcher Aufruf, eine Diagnose, ein Test oder eine Suche – aus welcher Kasse
+  oder welchem Tab auch immer – bekommt sofort `terminal_busy` mit
+  `detail.terminalHttpStatus = 409`: nachweislich nichts gesendet, wie wenn das
+  Terminal selbst „beschäftigt“ meldet (ältere Kassen lesen es genau so).
+  Statusabfrage und Abbruch bleiben frei – sie gelten der laufenden Zahlung.
+- Der Wachhalter merkt sich die TID und wann eine Antwort des Terminals sie
+  unter dieser Adresse bestätigt hat. Kommt bei einem Aufruf keine Verbindung
+  zustande (`terminal_unreachable`) und kennt Connect für diese TID eine
+  andere, höchstens 24 h alt bestätigte Adresse, läuft **derselbe Aufruf dort
+  genau einmal** – auch Zahlung und Gutschrift, denn der erste Versuch hat
+  nachweislich nichts gesendet. Nach `terminal_offline` oder `timeout` nie.
+- Jede Antwort der Terminal-Routen trägt `endpoint: {host, port, relocated}`,
+  die tatsächlich benutzte Adresse.
+- Antwortet das Terminal dreimal hintereinander nicht auf die
+  Wachhalte-Berührung, sucht Connect es im Hintergrund (Suche, dann Diagnose
+  mit der TID je Treffer; höchstens alle 5 min, nie während einer Zahlung) und
+  übernimmt nur genau einen bestätigten Treffer.
 
 ### Bluetooth-Brücke (macOS)
 
@@ -513,6 +554,93 @@ mit einem anderen Gerät verbunden), `bluetooth_blocked`,
 `bluetooth_too_many_devices`. Das Nachrichtenprotokoll zwischen Agent und
 Hilfsprogramm steht in `docs/bluetooth-protokoll.md`.
 
+## Betrieb ab 1.5.0: Kennung, Status, Wiederfinden, Sperren
+
+Grundsatz: **nie schlechter als 1.4.2.** Was eine Neuerung nicht sicher
+entscheiden kann, verhält sich wie 1.4.2, und jede Neuerung lässt sich einzeln
+abschalten (siehe unten).
+
+**Fähigkeiten.** Die Kasse entscheidet an `features` in `GET /v1/status`, nie an
+der Versionsnummer:
+
+| Fähigkeit | Inhalt |
+|---|---|
+| `identity` | Kennung je Drucker (`identity: {model, serial, mac, state}`), `installationId` (auch ohne Token) |
+| `printer_status` | `paper` (`ok`, `near_end`, `out`, `unknown`), `cover` (`closed`, `open`, `unknown`), `statusAt` je Drucker, `POST /v1/printers/{id}/status`, `paper_out`, `cover_open` |
+| `relocate` | Wiederfinden, `endpoint` in Terminal-Antworten, `locate` für Drucker und Terminal |
+| `busy_lock` | Update-, Neustart- und Schlafsperre, `betrieb.lock`, `terminal_busy` |
+| `diagnosis` | `GET /v1/diagnosis` |
+| `restart` | `POST /v1/restart` (nur macOS und Linux mit eingerichtetem Autostart) |
+
+Neue Felder stehen nur da, wenn sie etwas sagen: ein Drucker, über den nichts
+bekannt ist, sieht in `GET /v1/printers` aus wie in 1.4.2.
+
+**Kennung.** Beim Anlegen und beim ersten gelungenen Kontakt ermittelt Connect
+Modell, Seriennummer und MAC: aus den mDNS-TXT-Einträgen der letzten Suche, aus
+`GS I 67/68` über eine eigene, kurze Verbindung auf 9100 (nur an Geräte, die
+vorher gültig auf `DLE EOT` antworten) und aus der ARP-Tabelle (nur im selben
+Netz). Vor jedem Bon vergleicht Connect die MAC (ohne Bytes an den Drucker);
+weicht sie ab oder fehlt sie, fragt es `GS I 68`. **Nur eine andere
+Seriennummer beweist einen anderen Drucker.** Dann sucht Connect schnell; ist
+der eigene Drucker woanders, druckt es dort. Sonst druckt es an die
+eingerichtete Adresse wie bisher, merkt `identity.state: conflict` und
+übernimmt die fremde Kennung nie. Was sich nicht entscheiden lässt, ist
+unbekannt: gedruckt wird wie bisher. Die Druckverbindung trägt immer genau die
+Bytes der Kasse; alle Fragen gehen über eigene Verbindungen davor. Prüfungen
+kosten einen Bon höchstens 500 ms; ein Gerät, das nicht antwortet, wird 10 min
+nicht mehr gefragt. `printer_mismatch` gibt 1.5.0 nicht aus – ein Konflikt
+blockiert den Druck nie.
+
+**Papier und Deckel.** Vor jedem Bon `DLE EOT 2` und `DLE EOT 4` (9100) bzw.
+die Statusbits eines leeren ePOS-Auftrags. Gezählt wird nur eine Antwort mit
+den festen Bits; blockiert wird nur bei Papierende oder offenem Deckel
+(`paper_out`, `cover_open`, kein Byte gesendet), „fast leer“ druckt. Solange
+eine Kasse offen ist (gültiger Token in den letzten 2 min), fragt Connect jeden
+Drucker alle 60 s ab – ein Takt für alle Kassen, über die Warteschlange, nie
+neben einem Bon.
+
+**Wiederfinden.** Scheitert die Verbindung zu einem Drucker vor dem ersten
+Byte, sucht Connect höchstens 4 s (ARP-Tabelle nach der MAC, mDNS nach
+Seriennummer) und druckt denselben Auftrag an der neuen Adresse; sonst später
+gründlich (Netzscan, höchstens einmal in 2 min, nie während einer Zahlung).
+Übernommen wird nur genau ein bestätigter Kandidat: `config.json`, Logzeile,
+`relocations` (die letzten 20) und das Ereignis `printer.relocated` bzw.
+`terminal.relocated`. Die Kasse zeigt einen Adresswechsel nie.
+
+**Sperren.** Druckaufträge und lange Terminal-Aufrufe zählen als laufende
+Vorgänge, für alle Kassen und Tabs zusammen. Solange einer läuft, lehnt
+`POST /v1/update` mit `update_device_busy` ab und `POST /v1/restart` mit
+`restart_busy`; beginnt einer während des Ladens, öffnet der Installer erst
+danach (Phase `waiting`, höchstens 10 min). Im Datenordner steht dann
+`betrieb.lock`; das postinstall wartet höchstens 5 min darauf. Am Mac hält ein
+einziges `caffeinate -i -w <pid> -t 360` den Rechner wach, unter Windows setzt
+Connect den Leerlauf-Zähler alle 30 s zurück. Jede Sperre läuft ab: ein
+Vorgang nach 6 min, `betrieb.lock` nach 6 min, `caffeinate` nach 6 min oder mit
+Connect.
+
+**Not-Aus je Neuerung.** In der `config.json` schaltet `disabledFeatures` jede
+Neuerung einzeln ab; abgeschaltet verhält sich Connect dort wie 1.4.2, und die
+zugehörige Fähigkeit verschwindet aus `features`. `doctor` und die Diagnose
+zeigen, was abgeschaltet ist.
+
+```json
+{ "disabledFeatures": ["printer_status", "status_poll"] }
+```
+
+| Name | schaltet ab |
+|---|---|
+| `printer_identity` | Kennung ermitteln und vor dem Druck prüfen |
+| `printer_status` | Papier und Deckel vor dem Druck und auf Zuruf |
+| `printer_relocate` | Wiederfinden der Drucker |
+| `terminal_relocate` | Umleiten und Wiederfinden des Terminals, `endpoint` |
+| `status_poll` | den 60-s-Takt bei offener Kasse |
+| `sleep_lock` | die Schlafsperre |
+| `busy_lock` | Update- und Neustart-Sperre, `betrieb.lock`, `terminal_busy` |
+
+**Installationskennung.** Beim ersten Start entsteht `installationId` (UUID v4)
+und ändert sich nie; `GET /v1/status` nennt sie auch ohne Token. Zwei
+angemeldete Benutzer am Rechner haben zwei Connect mit zwei Kennungen.
+
 ## Aktualisieren
 
 Ab 1.4.0 aktualisiert sich Connect am Mac auf einen Klick aus der Kasse: Die
@@ -555,7 +683,16 @@ letzten Fehlerzeilen aus dem Log.
 | Agent startet nach dem Neustart nicht | `doctor` → Autostart-Zeile; notfalls `install-autostart` erneut |
 
 Ins Log kommen **keine Beleginhalte** — nur IDs, Fehlercodes und Klartext.
-Die Datei darf deshalb bedenkenlos an den Support gehen.
+Die Datei darf deshalb bedenkenlos an den Support gehen. `connect.log` wandert
+täglich und ab 5 MB in ein Archiv; alle Logdateien zusammen bleiben unter
+50 MB. `launchd.out.log` und `launchd.err.log` kürzt der Start auf 256 KB, wenn
+sie größer als 1 MB sind.
+
+`GET /v1/diagnosis` (ab 1.5.0, mit Token) liefert dem Support Version,
+Systemangaben, `installationId`, Ports, `features`, die Konfiguration nach
+Positivliste, Zustand je Drucker und Terminal, die letzten Fehler und
+Logzeilen, den Update-Stand und die letzten Adresswechsel – nie Token-Hashes,
+Kopplung, Zertifikate oder Schlüssel; sechsstellige Zahlen sind geschwärzt.
 
 ## Entwicklung
 

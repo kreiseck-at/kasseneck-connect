@@ -226,6 +226,9 @@ void main() {
     });
 
     test('gleichzeitige Anstöße: genau eine Suche', () async {
+      addTearDown(() {
+        if (log.file.existsSync()) printOnFailure(log.file.readAsStringSync());
+      });
       final ergebnisse = await Future.wait(<Future<TerminalFund?>>[
         finder.suche(_tid),
         finder.suche('012345678'),

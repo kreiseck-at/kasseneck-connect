@@ -268,8 +268,8 @@ class _Terminal {
 
 /// Die TID aus dem Rumpf in der Form, die das Terminal annimmt.
 ///
-/// Gerätetest HPS 1.14.4: `03600335` lehnt es mit `100108 Invalid TID` ab,
-/// `3600335` geht. Führende Nullen fallen deshalb weg (nur bei einer reinen
+/// Gerätetest HPS 1.14.4: eine TID mit führender Null lehnt es mit
+/// `100108 Invalid TID` ab, dieselbe ohne Null geht. Führende Nullen fallen deshalb weg (nur bei einer reinen
 /// Ziffernfolge, `0` bleibt `0`); gemerkt und verglichen wird ebenfalls diese
 /// Form. Das Paket der Kasse normiert genauso – hier doppelt, damit auch eine
 /// ältere Kasse zahlt.

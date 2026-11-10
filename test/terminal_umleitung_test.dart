@@ -45,7 +45,7 @@ void main() {
 
     test('tidNormal: führende Nullen weg, nur bei reinen Ziffern', () {
       final faelle = <String, String>{
-        '03600335': '3600335',
+        '012345678': '12345678',
         '0012345678': '12345678',
         '12345678': '12345678',
         ' 012 ': '12',
@@ -248,7 +248,7 @@ void main() {
     );
 
     test('die TID geht ohne führende Nullen ans Terminal (HPS lehnt '
-        '03600335 ab, nimmt 3600335)', () async {
+        'die Form mit Null ab)', () async {
       final diagnose = await anAgent(
         server.port,
         'POST',

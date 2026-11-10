@@ -30,6 +30,7 @@ import 'printers/funde.dart';
 import 'printers/queue.dart';
 import 'printers/registry.dart';
 import 'printers/tcp9100.dart' show SocketConnector;
+import 'printers/vorpruefung.dart';
 import 'process_runner.dart';
 import 'terminal/warmhalten.dart';
 import 'tls/certificates.dart';
@@ -265,7 +266,17 @@ class Agent {
         funde: funde,
       ),
     );
-    queue.nachErfolg = kennung.nachKontakt;
+    queue
+      ..nachErfolg = kennung.nachKontakt
+      ..vorpruefung = DruckVorpruefung(
+        store: store,
+        abfrage: abfrage,
+        arp: arp,
+        schnittstellen: _schnittstellen,
+        lagen: registry.lagen,
+        log: log,
+        clock: _clock,
+      );
 
     // Die Brücke steht ab hier, Bluetooth selbst startet erst mit dem ersten
     // Gerätezugriff bzw. der ersten Suche: der Start des Agenten (Anmeldung,

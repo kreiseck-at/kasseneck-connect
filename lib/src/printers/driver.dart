@@ -13,6 +13,14 @@ const String errorPrintTimeout = 'timeout';
 /// leer oder Deckel offen).
 const String errorPrintRefused = 'refused';
 
+/// Papierende vor dem Druck: kein Byte ging hinaus (ab 1.5.0,
+/// `printer_status`).
+const String errorPaperOut = 'paper_out';
+
+/// Deckel offen vor dem Druck: kein Byte ging hinaus (ab 1.5.0,
+/// `printer_status`).
+const String errorCoverOpen = 'cover_open';
+
 /// Derselbe `jobId` läuft noch.
 const String errorPrintInProgress = 'print_in_progress';
 

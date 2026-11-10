@@ -1,10 +1,12 @@
 import 'dart:async';
 import 'dart:typed_data';
 
+import '../config/model.dart';
 import '../events/bus.dart';
 import '../log/logger.dart';
 import 'driver.dart';
 import 'registry.dart';
+import 'vorpruefung.dart';
 
 /// So lange gilt ein `jobId` als bereits erledigt.
 const Duration defaultIdempotencyWindow = Duration(seconds: 60);
@@ -46,6 +48,7 @@ class PrintQueue {
     this.idempotencyWindow = defaultIdempotencyWindow,
     this.attemptGrace = defaultAttemptGrace,
     this.nachErfolg,
+    this.vorpruefung,
   }) : _events = events,
        _log = log,
        _clock = clock ?? DateTime.now;
@@ -69,6 +72,10 @@ class PrintQueue {
   /// Kennung eines Druckers nachzutragen, der noch keine hat). Darf nicht
   /// warten lassen und nicht werfen; was er anstößt, läuft für sich.
   void Function(String printerId)? nachErfolg;
+
+  /// Prüfung vor dem ersten Versuch (Kennung, Papier, Deckel). Ohne sie
+  /// läuft jeder Auftrag genau wie bis 1.4.2.
+  DruckVorpruefung? vorpruefung;
 
   /// Laufende Kette je Drucker — daran hängt sich der nächste Auftrag an.
   final Map<String, Future<void>> _chains = <String, Future<void>>{};
@@ -142,16 +149,25 @@ class PrintQueue {
         'Der Agent konnte den Druckauftrag nicht ausführen.',
       );
       try {
-        final driver = await registry.driverForId(printerId);
-        if (driver == null) {
-          // Kein Ergebnis merken: sobald der Drucker angelegt ist, soll
-          // derselbe Auftrag durchgehen.
-          _jobs.remove(key);
-          result = const PrintResult.failure(
-            errorPrinterUnknown,
-            'Diesen Drucker kennt der Agent nicht.',
-          );
-          return;
+        final PrinterDriver driver;
+        switch (await _vorbereiten(printerId, jobId)) {
+          case _Unbekannt():
+            // Kein Ergebnis merken: sobald der Drucker angelegt ist, soll
+            // derselbe Auftrag durchgehen.
+            _jobs.remove(key);
+            result = const PrintResult.failure(
+              errorPrinterUnknown,
+              'Diesen Drucker kennt der Agent nicht.',
+            );
+            return;
+          case _Abgelehnt(:final fehler):
+            // Nachweislich nichts gesendet: nicht merken, damit derselbe
+            // Auftrag nach dem Beheben (Rolle eingelegt) gleich durchgeht.
+            _jobs.remove(key);
+            result = _fail(printerId, jobId, fehler, 0);
+            return;
+          case _Bereit(:final treiber):
+            driver = treiber;
         }
         result = await _run(printerId, jobId, driver, bytes);
         if (_worthRemembering(result)) {
@@ -182,6 +198,33 @@ class PrintQueue {
     // Die Kette darf nie einen Fehler tragen — der nächste Auftrag hängt daran.
     _chains[printerId] = chain.catchError((Object _) {});
     return completer.future;
+  }
+
+  /// Treiber für den Auftrag – nach der Vorprüfung, falls es eine gibt.
+  Future<_Vorbereitung> _vorbereiten(String printerId, String jobId) async {
+    final pruefung = vorpruefung;
+    if (pruefung == null) {
+      final driver = await registry.driverForId(printerId);
+      return driver == null ? const _Unbekannt() : _Bereit(driver);
+    }
+    final config = await registry.store.load();
+    PrinterConfig? drucker;
+    for (final eintrag in config.printers) {
+      if (eintrag.id == printerId) drucker = eintrag;
+    }
+    if (drucker == null) return const _Unbekannt();
+    switch (await pruefung.pruefe(drucker, config)) {
+      case DruckAbgelehnt(:final fehler):
+        return _Abgelehnt(fehler);
+      case DruckFreigabe(:final ziel, :final umgeleitet):
+        if (umgeleitet) {
+          _log?.info(
+            'Auftrag $jobId an $printerId geht an die neue Adresse '
+            '${ziel.host}:${ziel.port}.',
+          );
+        }
+        return _Bereit(registry.driverFor(ziel));
+    }
   }
 
   /// Ob ein Ergebnis die `jobId` für das Idempotenzfenster sperrt.
@@ -247,10 +290,13 @@ class PrintQueue {
     PrinterFailure failure,
     int attempts,
   ) {
-    // Ein ablehnendes Gerät hat geantwortet und ist damit erreichbar.
+    // Ein ablehnendes Gerät hat geantwortet und ist damit erreichbar –
+    // ebenso eines, das Papierende oder offenen Deckel meldet.
     registry.noteState(
       printerId,
-      failure.code == errorPrintRefused
+      failure.code == errorPrintRefused ||
+              failure.code == errorPaperOut ||
+              failure.code == errorCoverOpen
           ? PrinterState.online
           : PrinterState.offline,
     );
@@ -325,4 +371,28 @@ class _JobRecord {
     result = value;
     stamp = at;
   }
+}
+
+/// Was vor dem ersten Versuch feststeht.
+sealed class _Vorbereitung {
+  const _Vorbereitung();
+}
+
+/// Den Drucker gibt es nicht.
+final class _Unbekannt extends _Vorbereitung {
+  const _Unbekannt();
+}
+
+/// Die Vorprüfung lehnt ab: kein Byte hinaus.
+final class _Abgelehnt extends _Vorbereitung {
+  const _Abgelehnt(this.fehler);
+
+  final PrinterFailure fehler;
+}
+
+/// Drucken mit [treiber].
+final class _Bereit extends _Vorbereitung {
+  const _Bereit(this.treiber);
+
+  final PrinterDriver treiber;
 }

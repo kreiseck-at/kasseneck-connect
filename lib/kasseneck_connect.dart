@@ -58,6 +58,7 @@ export 'src/printers/lage.dart';
 export 'src/printers/queue.dart';
 export 'src/printers/registry.dart';
 export 'src/printers/tcp9100.dart';
+export 'src/printers/vorpruefung.dart';
 export 'src/process_runner.dart';
 export 'src/terminal/discovery.dart';
 export 'src/terminal/hps.dart';

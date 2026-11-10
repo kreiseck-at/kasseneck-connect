@@ -202,6 +202,27 @@ class FakeTcpPrinter {
     }
   }
 
+  /// Wartet, bis mehr als [vorher] Druckverbindungen da und alle
+  /// Verbindungen wieder zu sind.
+  ///
+  /// Der Absender ist fertig, wenn sein Auftrag zurückkommt; Annehmen und
+  /// Lesen hier können dann noch nachlaufen. Wer nur auf „alles zu“ wartete,
+  /// sähe eine Verbindung, die noch gar nicht angenommen ist, nicht.
+  Future<void> warteAufDruck(
+    int vorher, {
+    Duration frist = const Duration(seconds: 5),
+  }) async {
+    final ende = DateTime.now().add(frist);
+    while (druckVerbindungen.length <= vorher || _gleichzeitig > 0) {
+      if (DateTime.now().isAfter(ende)) {
+        throw StateError(
+          'Fake-Drucker: nach $vorher kam kein weiterer Druck an.',
+        );
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 5));
+    }
+  }
+
   Future<void> stop() async {
     for (final timer in _timer) {
       timer.cancel();

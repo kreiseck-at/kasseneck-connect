@@ -14,6 +14,10 @@ class DruckerLage {
   /// Seriennummer, die ein anderes Gerät unter der Adresse nannte.
   String? konfliktSerie;
 
+  /// Bis wann nach einem Konflikt ohne Fund nicht erneut vor jedem Bon
+  /// gesucht wird.
+  DateTime? konfliktSucheBis;
+
   /// Bis wann das Gerät als stumm gilt (keine gültige `DLE EOT`-Antwort):
   /// bis dahin keine Abfrage-Verbindung vor dem Druck.
   DateTime? stummBis;

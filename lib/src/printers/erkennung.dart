@@ -134,6 +134,9 @@ class Kennungspflege {
   /// Laufende Erkennung je Drucker – zwei Anstöße teilen sich eine.
   final Map<String, Future<void>> _laufend = <String, Future<void>>{};
 
+  /// Wartet auf laufende Erkennungen (Agent hält an).
+  Future<void> erledigt() => Future.wait(_laufend.values.toList());
+
   /// Nach dem Anlegen bzw. Ändern der Adresse: sofort erkennen.
   Future<void> nachAnlegen(String id) => _erkenne(id, sofort: true);
 

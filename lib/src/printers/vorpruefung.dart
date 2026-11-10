@@ -196,7 +196,7 @@ class DruckVorpruefung {
           if (antworten.stumm) _alsStummMerken(drucker, lage, jetzt);
           geseheneSerie = antworten.seriennummer;
           if (antworten.offlineGrund != null) {
-            unawaited(registry.statusfaehigMerken(drucker, jetzt));
+            await registry.statusfaehigMerken(drucker, jetzt);
           }
           if (statusAn && antworten.verbunden && !antworten.stumm) {
             zustand = zustandAusDleEot(

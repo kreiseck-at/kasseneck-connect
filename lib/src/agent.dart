@@ -215,6 +215,10 @@ class Agent {
   AgentContext? _context;
   TerminalWarmhalter? _warmhalter;
   DruckerStatusDienst? _status;
+  Kennungspflege? _kennung;
+  DruckerWiederfinder? _wiederfinder;
+  TerminalWiederfinder? _terminalSuche;
+  BetriebsLock? _betriebsLock;
   LaufendeVorgaenge? _vorgaenge;
   Schlafsperre? _schlafsperre;
   PrinterRegistry? _printers;
@@ -280,6 +284,7 @@ class Agent {
     );
     _vorgaenge = vorgaenge;
     _schlafsperre = schlafsperre;
+    _betriebsLock = betriebsLock;
     // Eine Datei aus einem abgestürzten Lauf: hier läuft noch nichts.
     betriebsLock.frei();
     // Eine Belegung der Terminals für alle Kassen und Tabs; solange sie
@@ -344,6 +349,8 @@ class Agent {
       clock: _clock,
     );
     status.beiDauerndVerfehlt = wiederfinder.gruendlichImHintergrund;
+    _kennung = kennung;
+    _wiederfinder = wiederfinder;
     queue
       ..nachErfolg = kennung.nachKontakt
       ..vorgaenge = vorgaenge
@@ -440,6 +447,7 @@ class Agent {
           discoverTerminals(bridge: hps, log: log, interfaces: _schnittstellen),
     );
     warmhalter.beiDauerndUnerreichbar = terminalSuche.imHintergrund;
+    _terminalSuche = terminalSuche;
     ctx
       ..terminalZustand = warmhalter.statusFeld
       ..vorgaenge = vorgaenge
@@ -522,12 +530,23 @@ class Agent {
     _warmhalter?.stop();
     await _status?.stop();
     _status = null;
+    // Hintergrundarbeit zu Ende bringen: nach dem Anhalten schreibt nichts
+    // mehr in die config.json.
+    await _wiederfinder?.beenden();
+    await _terminalSuche?.beenden();
+    await _kennung?.erledigt();
+    await _warmhalter?.erledigt;
+    _wiederfinder = null;
+    _terminalSuche = null;
+    _kennung = null;
     _vorgaenge?.stop();
     _vorgaenge = null;
     // Kein caffeinate über das Ende des Agenten hinaus.
     _schlafsperre?.frei();
     await _schlafsperre?.erledigt;
     _schlafsperre = null;
+    await _betriebsLock?.erledigt;
+    _betriebsLock = null;
     _tlsTimer?.cancel();
     _tlsTimer = null;
     // Eine laufende Zertifikatsprüfung zu Ende gehen lassen: sie bände sonst

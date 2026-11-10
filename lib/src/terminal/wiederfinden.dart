@@ -5,6 +5,7 @@ import '../config/neuerungen.dart';
 import '../config/store.dart';
 import '../events/bus.dart';
 import '../log/logger.dart';
+import '../printers/wiederfinden.dart' show beendenHoechstens;
 import 'belegung.dart';
 import 'discovery.dart';
 import 'hps.dart';
@@ -83,6 +84,19 @@ class TerminalWiederfinder {
   /// Wie viele Suchen wirklich liefen (Tests).
   int suchen = 0;
 
+  bool _beendet = false;
+
+  /// Hält an: keine neuen Suchen, laufende übernehmen nichts mehr; wartet
+  /// höchstens `beendenHoechstens` auf sie.
+  Future<void> beenden() async {
+    _beendet = true;
+    try {
+      await Future.wait(_laufend.values.toList()).timeout(beendenHoechstens);
+    } on TimeoutException {
+      // Eine Suche, die noch im Netz hängt, schreibt nach dem Ende nichts.
+    }
+  }
+
   /// Suche im Hintergrund für das gemerkte Terminal (nach drei
   /// Fehlberührungen) – höchstens einmal je [terminalSucheAbstand].
   void imHintergrund() => unawaited(_imHintergrund());
@@ -107,6 +121,7 @@ class TerminalWiederfinder {
     final schluessel = tid;
     final laufend = _laufend[schluessel];
     if (laufend != null) return laufend;
+    if (_beendet) return null;
     final config = await store.load();
     if (!config.aktiv(Neuerung.terminalWiederfinden)) return null;
     final inzwischen = _laufend[schluessel];
@@ -159,6 +174,7 @@ class TerminalWiederfinder {
         return null;
       }
       final fund = bestaetigt.single;
+      if (_beendet) return null;
       return _uebernimm(tid, fund.host, fund.port, fund.serie);
     } on Object catch (e) {
       // Ohne Fund bleibt es beim Verhalten von 1.4.2.

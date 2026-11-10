@@ -260,6 +260,19 @@ class FakeTcpPrinter {
     }
   }
 
+  /// Wartet, bis die zuletzt angenommene Verbindung geschlossen ist.
+  Future<void> ruhigNachVerbindung({
+    Duration frist = const Duration(seconds: 5),
+  }) async {
+    final ende = DateTime.now().add(frist);
+    while (verbindungen.isEmpty || verbindungen.last.ende == null) {
+      if (DateTime.now().isAfter(ende)) {
+        throw StateError('Fake-Drucker: keine geschlossene Verbindung.');
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 5));
+    }
+  }
+
   Future<void> stop() async {
     for (final timer in _timer) {
       timer.cancel();

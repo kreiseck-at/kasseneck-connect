@@ -29,6 +29,9 @@ const Duration kandidatAbfrageBudget = Duration(milliseconds: 800);
 /// Suche soll begrenzt bleiben.
 const int gruendlichHoechstKandidaten = 32;
 
+/// So lange wartet das Anhalten des Agenten höchstens auf laufende Suchen.
+const Duration beendenHoechstens = Duration(seconds: 1);
+
 /// Ereignis: ein Drucker ist still unter eine neue Adresse gezogen
 /// (`{printerId, from, to}`). Für Log und Diagnose; die Kasse zeigt nichts.
 const String eventPrinterRelocated = 'printer.relocated';
@@ -148,6 +151,22 @@ class DruckerWiederfinder {
   /// Wie viele Suchen wirklich liefen (Tests: „genau eine“).
   int suchen = 0;
 
+  /// Nach [beenden] beginnt keine Suche mehr, und keine übernimmt mehr eine
+  /// Adresse.
+  bool _beendet = false;
+
+  /// Hält an: keine neuen Suchen, laufende übernehmen nichts mehr; wartet
+  /// höchstens [beendenHoechstens] auf sie.
+  Future<void> beenden() async {
+    _beendet = true;
+    try {
+      await Future.wait(_laufend.values.toList()).timeout(beendenHoechstens);
+    } on TimeoutException {
+      // Eine Suche, die noch im Netz hängt, schreibt nach dem Ende nichts
+      // mehr (siehe _uebernimm); warten lohnt nicht länger.
+    }
+  }
+
   static bool _nie() => false;
 
   /// Schnelles Wiederfinden (ARP, mDNS) für einen Auftrag; `null`, wenn es
@@ -227,6 +246,7 @@ class DruckerWiederfinder {
   }
 
   Future<bool> _erlaubt(PrinterConfig drucker) async =>
+      !_beendet &&
       drucker.hatKennung &&
       (await registry.store.load()).aktiv(Neuerung.druckerWiederfinden);
 
@@ -426,6 +446,7 @@ class DruckerWiederfinder {
     PrinterConfig drucker,
     DruckerKandidat fund,
   ) async {
+    if (_beendet) return null;
     PrinterConfig? neu;
     final jetzt = _clock();
     await registry.store.mutate((config) {

@@ -192,6 +192,8 @@ class DruckAufbau {
       prozesse.calls.where((c) => c.executable == 'arp').length;
 
   Future<void> aufraeumen() async {
+    // Eine Suche im Hintergrund schriebe sonst noch in den Ordner.
+    await wiederfinder.beenden();
     await events.close();
     temp.deleteSync(recursive: true);
   }

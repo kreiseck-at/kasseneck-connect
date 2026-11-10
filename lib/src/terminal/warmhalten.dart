@@ -85,6 +85,9 @@ class TerminalWarmhalter {
   /// Anzahl der Beruehrungen (Tests).
   int beruehrungen = 0;
 
+  /// Das zuletzt angestoßene Speichern (Agent hält an, Tests).
+  Future<void> erledigt = Future<void>.value();
+
   /// Aus der gespeicherten Konfiguration starten (Agentenstart).
   void startAus(AgentConfig config) {
     final t = config.terminal;
@@ -127,14 +130,12 @@ class TerminalWarmhalter {
       _bestaetigtAm = null;
     }
     // Fire-and-forget: das Wachhalten haengt nicht am Plattenschreiben.
-    unawaited(
-      _speichern(
-        host,
-        port,
-        tid: auffrischen ? tid : null,
-        serie: auffrischen ? serie : null,
-        am: jetzt,
-      ),
+    erledigt = _speichern(
+      host,
+      port,
+      tid: auffrischen ? tid : null,
+      serie: auffrischen ? serie : null,
+      am: jetzt,
     );
   }
 

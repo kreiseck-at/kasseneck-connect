@@ -60,18 +60,25 @@ void main() {
   });
 
   test('ohne Restzeit wird nicht mehr gefragt', () async {
-    drucker = await FakeTcpPrinter.start(dleEot: gesund)
-      ..antwortVerzug = const Duration(milliseconds: 120);
-    final antworten = await abfrage.frage(
+    drucker = await FakeTcpPrinter.start(dleEot: gesund);
+    // Der Verbindungsaufbau verbraucht das ganze Budget: danach darf keine
+    // Frage mehr hinausgehen – gleich wie schnell der Rechner ist.
+    final langsam = EscPosAbfrage(
+      verbinden: (host, port, {timeout}) async {
+        await Future<void>.delayed(const Duration(milliseconds: 250));
+        return Socket.connect(host, port);
+      },
+    );
+    final antworten = await langsam.frage(
       '127.0.0.1',
       drucker.port,
       fragen: EscPosFrage.values.toSet(),
-      budget: const Duration(milliseconds: 150),
+      budget: const Duration(milliseconds: 100),
     );
-    expect(antworten.offlineGrund, 0x12);
-    expect(antworten.seriennummer, isNull);
-    await Future<void>.delayed(const Duration(milliseconds: 100));
-    expect(drucker.received.length, lessThanOrEqualTo(6));
+    expect(antworten.verbunden, isTrue);
+    expect(antworten.offlineGrund, isNull);
+    await drucker.ruhigNachVerbindung();
+    expect(drucker.received, isEmpty);
   });
 
   test('Bytes ohne feste Bits werden übergangen, nie gedeutet', () async {

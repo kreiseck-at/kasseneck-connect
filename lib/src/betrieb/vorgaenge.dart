@@ -6,6 +6,9 @@ import 'dart:async';
 /// Sperre darf nie bleiben, auch wenn ein Fehler das Ende verschluckt.
 const Duration vorgangHoechstdauer = Duration(minutes: 6);
 
+/// Kürzester Abstand, in dem der Ablauf-Timer erneut nachsieht.
+const Duration _mindestAbstand = Duration(seconds: 1);
+
 /// Was gerade läuft.
 enum VorgangsArt {
   /// Ein Druckauftrag in der Warteschlange.
@@ -136,7 +139,9 @@ class LaufendeVorgaenge {
         .map((v) => v.seit)
         .reduce((a, b) => a.isBefore(b) ? a : b);
     final bis = hoechstdauer - _clock().difference(aeltester);
-    _ablauf = Timer(bis.isNegative ? Duration.zero : bis, () {
+    // Nie kürzer als [_mindestAbstand]: verstellt sich die Uhr, soll der
+    // Timer nicht im Kreis laufen.
+    _ablauf = Timer(bis < _mindestAbstand ? _mindestAbstand : bis, () {
       _ablauf = null;
       _aufraeumen();
       _ablaufPlanen();

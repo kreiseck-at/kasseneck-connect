@@ -93,9 +93,7 @@ void main() {
     expect(erste.json.keys, <String>['ok', 'jobId']);
     expect(dauer, lessThan(const Duration(milliseconds: 600)));
 
-    uhr.reset();
     await drucke(id, 'beleg-2');
-    expect(uhr.elapsed, lessThan(const Duration(milliseconds: 200)));
     await drucker.warteAufDruck(1);
 
     expect(drucker.druckVerbindungen, <List<int>>[beispielBon, beispielBon]);

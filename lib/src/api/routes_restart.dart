@@ -49,11 +49,21 @@ RouteRegistrar restartRoutes() {
       ctx.events.publish(eventAgentRestarting, <String, Object?>{
         'reason': 'restart',
       });
-      Timer(neustartVerzug, () async {
-        if (sperre) await vorgaenge?.leer(hoechstens: vorgangHoechstdauer);
-        await neustart();
-      });
+      neustartPlanen(neustart: neustart, vorgaenge: sperre ? vorgaenge : null);
       return okJson(<String, Object?>{'restarting': true});
     });
   };
+}
+
+/// Ruft [neustart] nach [neustartVerzug] – und wartet vorher das Ende
+/// laufender [vorgaenge] ab (höchstens `vorgangHoechstdauer`), die in der
+/// Zwischenzeit begonnen haben.
+void neustartPlanen({
+  required Future<void> Function() neustart,
+  LaufendeVorgaenge? vorgaenge,
+}) {
+  Timer(neustartVerzug, () async {
+    await vorgaenge?.leer(hoechstens: vorgangHoechstdauer);
+    await neustart();
+  });
 }

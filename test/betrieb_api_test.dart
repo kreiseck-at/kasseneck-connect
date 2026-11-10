@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:crypto/crypto.dart';
+import 'package:fake_async/fake_async.dart';
 import 'package:kasseneck_connect/kasseneck_connect.dart';
 import 'package:kasseneck_connect/src/update/feed.dart';
 import 'package:kasseneck_connect/src/update/updater.dart';
@@ -17,6 +18,41 @@ String _fixture(String name) =>
     File('test/fixtures/update/$name').readAsStringSync();
 
 void main() {
+  group('neustartPlanen', () {
+    test('nach einer halben Sekunde; ein Vorgang, der dazwischen beginnt, '
+        'wird abgewartet', () {
+      fakeAsync((async) {
+        final vorgaenge = LaufendeVorgaenge(
+          clock: () => DateTime(2026, 11, 10, 9).add(async.elapsed),
+        );
+        Duration? neustartNach;
+        neustartPlanen(
+          vorgaenge: vorgaenge,
+          neustart: () async => neustartNach = async.elapsed,
+        );
+        async.elapse(const Duration(milliseconds: 100));
+        final zahlung = vorgaenge.beginne(VorgangsArt.terminal);
+        async.elapse(const Duration(seconds: 2));
+        expect(neustartNach, isNull, reason: 'die Zahlung läuft');
+        vorgaenge.beende(zahlung);
+        async.flushMicrotasks();
+        expect(neustartNach, const Duration(milliseconds: 2100));
+        vorgaenge.stop();
+      });
+    });
+
+    test('ohne Vorgänge genau nach der Verzögerung', () {
+      fakeAsync((async) {
+        Duration? neustartNach;
+        neustartPlanen(neustart: () async => neustartNach = async.elapsed);
+        async.elapse(neustartVerzug - const Duration(milliseconds: 1));
+        expect(neustartNach, isNull);
+        async.elapse(const Duration(milliseconds: 1));
+        expect(neustartNach, neustartVerzug);
+      });
+    });
+  });
+
   group('Updater', () {
     late Directory cache;
     late EventBus bus;
@@ -141,7 +177,6 @@ void main() {
     late String kasseA;
     late String kasseB;
     var neustarts = 0;
-    DateTime? neustartAm;
 
     Future<void> starten({bool mitNeustart = true}) async {
       agent = Agent(
@@ -152,12 +187,7 @@ void main() {
         environment: const <String, String>{},
         betriebssystem: 'linux',
         runProcess: FakeProcessRunner().runner,
-        neustart: mitNeustart
-            ? () async {
-                neustarts++;
-                neustartAm = DateTime.now();
-              }
-            : null,
+        neustart: mitNeustart ? () async => neustarts++ : null,
       );
       await agent.start();
       kasseA = await agent.context.pairing.issueToken();
@@ -169,7 +199,6 @@ void main() {
       store = ConfigStore.forDirectory(temp);
       hps = await FakeHpsServer.starten();
       neustarts = 0;
-      neustartAm = null;
     });
 
     tearDown(() async {
@@ -248,24 +277,22 @@ void main() {
     );
 
     test('Kasse A zahlt, Kasse B will neu starten: restart_busy; Status '
-        'antwortet sofort', () async {
+        'antwortet, während die Zahlung noch läuft', () async {
       await starten();
-      hps.verzoegerung['/api/transaction/payment'] = const Duration(
-        milliseconds: 800,
-      );
-      final zahlung = zahleAusA();
+      hps.verzoegerung['/api/transaction/payment'] = const Duration(seconds: 2);
+      var zahlungFertig = false;
+      final zahlung = zahleAusA().whenComplete(() => zahlungFertig = true);
       await wartetAmTerminal();
       expect(agent.context.vorgaenge!.laufen, isTrue);
 
-      final uhr = Stopwatch()..start();
       final status = await anAgent(
         agent.port,
         'GET',
         '/v1/status',
         token: kasseB,
       );
-      expect(uhr.elapsed, lessThan(const Duration(milliseconds: 300)));
       expect(status.ok, isTrue);
+      expect(zahlungFertig, isFalse, reason: 'Status wartet nie auf Zahlung');
 
       final neu = await anAgent(
         agent.port,
@@ -275,6 +302,7 @@ void main() {
       );
       expect(neu.status, 409);
       expect(neu.code, errorRestartBusy);
+      expect(zahlungFertig, isFalse);
       expect((await zahlung).ok, isTrue);
       expect(agent.context.vorgaenge!.laufen, isFalse);
       expect(neustarts, 0);
@@ -296,34 +324,6 @@ void main() {
         expect(uhr.elapsed, greaterThanOrEqualTo(neustartVerzug));
       },
     );
-
-    test('beginnt nach der Antwort noch eine Zahlung, wartet der Neustart sie '
-        'ab', () async {
-      await starten();
-      hps.verzoegerung['/api/transaction/payment'] = const Duration(
-        milliseconds: 900,
-      );
-      final antwort = await anAgent(
-        agent.port,
-        'POST',
-        '/v1/restart',
-        token: kasseA,
-      );
-      expect(antwort.ok, isTrue);
-      final zahlung = zahleAusA();
-      await wartetAmTerminal();
-      final ende = await zahlung;
-      final zahlungFertig = DateTime.now();
-      expect(ende.ok, isTrue);
-      await warteBis(() async => neustarts == 1, grund: 'Neustart');
-      expect(
-        neustartAm!.isBefore(
-          zahlungFertig.subtract(const Duration(milliseconds: 50)),
-        ),
-        isFalse,
-        reason: 'nicht vor dem Ende der Zahlung',
-      );
-    });
 
     test(
       'busy_lock aus: Neustart auch während einer Zahlung (keine Sperre)',

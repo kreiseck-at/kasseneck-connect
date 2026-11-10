@@ -140,10 +140,7 @@ void main() {
     test('das Warten des Installers: frei sofort, frisch bis zur Frist, '
         'gelöscht sofort weiter', () async {
       final datei = betriebLockDatei(temp);
-      expect(
-        await warteAufFreienBetrieb(datei),
-        lessThan(const Duration(milliseconds: 100)),
-      );
+      expect(await warteAufFreienBetrieb(datei), Duration.zero);
 
       datei.writeAsStringSync('{}');
       var uhr = DateTime.now();

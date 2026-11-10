@@ -95,10 +95,10 @@ void main() {
 
       // Deckel zu: derselbe Auftrag geht gleich durch, ohne Wartezeit.
       drucker.dleEot.addAll(_gesund);
-      uhr.reset();
       final nochmal = await drucke(id);
       expect(nochmal.ok, isTrue);
-      expect(uhr.elapsed, lessThan(const Duration(milliseconds: 400)));
+      // Bereit: eine Abfrage-Verbindung, kein zweiter Versuch.
+      expect(drucker.abfrageVerbindungen, hasLength(bereitVersuche + 1));
       expect(drucker.druckVerbindungen.single, beispielBon);
       expect((await a.registry.summaries()).single['readiness'], 'ready');
     });

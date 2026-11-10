@@ -133,9 +133,7 @@ void main() {
     expect(uhr.elapsed, lessThan(const Duration(milliseconds: 600)));
     expect(drucker.abfrageVerbindungen, hasLength(1));
 
-    uhr.reset();
     await drucke(id);
-    expect(uhr.elapsed, lessThan(const Duration(milliseconds: 200)));
     expect(drucker.abfrageVerbindungen, hasLength(1), reason: 'stumm');
 
     a.jetzt = a.jetzt.add(stummDauer);

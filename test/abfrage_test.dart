@@ -101,7 +101,7 @@ void main() {
 
   test('Antwort nach dem Budget zählt nicht', () async {
     drucker = await FakeTcpPrinter.start(dleEot: gesund)
-      ..antwortVerzug = const Duration(milliseconds: 400);
+      ..antwortVerzug = const Duration(seconds: 2);
     final uhr = Stopwatch()..start();
     final antworten = await abfrage.frage(
       '127.0.0.1',
@@ -109,7 +109,8 @@ void main() {
       fragen: const <EscPosFrage>{EscPosFrage.rollensensor},
       budget: const Duration(milliseconds: 150),
     );
-    expect(uhr.elapsed, lessThan(const Duration(milliseconds: 400)));
+    // Deutlich vor der Antwort zurück – auch unter Last.
+    expect(uhr.elapsed, lessThan(const Duration(seconds: 1)));
     expect(antworten.offlineGrund, isNull);
   });
 

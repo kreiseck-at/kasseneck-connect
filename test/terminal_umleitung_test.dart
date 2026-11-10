@@ -301,20 +301,20 @@ void main() {
     group('terminal_busy', () {
       setUp(() {
         hps.verzoegerung['/api/transaction/payment'] = const Duration(
-          milliseconds: 600,
+          seconds: 2,
         );
       });
 
       test('zweite Zahlung aus einem anderen Tab: sofort terminal_busy mit '
           '409, keine zweite Anfrage am Terminal', () async {
-        final erste = zahle(hps.port);
+        var ersteFertig = false;
+        final erste = zahle(hps.port).whenComplete(() => ersteFertig = true);
         await warteBis(
           () async => hps.an('/api/transaction/payment').isNotEmpty,
           grund: 'erste Zahlung am Terminal',
         );
-        final uhr = Stopwatch()..start();
         final zweite = await zahle(hps.port);
-        expect(uhr.elapsed, lessThan(const Duration(milliseconds: 300)));
+        expect(ersteFertig, isFalse, reason: 'sofort, nicht nach der ersten');
         expect(zweite.code, errorTerminalBusy);
         expect(zweite.detail, <String, Object?>{'terminalHttpStatus': 409});
         expect((await erste).ok, isTrue);

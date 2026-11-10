@@ -498,10 +498,17 @@ Ab 1.5.0:
 - Antwortet das Terminal dreimal hintereinander nicht auf die
   Wachhalte-Berührung, sucht Connect es im Hintergrund (Suche, dann Diagnose
   mit der TID je Treffer; nie während einer Zahlung) und übernimmt nur genau
-  einen bestätigten Treffer. Bleibt es unerreichbar, sucht Connect weiter,
-  höchstens alle 5 min – ein Terminal, das über Nacht aus war und morgens eine
-  neue Adresse hat, ist so nach wenigen Minuten wieder da. Eine Suche, die
-  wegen einer Zahlung nicht lief, zählt nicht für die 5 min.
+  einen bestätigten Treffer. Gesucht wird nur, solange eine Kasse offen ist
+  (gültiger Token in den letzten 2 min) – nachts und in fremden Netzen klopft
+  Connect kein Netz ab. Bleibt das Terminal unerreichbar, sucht Connect weiter,
+  zuerst nach 5 min, dann nach 15 min, dann stündlich; nach einem Fund oder
+  wenn es wieder antwortet, wieder ab 5 min. Ein Terminal, das über Nacht aus
+  war und morgens eine neue Adresse hat, ist so wenige Minuten nach dem Öffnen
+  der Kasse wieder da. Eine Suche, die wegen einer Zahlung nicht lief, zählt
+  nicht.
+- Beginnt eine Zahlung während `POST /v1/terminal/discover`, fragt die Suche
+  kein weiteres Gerät mehr und antwortet mit dem, was sie bis dahin fand,
+  dazu `incomplete: true` und `note` (deutscher Satz für die Kasse).
 
 ### Bluetooth-Brücke (macOS)
 
@@ -589,80 +596,108 @@ der Versionsnummer:
 | Fähigkeit | Inhalt |
 |---|---|
 | `identity` | Kennung je Drucker (`identity: {model, serial, mac, state}`), `installationId` (auch ohne Token) |
-| `printer_status` | `paper` (`ok`, `near_end`, `out`, `unknown`), `cover` (`closed`, `open`, `unknown`), `readiness` (`ready`, `not_ready`, `unknown`), `statusAt` je Drucker, `POST /v1/printers/{id}/status`, `paper_out`, `cover_open`, `printer_not_ready` |
+| `printer_status` | `paper` (`ok`, `near_end`, `out`, `unknown`), `cover` (`closed`, `open`, `unknown`), `readiness` (`ready`, `not_ready`, `unknown`), `statusAt` je Drucker, `POST /v1/printers/{id}/status`, `paper_out`, `cover_open`, `printer_not_ready` – nur für bewiesene Modelle (siehe unten) |
 | `relocate` | Wiederfinden, `endpoint` in Terminal-Antworten, `locate` für Drucker und Terminal |
 | `busy_lock` | Update-, Neustart- und Schlafsperre, `betrieb.lock`, `terminal_busy` |
 | `diagnosis` | `GET /v1/diagnosis` |
-| `restart` | `POST /v1/restart` (nur macOS und Linux mit eingerichtetem Autostart, und nur, wenn launchd bzw. systemd Connect gestartet hat) |
+| `restart` | `POST /v1/restart` (nur macOS und Linux mit eingerichtetem Autostart, und nur, wenn launchd bzw. systemd Connect gestartet hat: `XPC_SERVICE_NAME` ist das Label bzw. `SYSTEMD_EXEC_PID` die eigene Prozessnummer) |
 
 Neue Felder stehen nur da, wenn sie etwas sagen: ein Drucker, über den nichts
 bekannt ist, sieht in `GET /v1/printers` aus wie in 1.4.2.
 
-**Kennung.** Beim Anlegen und beim ersten gelungenen Kontakt ermittelt Connect
-Modell, Seriennummer und MAC: aus den mDNS-TXT-Einträgen der letzten Suche, aus
-`GS I 67/68` über eine eigene, kurze Verbindung auf 9100 (nur an Geräte, die
-vorher gültig auf `DLE EOT` antworten) und aus der ARP-Tabelle (nur im selben
-Netz; eine MAC, die dort auch unter einer anderen Adresse steht – Repeater mit
-MAC-NAT –, wird nicht gespeichert). Vor jedem Bon vergleicht Connect die MAC
-(ohne Bytes an den Drucker);
-weicht sie ab oder fehlt sie, fragt es `GS I 68`. **Nur eine andere
-Seriennummer beweist einen anderen Drucker.** Dann sucht Connect schnell; ist
-der eigene Drucker woanders, druckt es dort. Sonst druckt es an die
-eingerichtete Adresse wie bisher, merkt `identity.state: conflict` und
-übernimmt die fremde Kennung nie von selbst; Papier und Deckel des Geräts, das
-den Bon dort bekommt, zählen trotzdem. Richtet die Kasse den Drucker unter
-derselben Adresse neu ein (`PUT`), ist der Tausch gewollt: Connect verwirft die
-alte Kennung und ermittelt sie neu. Was sich nicht entscheiden lässt, ist
-unbekannt: gedruckt wird wie bisher. Die Druckverbindung trägt immer genau die
-Bytes der Kasse; alle Fragen gehen über eigene Verbindungen davor. Die
-Prüfungen kosten einen Bon höchstens 500 ms, bei einem Drucker, der schon
-einmal gültig auf `DLE EOT` geantwortet hat, höchstens 1,5 s (beides nur, wenn
-das Gerät schweigt; ein bereiter Drucker antwortet in Millisekunden). Ein
-Gerät, das nie gültig antwortet, wird danach 10 min nicht mehr gefragt.
-`printer_mismatch` gibt 1.5.0 nicht aus – ein Konflikt blockiert den Druck
-nie.
+**Nur bewiesene Modelle.** Regel des Inhabers: „es darf nicht kaputt gehen“
+geht vor Abdeckung. Alles, was vor einem Bon mit dem Drucker spricht – Papier
+und Deckel, `printer_not_ready`, die Kennungsprüfung – und der Statustakt
+laufen nur für Drucker, deren über `GS I 67` gelesenes Modell im Gerätetest
+bewiesen ist. Die Liste steht fest im Code (`bewieseneModelle` in
+`lib/src/printers/bewiesen.dart`, je Eintrag Gerät, Datum und was gemessen
+wurde) und ist leer, bis ein Modell am Gerät alles bestanden hat: Antwort auf
+`DLE EOT 2/4`, Schweigen mit offenem Deckel und ohne Papier, Freigabe der
+Verbindung nach dem Schließen, Schweigen nach einem langen Bon. Sie wächst nur
+mit einer neuen Version. Jeder andere Drucker – auch jeder ePOS-Drucker –
+druckt exakt wie bis 1.4.2: keine Abfrage-Verbindung und kein ARP vor dem Bon,
+kein Takt, zwei Druckversuche. Die Not-Aus-Schalter (unten) gelten zusätzlich.
 
-**Papier und Deckel.** Vor jedem Bon `DLE EOT 2` und `DLE EOT 4` (9100) bzw.
-die Statusbits eines leeren ePOS-Auftrags. Gezählt wird nur eine Antwort mit
-den festen Bits; blockiert wird nur bei Papierende (Rollensensor leer und
-Stopp wegen Papierende) oder offenem Deckel (`paper_out`, `cover_open`, kein
-Byte gesendet), „fast leer“ druckt. Ein Epson TM-T20III meldet beides nicht
-als Bits, sondern schweigt (Gerätetest): Hat ein Drucker schon einmal gültig
-auf `DLE EOT` geantwortet (`statusCapableAt` in der `config.json`), heißt
-nachgewiesenes Schweigen auf zwei Verbindungen nacheinander „nicht bereit“ –
-`printer_not_ready`, kein Byte gesendet. Nachgewiesen heißt: `DLE EOT` ging
-hinaus, das volle Antwortfenster (500 ms) verstrich bei offener Verbindung,
-und die Verbindung stand schnell (höchstens 200 ms). Zusätzlich muss feststehen,
-dass dort derselbe Drucker hängt (gleiche MAC oder Kennung in den letzten
-10 min bestätigt), und es darf kein Bon aus diesem Connect mehr drucken
-(mindestens 3 s nach dem letzten Byte, länger bei großen Bons). Alles andere
-ist unbekannt, und gedruckt wird wie bisher; ebenso bei einem Drucker, der nie
-geantwortet hat. Eine Neueinrichtung (`PUT`) setzt `statusCapableAt` zurück.
-Solange eine Kasse offen ist (gültiger Token in den letzten 2 min), fragt
-Connect jeden Drucker alle 60 s ab – ein Takt für alle Kassen, über die
-Warteschlange, nie neben einem Bon und nicht, solange ein Bon noch druckt.
+**Kennung.** Modell, Seriennummer und MAC ermittelt Connect beim Anlegen
+(`PUT`), nach einer Druckersuche und auf Zuruf (`POST /v1/printers/{id}/status`)
+– nie wegen eines Bons. Quellen: mDNS-TXT-Einträge der letzten Suche (Frist
+0,5 s), `GS I 67/68` über eine eigene, kurze Verbindung auf 9100 (nur an
+Geräte, die vorher gültig auf `DLE EOT` antworten) und die ARP-Tabelle (nur im
+selben Netz; eine MAC, die dort auch unter einer anderen Adresse steht –
+Repeater mit MAC-NAT –, wird nicht gespeichert). Nur ein über `GS I 67`
+gelesenes Modell (`modelSource: escpos`) kann ein bewiesenes sein.
 
-**Wiederfinden.** Scheitert die Verbindung zu einem Drucker vor dem ersten
-Byte, sucht Connect schnell (mit bekannter MAC nur in der ARP-Tabelle, sonst
-höchstens 4 s mDNS nach Seriennummer; höchstens einmal je Minute und Drucker)
-und druckt denselben Auftrag an der neuen Adresse; sonst später gründlich
-(Netzscan, höchstens einmal in 2 min, nie während einer Zahlung). Übernommen
-wird nur genau ein bestätigter Kandidat: mit Seriennummer dieselbe, über
-`GS I` gelesen; nur mit MAC dieselbe MAC unter genau einer Adresse und eine
-gültige Antwort des Geräts (`DLE EOT` bzw. ePOS-`<response>`) – ein offener
-Port allein beweist nichts. Unter der Adresse eines anderen eingerichteten
-Druckers zählt nur eine über `GS I` gelesene Seriennummer, und tragen zwei
-eingerichtete Drucker dieselbe Kennung, wird nichts übernommen. Ein Fund
-landet in `config.json`, Logzeile, `relocations` (die letzten 20, je Eintrag
-`kind`, `id` bzw. `tid`, `from`, `to`) und im Ereignis `printer.relocated`
-bzw. `terminal.relocated`. Die Kasse zeigt einen Adresswechsel nie.
+Vor dem Bon eines bewiesenen Modells vergleicht Connect die MAC (ohne Bytes an
+den Drucker); weicht sie ab oder fehlt sie, fragt es `GS I 68`. **Nur eine
+andere Seriennummer beweist einen anderen Drucker.** Dann sucht Connect
+schnell; ist der eigene Drucker woanders, druckt es dort. Sonst druckt es an
+die eingerichtete Adresse wie bisher und merkt `identity.state: conflict`;
+Papier und Deckel des Geräts, das den Bon dort bekommt, zählen. Antwortet dort
+dauerhaft dieselbe fremde Seriennummer (vor mindestens 3 Bons über mindestens
+eine Stunde) und findet die gründliche Suche den alten Drucker nirgends,
+übernimmt Connect die neue Kennung (Logzeile, `relocations` mit
+`kind: replaced`, `from`/`to` alte und neue Seriennummer) – die Kasse muss
+nichts tun. Richtet sie den Drucker unter derselben Adresse neu ein (`PUT`),
+verwirft Connect die alte Kennung sofort. Was sich nicht entscheiden lässt,
+ist unbekannt: gedruckt wird wie bisher. Die Druckverbindung trägt immer genau
+die Bytes der Kasse. Die Prüfungen kosten einen Bon höchstens 500 ms, bei
+einem Drucker, der schon einmal gültig auf `DLE EOT` geantwortet hat,
+höchstens 1,5 s (beides nur, wenn das Gerät schweigt). Ein Gerät, das nie
+gültig antwortet, wird danach 10 min nicht mehr gefragt. `printer_mismatch`
+gibt 1.5.0 nicht aus – ein Konflikt blockiert den Druck nie.
 
-Ein ausgeschalteter Drucker kostet nie länger als bis 1.4.2: kommt schon die
-Abfrage-Verbindung nicht zustande, zählt sie als erster Versuch – danach die
-schnelle Suche und ein Druckversuch. Lehnt der Drucker die Druckverbindung ab,
-obwohl er eben erreichbar war (Abfrage-Verbindung oder eigener Bon), gibt er
-nur die vorige noch nicht frei: Connect wartet 0,5 s und versucht dieselbe
-Adresse noch einmal, ohne zu suchen.
+**Papier und Deckel** (nur bewiesene Modelle). Vor jedem Bon `DLE EOT 2` und
+`DLE EOT 4`. Gezählt wird nur eine Antwort mit den festen Bits; blockiert wird
+nur bei Papierende (Rollensensor leer und Stopp wegen Papierende) oder offenem
+Deckel (`paper_out`, `cover_open`, kein Byte gesendet), „fast leer“ druckt.
+Ein Epson TM-T20III meldet beides nicht als Bits, sondern schweigt
+(Gerätetest). Hat ein Drucker schon einmal gültig auf `DLE EOT` geantwortet
+(`statusCapableAt` in der `config.json`), heißt Schweigen „nicht bereit“ –
+`printer_not_ready`, kein Byte gesendet – aber nur, wenn es nachgewiesen ist
+und schon **30 s am Stück** dauert: eine frühere Abfrage (Takt oder ein voriger
+Bon) hat es mindestens so lange vorher gesehen, und seitdem kam keine gültige
+Antwort. Ein Drucker, der gerade den Bon eines anderen Rechners druckt,
+schweigt ebenfalls, aber nie so lange; bis dahin wird gedruckt wie bis 1.4.2.
+Nachgewiesen heißt: `DLE EOT` ging hinaus, das volle Antwortfenster (500 ms)
+verstrich bei offener Verbindung, die Verbindung stand schnell (höchstens
+200 ms), dort hängt derselbe Drucker (gleiche MAC oder Kennung in den letzten
+10 min bestätigt), und kein Bon aus diesem Connect druckt mehr (mindestens 3 s
+nach dem letzten Byte, länger bei großen Bons). Eine Neueinrichtung (`PUT`)
+setzt `statusCapableAt` zurück. Solange eine Kasse offen ist (gültiger Token in
+den letzten 2 min), fragt Connect die bewiesenen Drucker alle 60 s ab – ein
+Takt für alle Kassen, über die Warteschlange, nie neben einem Bon und nicht,
+solange ein Bon noch druckt.
+
+**Langsame Freigabe.** Manche Drucker nehmen nur eine Verbindung zugleich an
+und geben sie erst nach dem Schließen frei. Lehnt ein bewiesenes Modell die
+Druckverbindung ab, obwohl es eben erreichbar war (Abfrage-Verbindung, Takt
+oder eigener Bon in den letzten 3 s), versucht Connect dieselbe Adresse alle
+0,25 s noch einmal, höchstens 3 s lang, ohne zu suchen – es ging nachweislich
+nichts hinaus. Ab da gilt der Drucker als „gibt langsam frei“: keine Abfrage
+mehr vor seinen Bons und kein Takt (bis zum Neustart von Connect).
+
+**Wiederfinden.** Übernommen wird eine neue Adresse nur mit derselben, über
+`GS I 68` gelesenen Seriennummer; die MAC zeigt nur, wo zuerst gefragt wird,
+ein offener Port oder eine Antwort auf `DLE EOT` beweisen nichts. Drucker ohne
+lesbare Seriennummer und ePOS-Drucker zieht Connect nie selbst um (wie 1.4.2).
+Unter der Adresse eines anderen eingerichteten Druckers fragt die gründliche
+Suche über dessen Warteschlange; tragen zwei eingerichtete Drucker dieselbe
+Seriennummer, wird nichts übernommen. Gesucht wird gründlich im Hintergrund
+(Netzscan, `GS I 68` an höchstens 32 Adressen, höchstens einmal in 2 min, nie
+während einer Zahlung), nachdem ein Druck vor dem ersten Byte scheiterte. Nur
+bei einem bewiesenen Modell, dessen Abfrage schon keine Verbindung bekam,
+sucht Connect auch im Auftrag: die Adressen, unter denen die ARP-Tabelle die
+MAC nennt (ohne MAC gar nicht; höchstens 2 s, einmal je Minute und Drucker).
+Ein Fund landet in `config.json`, Logzeile, `relocations` (die letzten 20, je
+Eintrag `kind`, `id` bzw. `tid`, `from`, `to`) und im Ereignis
+`printer.relocated` bzw. `terminal.relocated`. Die Kasse zeigt einen
+Adresswechsel nie.
+
+Ein ausgeschalteter Drucker kostet nie länger als bis 1.4.2 (zwei
+Verbindungsversuche mit je 5 s): ein nicht bewiesenes Modell nimmt genau den
+Weg von 1.4.2; bei einem bewiesenen zählt die Abfrage ohne Verbindung
+(höchstens 1,5 s) als erster Versuch, es folgen die Suche über die ARP-Tabelle
+(meist Millisekunden, höchstens 2 s) und ein Druckversuch.
 
 **Sperren.** Druckaufträge und lange Terminal-Aufrufe zählen als laufende
 Vorgänge, für alle Kassen und Tabs zusammen. Solange einer läuft, lehnt

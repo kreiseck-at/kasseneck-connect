@@ -7,44 +7,53 @@ gemeldet.
 
 ## Unveröffentlicht
 
-Grundsatz: nie schlechter als 1.4.2. Jede Neuerung lässt sich in der
-`config.json` einzeln abschalten (`disabledFeatures`), abgeschaltet verhält
-sich Connect dort wie 1.4.2. Neue Felder, Routen und Codes sind additiv; die
-Kasse entscheidet an `features`.
+Grundsatz: nie schlechter als 1.4.2 – „es darf nicht kaputt gehen“ geht vor
+Abdeckung. Jede Neuerung lässt sich in der `config.json` einzeln abschalten
+(`disabledFeatures`), abgeschaltet verhält sich Connect dort wie 1.4.2. Neue
+Felder, Routen und Codes sind additiv; die Kasse entscheidet an `features`.
 
+- **Nur bewiesene Modelle:** Papier und Deckel, `printer_not_ready`, die
+  Kennungsprüfung vor dem Bon und der Statustakt laufen nur für Drucker, deren
+  über `GS I 67` gelesenes Modell im Gerätetest bewiesen ist
+  (`bewieseneModelle`, bis zum Gerätetest leer). Jeder andere Drucker druckt
+  exakt wie bis 1.4.2.
 - **Installationskennung:** `installationId` (UUID v4) in `GET /v1/status`,
   auch ohne Token; zusätzlich in `installation-id`, damit ein Zurückstufen sie
   nicht verliert. Der Start scheitert nie an ihr.
-- **Gerätekennung der Drucker** aus mDNS-TXT, `GS I 67/68` und ARP; vor jedem
-  Bon die MAC, bei Abweichung die Seriennummer. Nur eine andere Seriennummer
-  beweist einen anderen Drucker; der Druck wird dadurch nie blockiert. Eine
-  Neueinrichtung (`PUT`) unter derselben Adresse löst einen Konflikt auf.
-  Eine MAC, die auch unter einer anderen Adresse steht (Repeater mit MAC-NAT),
-  gilt nicht als Kennung. `POST /v1/printers/discover` nennt je Fund `model`
-  und `serial` (TXT-Abfrage mit eigener Frist von 0,5 s).
-- **Papier und Deckel** vor jedem Bon (`DLE EOT 2/4`, ePOS-Statusbits):
-  `paper_out` und `cover_open` statt eines stillen „gedruckt“, kein Byte
-  gesendet; „fast leer“ druckt. Ein Drucker, der schon einmal gültig auf
-  `DLE EOT` geantwortet hat (`statusCapableAt`) und jetzt schweigt, ist nicht
-  bereit (Epson TM-T20III mit offenem Deckel oder ohne Papier):
-  `printer_not_ready`, kein Byte gesendet – nur bei nachgewiesenem Schweigen
-  (volles Antwortfenster, schneller Verbindungsaufbau, derselbe Drucker, kein
-  eigener Bon druckt mehr); sonst wie bisher. Statustakt alle 60 s bei offener
-  Kasse, `POST /v1/printers/{id}/status`, Felder `paper`, `cover`,
+- **Gerätekennung der Drucker** aus mDNS-TXT (Frist 0,5 s), `GS I 67/68` und
+  ARP – beim Anlegen, nach einer Druckersuche und auf Zuruf, nie wegen eines
+  Bons. Nur eine andere Seriennummer beweist einen anderen Drucker; der Druck
+  wird dadurch nie blockiert. Steht dort dauerhaft ein anderer und ist der alte
+  nirgends zu finden, übernimmt Connect die neue Kennung (`relocations` mit
+  `kind: replaced`). `POST /v1/printers/discover` nennt je Fund `model` und
+  `serial`.
+- **Papier und Deckel** vor jedem Bon (`DLE EOT 2/4`): `paper_out` und
+  `cover_open` statt eines stillen „gedruckt“, kein Byte gesendet; „fast
+  leer“ druckt. Ein Drucker, der schon einmal gültig auf `DLE EOT`
+  geantwortet hat (`statusCapableAt`) und jetzt nachweislich 30 s am Stück
+  schweigt, ist nicht bereit (Epson TM-T20III mit offenem Deckel oder ohne
+  Papier): `printer_not_ready`, kein Byte gesendet; kürzeres Schweigen (etwa
+  während eines fremden Bons) druckt wie bisher. Statustakt alle 60 s bei
+  offener Kasse, `POST /v1/printers/{id}/status`, Felder `paper`, `cover`,
   `readiness`, `statusAt`.
-- **Wiederfinden:** Drucker unter neuer Adresse (schnell im Auftrag, gründlich
-  im Hintergrund; nur MAC zählt nur mit Antwort des Geräts), Terminal per TID;
-  Terminal-Aufrufe ohne Verbindung laufen genau einmal an der bestätigten
-  Adresse derselben TID (Geld bei älterer Bestätigung erst nach einer
-  Diagnose dort). `endpoint` in Terminal-Antworten, `locate` für Drucker und
-  Terminal, `device_not_found`. Ein ausgeschalteter Drucker kostet nie länger
-  als bis 1.4.2.
+- **Langsame Freigabe:** lehnt ein Drucker die Druckverbindung direkt nach der
+  eigenen ab, versucht Connect dieselbe Adresse bis zu 3 s lang erneut und
+  prüft danach nicht mehr vor seinen Bons.
+- **Wiederfinden:** Drucker unter neuer Adresse nur mit derselben über
+  `GS I 68` gelesenen Seriennummer (die MAC ist nur ein Hinweis), Terminal per
+  TID; Terminal-Aufrufe ohne Verbindung laufen genau einmal an der
+  bestätigten Adresse derselben TID (Geld bei älterer Bestätigung erst nach
+  einer Diagnose dort). `endpoint` in Terminal-Antworten, `locate` für Drucker
+  und Terminal, `device_not_found`. Ein ausgeschalteter Drucker kostet nie
+  länger als bis 1.4.2. Die Terminal-Suche im Hintergrund läuft nur bei
+  offener Kasse, im Abstand 5, 15, dann 60 min.
 - **TID ohne führende Nullen:** Connect schickt die TID so, wie das Terminal
   sie annimmt (`012345678` → `12345678`; HPS 1.14.4 lehnt die Form mit Null
   ab). Die Seriennummer des Terminals (`sn`) wird zusätzlich gemerkt.
 - **terminal_busy:** ein zweiter langer Terminal-Aufruf, Diagnose, Test oder
   Suche während einer Zahlung bekommt sofort `terminal_busy` (mit
-  `terminalHttpStatus: 409`).
+  `terminalHttpStatus: 409`); eine Suche, die eine Zahlung unterbricht, meldet
+  `incomplete: true`.
 - **Sperren bei laufenden Vorgängen:** `update_device_busy`, Warten vor dem
   Installer (Phase `waiting`), `betrieb.lock` samt Warten im postinstall,
   `POST /v1/restart` mit `restart_busy`, Schlafsperre nur während Druck und

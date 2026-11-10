@@ -280,6 +280,107 @@ void main() {
       expect(hps.an('/api/transaction/payment'), hasLength(1));
     });
 
+    test('Umleitung auf eine ebenfalls tote Adresse: endpoint nennt die '
+        'ursprüngliche, relocated: false', () async {
+      await store.mutate(
+        (c) => c.copyWith(
+          terminal: TerminalConfig(
+            host: zweiteToteAdresse,
+            port: 8080,
+            tid: _tid,
+            confirmedAt: jetzt.subtract(const Duration(minutes: 5)).toUtc(),
+          ),
+        ),
+      );
+      final antwort = await zahle(8080, host: toteAdresse);
+      expect(antwort.code, errorTerminalUnreachable);
+      expect(antwort.json['endpoint'], <String, Object?>{
+        'host': toteAdresse,
+        'port': 8080,
+        'relocated': false,
+      });
+      expect(
+        (antwort.json['error']! as Map<String, Object?>)['message'],
+        contains(toteAdresse),
+      );
+    });
+
+    group('Geld an eine Ersatzadresse', () {
+      test('Bestätigung älter als 15 min: erst die Diagnose mit der TID dort, '
+          'dann die Zahlung', () async {
+        await merke(alter: umleitungOhneDiagnose + const Duration(minutes: 1));
+        final antwort = await zahle(8080, host: toteAdresse);
+        expect(antwort.ok, isTrue, reason: antwort.text);
+        expect(hps.aufrufe.map((a) => a.pfad), <String>[
+          '/api/terminals/$_tid/diagnosis',
+          '/api/transaction/payment',
+        ]);
+        expect(
+          (antwort.json['endpoint']! as Map<String, Object?>)['relocated'],
+          isTrue,
+        );
+      });
+
+      test('die Ersatzadresse bestätigt die TID nicht: keine Umleitung, kein '
+          'Geld', () async {
+        await merke(alter: const Duration(hours: 1));
+        hps.tid = '87654321'; // dort steht inzwischen ein anderes Terminal
+        final antwort = await zahle(8080, host: toteAdresse);
+        expect(antwort.code, errorTerminalUnreachable);
+        expect(hps.an('/api/transaction/payment'), isEmpty);
+        expect(hps.an('/api/terminals/'), hasLength(1));
+      });
+
+      test('frisch bestätigt: ohne Diagnose', () async {
+        await merke(alter: const Duration(minutes: 5));
+        expect((await zahle(8080, host: toteAdresse)).ok, isTrue);
+        expect(hps.an('/api/terminals/'), isEmpty);
+      });
+
+      test(
+        'Status und Abbruch: nie eine Diagnose vorher (kein Geld)',
+        () async {
+          await merke(alter: const Duration(hours: 1));
+          final status = await anAgent(
+            server.port,
+            'POST',
+            '/v1/terminal/status',
+            token: token,
+            rumpf: <String, Object?>{
+              'host': toteAdresse,
+              'port': 8080,
+              'tid': _tid,
+              'transactionId': '42',
+            },
+          );
+          expect(status.ok, isTrue, reason: status.text);
+          expect(hps.an('/api/terminals/'), isEmpty);
+        },
+      );
+    });
+
+    test('Prüffehler und terminal_busy tragen kein endpoint: es ging nichts '
+        'hinaus', () async {
+      final falsch = await anAgent(
+        server.port,
+        'POST',
+        '/v1/terminal/payment',
+        token: token,
+        rumpf: <String, Object?>{'host': '127.0.0.1', 'port': hps.port},
+      );
+      expect(falsch.code, errorBadRequest);
+      expect(falsch.json.containsKey('endpoint'), isFalse);
+      belegung.belegen(
+        tid: _tid,
+        host: '127.0.0.1',
+        port: hps.port,
+        art: LangerAufruf.zahlung,
+      );
+      final besetzt = await zahle(hps.port);
+      expect(besetzt.code, errorTerminalBusy);
+      expect(besetzt.json.containsKey('endpoint'), isFalse);
+    });
+
     test(
       'ohne Umleitung trägt die Antwort endpoint mit relocated: false',
       () async {

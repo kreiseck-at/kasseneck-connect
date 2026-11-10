@@ -17,6 +17,9 @@ class _Mitschrift implements BetriebsBeobachter {
   void belegt() => ereignisse.add('belegt');
 
   @override
+  void weiterhin() => ereignisse.add('weiterhin');
+
+  @override
   void frei() => ereignisse.add('frei');
 }
 
@@ -34,7 +37,7 @@ void main() {
       expect(v.laufen, isTrue);
       v.beende(b);
       expect(v.laufen, isFalse);
-      expect(mitschrift.ereignisse, <String>['belegt', 'frei']);
+      expect(mitschrift.ereignisse, <String>['belegt', 'weiterhin', 'frei']);
       v.stop();
     });
 
@@ -100,6 +103,58 @@ void main() {
       for (var i = 0; i < 20; i++) {
         v.beende(v.beginne(VorgangsArt.druck));
       }
+      await lock.erledigt;
+      expect(lock.datei.existsSync(), isFalse);
+      v.stop();
+    });
+
+    test('überlappende Vorgänge, länger als sechs Minuten zusammen: jeder '
+        'neue frischt die Datei auf', () async {
+      // Zahlung A ab 9:00, Druck B ab 9:05, A endet 9:05:30, B läuft bis
+      // 9:09. Ohne Auffrischen hielte das postinstall die Datei ab 9:06 für
+      // verwaist und riss B ab.
+      var jetzt = DateTime(2026, 11, 10, 9);
+      final lock = BetriebsLock(store: store, clock: () => jetzt);
+      final v = LaufendeVorgaenge(
+        clock: () => jetzt,
+        beobachter: <BetriebsBeobachter>[lock],
+      );
+      final a = v.beginne(VorgangsArt.terminal);
+      await lock.erledigt;
+      // Die Datei altert, als liefe A schon fünf Minuten (das postinstall
+      // misst am Änderungszeitpunkt).
+      final vorFuenf = DateTime.now().subtract(const Duration(minutes: 5));
+      lock.datei.setLastModifiedSync(vorFuenf);
+
+      jetzt = jetzt.add(const Duration(minutes: 5));
+      final b = v.beginne(VorgangsArt.druck);
+      await lock.erledigt;
+      final geaendert = lock.datei.lastModifiedSync();
+      expect(geaendert.isAfter(vorFuenf), isTrue);
+      expect(betriebLockIstFrisch(geaendert, DateTime.now()), isTrue);
+      expect(
+        betriebLockIstFrisch(
+          geaendert,
+          DateTime.now().add(const Duration(minutes: 2)),
+        ),
+        isTrue,
+        reason: 'um 9:07 noch frisch – ohne Auffrischen nicht mehr',
+      );
+      final inhalt =
+          jsonDecode(lock.datei.readAsStringSync()) as Map<String, Object?>;
+      expect(
+        inhalt['seit'],
+        DateTime(2026, 11, 10, 9).toUtc().toIso8601String(),
+      );
+      expect(inhalt['stand'], jetzt.toUtc().toIso8601String());
+
+      jetzt = jetzt.add(const Duration(seconds: 30));
+      v.beende(a);
+      jetzt = jetzt.add(const Duration(minutes: 1));
+      expect(v.laufen, isTrue, reason: 'B läuft um 9:06:30 noch');
+      await lock.erledigt;
+      expect(lock.datei.existsSync(), isTrue);
+      v.beende(b);
       await lock.erledigt;
       expect(lock.datei.existsSync(), isFalse);
       v.stop();
@@ -278,6 +333,71 @@ void main() {
       },
     );
 
+    test('macOS: ein weiterer Vorgang nach mehr als einer Minute erneuert '
+        'caffeinate (neues zuerst, dann das alte beenden)', () async {
+      var jetzt = DateTime(2026, 11, 10, 9);
+      final s = Schlafsperre(
+        store: store,
+        betriebssystem: 'macos',
+        start: prozesse.starter,
+        eigenePid: 4711,
+        clock: () => jetzt,
+      );
+      final v = LaufendeVorgaenge(
+        clock: () => jetzt,
+        beobachter: <BetriebsBeobachter>[s],
+      );
+      final a = v.beginne(VorgangsArt.terminal);
+      await s.erledigt;
+      // Binnen einer Minute: kein neuer Prozess.
+      jetzt = jetzt.add(const Duration(seconds: 30));
+      final b = v.beginne(VorgangsArt.druck);
+      await s.erledigt;
+      expect(prozesse.calls, hasLength(1));
+      // Fünf Minuten nach dem Start: neues caffeinate mit voller Frist.
+      jetzt = jetzt.add(const Duration(minutes: 5));
+      final c = v.beginne(VorgangsArt.druck);
+      await s.erledigt;
+      expect(prozesse.calls, hasLength(2));
+      expect(prozesse.killed, hasLength(1));
+      expect(s.aktiv, isTrue);
+      v
+        ..beende(a)
+        ..beende(b)
+        ..beende(c);
+      await s.erledigt;
+      expect(prozesse.killed, hasLength(2));
+      expect(s.aktiv, isFalse);
+      v.stop();
+    });
+
+    test('macOS: ist caffeinate von selbst abgelaufen, startet der nächste '
+        'Vorgang ein neues', () async {
+      final ende = Completer<ProcessResult>();
+      prozesse.antwort = (programm, _) => programm == 'caffeinate'
+          ? ende.future
+          : Future<ProcessResult?>.value();
+      final s = sperre('macos');
+      final v = LaufendeVorgaenge(beobachter: <BetriebsBeobachter>[s]);
+      final a = v.beginne(VorgangsArt.terminal);
+      await s.erledigt;
+      ende.complete(ProcessResult(1, 0, '', '')); // -t abgelaufen
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(s.aktiv, isFalse);
+      prozesse.antwort = (programm, _) => programm == 'caffeinate'
+          ? Completer<ProcessResult>().future
+          : Future<ProcessResult?>.value();
+      final b = v.beginne(VorgangsArt.druck);
+      await s.erledigt;
+      expect(prozesse.calls, hasLength(2));
+      expect(s.aktiv, isTrue);
+      v
+        ..beende(a)
+        ..beende(b);
+      await s.erledigt;
+      v.stop();
+    });
+
     test('macOS mit echter Frist: -t 360', () async {
       final s = Schlafsperre(
         store: store,
@@ -339,6 +459,21 @@ void main() {
       await s.erledigt;
       await Future<void>.delayed(const Duration(milliseconds: 300));
       expect(s.aktiv, isFalse, reason: 'Höchstdauer');
+    });
+
+    test('Windows: ein weiterer Vorgang verlängert die Sperre', () async {
+      var aufrufe = 0;
+      final s = sperre('windows', windows: () => aufrufe++)..belegt();
+      await s.erledigt;
+      await Future<void>.delayed(const Duration(milliseconds: 120));
+      s.weiterhin();
+      await s.erledigt;
+      // Ohne Verlängerung endete sie 200 ms nach dem Beginn.
+      await Future<void>.delayed(const Duration(milliseconds: 120));
+      expect(s.aktiv, isTrue);
+      s.frei();
+      await s.erledigt;
+      expect(aufrufe, greaterThan(0));
     });
   });
 }

@@ -7,6 +7,11 @@ import 'dart:io';
 /// sofort wieder belegen, dann spräche der Test mit einem fremden Server.
 const String toteAdresse = '192.168.0.99';
 
+/// Eine zweite solche Adresse (etwa eine ebenfalls tote Ersatzadresse).
+const String zweiteToteAdresse = '192.168.0.98';
+
+bool _tot(String host) => host == toteAdresse || host == zweiteToteAdresse;
+
 /// Die Ausnahme eines abgelehnten Verbindungsaufbaus.
 SocketException abgelehnt(String host, int port) => SocketException(
   'Connection refused',
@@ -15,9 +20,10 @@ SocketException abgelehnt(String host, int port) => SocketException(
   port: port,
 );
 
-/// Verbindungsaufbau wie `Socket.connect`, aber [toteAdresse] lehnt ab.
+/// Verbindungsaufbau wie `Socket.connect`, aber [toteAdresse] und
+/// [zweiteToteAdresse] lehnen ab.
 Future<Socket> verbindenOhneTote(String host, int port, {Duration? timeout}) =>
-    host == toteAdresse
+    _tot(host)
     ? Future<Socket>.error(abgelehnt(host, port))
     : Socket.connect(host, port, timeout: timeout);
 
@@ -26,6 +32,6 @@ Future<ConnectionTask<Socket>> httpOhneTote(
   Uri uri,
   String? proxyHost,
   int? proxyPort,
-) => uri.host == toteAdresse
+) => _tot(uri.host)
     ? Future<ConnectionTask<Socket>>.error(abgelehnt(uri.host, uri.port))
     : Socket.startConnect(uri.host, uri.port);

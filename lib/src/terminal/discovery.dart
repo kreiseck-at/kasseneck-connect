@@ -10,6 +10,7 @@ import '../printers/discovery.dart'
         scanSubnet,
         subnetHosts,
         subnetOf;
+import 'belegung.dart';
 import 'hps.dart';
 
 /// Zeitbudget der ganzen Terminal-Suche (alle Netze zusammen).
@@ -68,9 +69,14 @@ class TerminalDiscoveryResult {
 /// auf (gleiches Verfahren wie die Druckersuche auf 9100), dann fragt
 /// `GET /api/terminals` nach — nur wer darauf mit einer Terminal-Liste
 /// antwortet, ist ein Treffer.
+///
+/// Mit [belegung] meldet sich jede Probe als kurzer Aufruf an (eine Zahlung,
+/// die beginnt, wartet sie ab), und beginnt eine Zahlung, fragt die Suche
+/// kein weiteres Gerät mehr – die Treffer bis dahin bleiben.
 Future<TerminalDiscoveryResult> discoverTerminals({
   required HpsBridge bridge,
   AgentLog? log,
+  TerminalBelegung? belegung,
   Future<List<LocalInterface>> Function() interfaces = listLocalIpv4Interfaces,
   // Nur für Tests: die echte Suche klopft immer den HPS-Port 8080 ab.
   int port = hpsDefaultPort,
@@ -103,7 +109,11 @@ Future<TerminalDiscoveryResult> discoverTerminals({
       budget: left,
     );
     for (final kandidat in offen) {
-      if (await _istHps(bridge, kandidat.host, port)) {
+      if (belegung?.irgendeins ?? false) {
+        log?.info('Terminal-Suche abgebrochen: ein Terminal-Aufruf beginnt.');
+        return TerminalDiscoveryResult(found: treffer, scanned: report);
+      }
+      if (await _istHps(bridge, kandidat.host, port, belegung)) {
         treffer.add(
           DiscoveredTerminal(
             host: kandidat.host,
@@ -126,7 +136,17 @@ Future<TerminalDiscoveryResult> discoverTerminals({
 /// Ist der Kandidat ein HPS? Die TID-lose Probe entscheidet: das echte
 /// Terminal antwortet mit HTTP 200 und `responseCode` („Invalid TID“) —
 /// fremde 8080-Dienste antworten anders oder gar nicht.
-Future<bool> _istHps(HpsBridge bridge, String host, int port) async {
+Future<bool> _istHps(
+  HpsBridge bridge,
+  String host,
+  int port,
+  TerminalBelegung? belegung,
+) async {
+  KurzerAufruf? kurz;
+  if (belegung != null) {
+    kurz = belegung.kurzBeginnen(tid: null, host: host, port: port);
+    if (kurz == null) return false;
+  }
   try {
     final antwort = await bridge
         .probe(host: host, port: port)
@@ -136,5 +156,7 @@ Future<bool> _istHps(HpsBridge bridge, String host, int port) async {
     return false;
   } on TimeoutException {
     return false;
+  } finally {
+    if (kurz != null) belegung!.kurzBeenden(kurz);
   }
 }

@@ -443,6 +443,27 @@ void main() {
       expect(ergebnis.found.single.tids, isEmpty);
     });
 
+    test('Terminal-Suche während einer Zahlung: keine Probe', () async {
+      final belegung = TerminalBelegung()
+        ..belegen(
+          tid: '12345678',
+          host: '192.168.0.70',
+          port: 8080,
+          art: LangerAufruf.zahlung,
+        );
+      final ergebnis = await discoverTerminals(
+        bridge: HpsBridge(log: log),
+        log: log,
+        belegung: belegung,
+        port: hps.port,
+        interfaces: () async => <LocalInterface>[
+          LocalInterface(name: 'lo-test', address: '127.0.0.2'),
+        ],
+      );
+      expect(ergebnis.found, isEmpty);
+      expect(hps.aufrufe, isEmpty, reason: 'nie neben einer Zahlung');
+    });
+
     test('ein fremder Dienst auf dem HPS-Port ist kein Treffer', () async {
       // Der Port ist offen, aber die Probe antwortet nicht im HPS-Format —
       // Router-UIs und Kameras lauschen auch auf 8080.
@@ -1189,6 +1210,64 @@ void main() {
       final linux = await zahle(bruecke('linux'));
       expect(linux?.code, errorTerminalUnreachable);
       expect(linux?.message, isNot(contains('Lokales Netzwerk')));
+    });
+  });
+
+  group('Gesamtfrist je Aufruf', () {
+    late ServerSocket langsam;
+    late Directory temp;
+
+    setUp(() async {
+      temp = Directory.systemTemp.createTempSync('connect-frist-');
+      // Antwortet in zwei Etappen: Kopf nach 700 ms, Rumpf nach weiteren
+      // 700 ms. Jede für sich bliebe unter der Frist von 1 s.
+      langsam = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+      langsam.listen((socket) {
+        socket.done.ignore();
+        final gelesen = <int>[];
+        socket.listen((daten) async {
+          gelesen.addAll(daten);
+          if (!utf8
+              .decode(gelesen, allowMalformed: true)
+              .contains('\r\n\r\n')) {
+            return;
+          }
+          gelesen.clear();
+          const rumpf = '{"responseCode":"0"}';
+          await Future<void>.delayed(const Duration(milliseconds: 700));
+          try {
+            socket.add(
+              utf8.encode(
+                'HTTP/1.1 200 OK\r\n'
+                'Content-Type: application/json\r\n'
+                'Content-Length: ${rumpf.length}\r\n\r\n',
+              ),
+            );
+            await Future<void>.delayed(const Duration(milliseconds: 700));
+            socket.add(utf8.encode(rumpf));
+            await socket.close();
+          } on Object {
+            // Der Absender hat schon aufgegeben.
+          }
+        }, onError: (Object _) {});
+      });
+    });
+
+    tearDown(() async {
+      await langsam.close();
+      temp.deleteSync(recursive: true);
+    });
+
+    test('Kopf und Rumpf teilen sich eine Frist', () async {
+      final bruecke = HpsBridge(
+        log: AgentLog(Directory(p.join(temp.path, 'logs'))),
+        kurzTimeout: const Duration(seconds: 1),
+      );
+      final fehler = await bruecke
+          .diagnosis(host: '127.0.0.1', port: langsam.port, tid: '12345678')
+          .then<HpsWegFehler?>((_) => null)
+          .onError<HpsWegFehler>((e, _) => e);
+      expect(fehler?.code, errorTerminalTimeout);
     });
   });
 }

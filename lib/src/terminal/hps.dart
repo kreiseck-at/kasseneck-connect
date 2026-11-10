@@ -176,12 +176,22 @@ class HpsBridge {
 
   /// `GET /api/terminals/{tid}/diagnosis` — Diagnose ohne Zahlung; das
   /// Terminal prüft dabei auch die Verbindung zum Autorisierungs-Host.
+  ///
+  /// [frist] ersetzt die Frist der kurzen Aufrufe (Diagnose vor einer
+  /// umgeleiteten Zahlung: kurz, damit sie nie lange aufhält).
   Future<Object?> diagnosis({
     required String host,
     required int port,
     required String tid,
+    Duration? frist,
   }) {
-    return _call('GET', host, port, '/api/terminals/$tid/diagnosis');
+    return _call(
+      'GET',
+      host,
+      port,
+      '/api/terminals/$tid/diagnosis',
+      timeout: frist,
+    );
   }
 
   /// `POST /api/transaction/payment` — Verkauf. Blockiert bis zum Ende des
@@ -333,7 +343,16 @@ class HpsBridge {
     Map<String, String>? query,
     Duration? timeout,
   }) async {
+    // Eine Frist für den ganzen Aufruf – Aufbau, Kopf und Rumpf zusammen.
+    // Je Abschnitt eine eigene hieße bei der Zahlung bis zu zweimal vier
+    // Minuten, und die Belegung des Terminals liefe vorher ab.
     final zeitlimit = timeout ?? kurzTimeout;
+    final uhr = Stopwatch()..start();
+    Duration rest() {
+      final r = zeitlimit - uhr.elapsed;
+      return r.isNegative ? Duration.zero : r;
+    }
+
     final aufbauLimit = verbindungTimeout < zeitlimit
         ? verbindungTimeout
         : zeitlimit;
@@ -365,11 +384,11 @@ class HpsBridge {
         request.contentLength = bytes.length;
         request.add(bytes);
       }
-      final response = await request.close().timeout(zeitlimit);
+      final response = await request.close().timeout(rest());
       final text = await response
           .transform(utf8.decoder)
           .join()
-          .timeout(zeitlimit);
+          .timeout(rest());
 
       Object? daten;
       try {

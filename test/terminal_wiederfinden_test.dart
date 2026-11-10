@@ -88,8 +88,9 @@ void main() {
       },
     );
 
-    test('dreimal nicht erreichbar: einmal Suche anstoßen; während einer '
-        'Zahlung keine Berührung', () async {
+    test('dreimal nicht erreichbar: Suche anstoßen (danach bei jeder weiteren '
+        'Fehlberührung, gedrosselt von der Suche); während einer Zahlung '
+        'keine Berührung', () async {
       var erreichbar = false;
       var beruehrt = 0;
       var suchen = 0;
@@ -111,7 +112,9 @@ void main() {
         ),
       );
       await warteBis(() async => beruehrt >= 6, grund: 'sechs Berührungen');
-      expect(suchen, 1);
+      // Ab der dritten Fehlberührung jede: die erste nach drei, dann weiter.
+      expect(suchen, greaterThanOrEqualTo(2));
+      expect(suchen, lessThanOrEqualTo(beruehrt - 2));
       expect(w.erreichbar, isFalse);
       expect(w.geprueftAm, isNotNull);
 
@@ -182,6 +185,8 @@ void main() {
     });
 
     tearDown(() async {
+      // Eine Suche, die noch läuft, fragt sonst die Ports des nächsten Tests.
+      await finder.beenden();
       await richtig.stop();
       await fremd.stop();
       await events.close();
@@ -258,6 +263,147 @@ void main() {
       jetzt = jetzt.add(terminalSucheAbstand);
       finder.imHintergrund();
       await warteBis(() async => finder.suchen == 2);
+    });
+
+    test('über Nacht aus, morgens unter neuer Adresse: die Suche wiederholt '
+        'sich gedrosselt und findet es', () async {
+      funde = <DiscoveredTerminal>[]; // nachts: kein Terminal im Netz
+      var amNeuenOrt = false;
+      final w = TerminalWarmhalter(
+        store: store,
+        log: log,
+        intervall: const Duration(milliseconds: 10),
+        belegung: belegung,
+        clock: () => jetzt,
+        probe: (host, port, timeout) async =>
+            amNeuenOrt && port == richtig.port,
+      );
+      // Wie im Agenten: der Wiederfinder meldet dem Wachhalter die neue
+      // Adresse.
+      final finder = TerminalWiederfinder(
+        store: store,
+        bridge: HpsBridge(log: log),
+        belegung: belegung,
+        warmhalter: w,
+        log: log,
+        clock: () => jetzt,
+        suche: () async {
+          sucheAufrufe++;
+          return TerminalDiscoveryResult(found: funde, scanned: const []);
+        },
+      );
+      addTearDown(() async {
+        w.stop();
+        await finder.beenden();
+        await w.erledigt;
+      });
+      w
+        ..beiDauerndUnerreichbar = finder.imHintergrund
+        ..startAus(await store.load());
+
+      await warteBis(() async => finder.suchen == 1, grund: 'erste Suche');
+      // Weitere Fehlberührungen in derselben Viertelstunde: keine Suche.
+      final beruehrt = w.beruehrungen;
+      await warteBis(() async => w.beruehrungen >= beruehrt + 5);
+      expect(finder.suchen, 1);
+
+      // Fünf Minuten später sucht es wieder – noch immer nichts.
+      jetzt = jetzt.add(terminalSucheAbstand);
+      await warteBis(() async => finder.suchen == 2, grund: 'zweite Suche');
+
+      // Morgens: das Terminal ist unter neuer Adresse zurück.
+      funde = <DiscoveredTerminal>[
+        DiscoveredTerminal(
+          host: '127.0.0.1',
+          port: richtig.port,
+          tids: const [],
+        ),
+      ];
+      amNeuenOrt = true;
+      jetzt = jetzt.add(terminalSucheAbstand);
+      await warteBis(
+        () async => (await store.load()).terminal?.port == richtig.port,
+        grund: 'neue Adresse',
+      );
+      await warteBis(() async => w.erreichbar ?? false, grund: 'erreichbar');
+    });
+
+    test('die Sperrzeit gilt nur nach einer echten Suche', () async {
+      final beleg = belegung.belegen(
+        tid: '99999999',
+        host: '192.168.0.70',
+        port: 8080,
+        art: LangerAufruf.zahlung,
+      )!;
+      finder.imHintergrund();
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      expect(finder.suchen, 0, reason: 'belegt: keine Suche');
+      belegung.freigeben(beleg);
+      finder.imHintergrund();
+      await warteBis(() async => finder.suchen == 1, grund: 'gleich danach');
+    });
+
+    test('die Diagnose der Suche ist ein kurzer Aufruf: eine Zahlung wartet '
+        'sie ab, nie zwei Aufrufe zugleich am Terminal', () async {
+      funde = <DiscoveredTerminal>[
+        DiscoveredTerminal(
+          host: '127.0.0.1',
+          port: richtig.port,
+          tids: const [],
+        ),
+      ];
+      richtig.verzoegerung['/api/terminals/'] = const Duration(
+        milliseconds: 300,
+      );
+      final ctx = AgentContext(
+        store: store,
+        log: log,
+        startedAt: DateTime.now(),
+        environment: const <String, String>{},
+        pairing: Pairing(
+          store: store,
+          log: log,
+          runProcess: FakeProcessRunner().runner,
+        ),
+      );
+      final server = await shelf_io.serve(
+        buildHandler(
+          ctx,
+          extraRoutes: <RouteRegistrar>[
+            terminalRoutes(belegung: belegung, wiederfinder: finder),
+          ],
+        ),
+        InternetAddress.loopbackIPv4,
+        0,
+      );
+      addTearDown(() => server.close(force: true));
+      ctx.port = server.port;
+      final token = await ctx.pairing.issueToken();
+
+      final suche = finder.suche(_tid);
+      await warteBis(
+        () async => richtig.an('/api/terminals/').isNotEmpty,
+        grund: 'Diagnose der Suche unterwegs',
+      );
+      final zahlung = await anAgent(
+        server.port,
+        'POST',
+        '/v1/terminal/payment',
+        token: token,
+        rumpf: <String, Object?>{
+          'host': '127.0.0.1',
+          'port': richtig.port,
+          'tid': _tid,
+          'amountCents': 100,
+          'transactionId': '1',
+        },
+      );
+      await suche;
+      expect(zahlung.ok, isTrue, reason: zahlung.text);
+      final diagnose = richtig.an('/api/terminals/').single;
+      final geld = richtig.an('/api/transaction/payment').single;
+      expect(geld.beginn.isBefore(diagnose.ende!), isFalse);
+      expect(richtig.hoechstGleichzeitig, 1);
     });
 
     test('Route locate und das Statusfeld terminal', () async {

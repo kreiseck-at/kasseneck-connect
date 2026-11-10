@@ -11,11 +11,31 @@ import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
 import 'support/agent_klient.dart';
+import 'support/fake_epos.dart';
 import 'support/fake_hps.dart';
 import 'support/fake_process_runner.dart';
 
 String _fixture(String name) =>
     File('test/fixtures/update/$name').readAsStringSync();
+
+/// Autostart, der nur meldet, ob er eingerichtet ist.
+class _Autostart implements Autostart {
+  _Autostart({required this.eingerichtet});
+
+  final bool eingerichtet;
+
+  @override
+  String get target => '/pfad/zum/eintrag';
+
+  @override
+  Future<bool> isInstalled() async => eingerichtet;
+
+  @override
+  Future<AutostartResult> install() => throw UnimplementedError();
+
+  @override
+  Future<AutostartResult> uninstall() => throw UnimplementedError();
+}
 
 void main() {
   group('neustartPlanen', () {
@@ -50,6 +70,56 @@ void main() {
         async.elapse(const Duration(milliseconds: 1));
         expect(neustartNach, neustartVerzug);
       });
+    });
+  });
+
+  group('neustartMoeglich', () {
+    test('nur, wenn launchd bzw. systemd Connect gestartet hat', () async {
+      final eingerichtet = _Autostart(eingerichtet: true);
+      // Von launchd gestartet (Label des LaunchAgents).
+      expect(
+        await neustartMoeglich('macos', eingerichtet, <String, String>{
+          'XPC_SERVICE_NAME': autostartLabel,
+        }),
+        isTrue,
+      );
+      // Von Hand im Terminal: Terminal.app setzt XPC_SERVICE_NAME=0.
+      expect(
+        await neustartMoeglich('macos', eingerichtet, <String, String>{
+          'XPC_SERVICE_NAME': '0',
+        }),
+        isFalse,
+      );
+      expect(
+        await neustartMoeglich('macos', eingerichtet, const <String, String>{}),
+        isFalse,
+      );
+      expect(
+        await neustartMoeglich('linux', eingerichtet, <String, String>{
+          'INVOCATION_ID': '0123456789abcdef0123456789abcdef',
+        }),
+        isTrue,
+      );
+      expect(
+        await neustartMoeglich('linux', eingerichtet, const <String, String>{}),
+        isFalse,
+      );
+      // Autostart nicht eingerichtet oder Windows: nie.
+      expect(
+        await neustartMoeglich(
+          'macos',
+          _Autostart(eingerichtet: false),
+          <String, String>{'XPC_SERVICE_NAME': autostartLabel},
+        ),
+        isFalse,
+      );
+      expect(
+        await neustartMoeglich('windows', eingerichtet, <String, String>{
+          'XPC_SERVICE_NAME': autostartLabel,
+          'INVOCATION_ID': 'x',
+        }),
+        isFalse,
+      );
     });
   });
 
@@ -308,6 +378,52 @@ void main() {
       expect(neustarts, 0);
     });
 
+    test('Status antwortet, während ein Bon an einem hängenden Drucker '
+        'steht', () async {
+      await starten();
+      // ePOS-Drucker, der erst nach einer Minute antwortet: der Bon steht.
+      final epos = await FakeEposServer.start(
+        mode: FakeEposMode.slow,
+        delay: const Duration(minutes: 1),
+      );
+      addTearDown(epos.stop);
+      final drucker = await agent.printers.upsert(
+        PrinterConfig(
+          id: '',
+          name: 'Bon',
+          kind: PrinterKind.epos,
+          host: '127.0.0.1',
+          port: epos.port,
+        ),
+      );
+      var bonFertig = false;
+      final bon = anAgent(
+        agent.port,
+        'POST',
+        '/v1/print',
+        token: kasseA,
+        rumpf: <String, Object?>{
+          'printerId': drucker.id,
+          'jobId': 'beleg-1',
+          'bytes': base64Encode(<int>[0x1B, 0x40, 0x41, 0x0A]),
+        },
+      ).whenComplete(() => bonFertig = true);
+      await warteBis(
+        () async => epos.bodies.any((b) => b.contains('<command>')),
+        grund: 'Bon am Drucker',
+      );
+      final status = await anAgent(
+        agent.port,
+        'GET',
+        '/v1/status',
+        token: kasseB,
+      );
+      expect(status.ok, isTrue);
+      expect(bonFertig, isFalse, reason: 'Status wartet nie auf den Bon');
+      // Der Bon endet mit dem Agenten im tearDown.
+      unawaited(bon.then<void>((_) {}, onError: (Object _) {}));
+    });
+
     test(
       'Neustart ohne Vorgang: Antwort, dann nach einer halben Sekunde',
       () async {
@@ -326,8 +442,10 @@ void main() {
     );
 
     test(
-      'busy_lock aus: Neustart auch während einer Zahlung (keine Sperre)',
+      'busy_lock aus: der Neustart wartet trotzdem auf die laufende Zahlung',
       () async {
+        // Der Not-Aus gilt der Belegung des Terminals und der Update-Sperre;
+        // ein Neustart risse die Zahlung dagegen sicher ab.
         await starten();
         await store.mutate(
           (c) => c.copyWith(disabledFeatures: <String>['busy_lock']),
@@ -343,8 +461,10 @@ void main() {
           '/v1/restart',
           token: kasseB,
         );
-        expect(neu.ok, isTrue);
-        await zahlung;
+        expect(neu.status, 409);
+        expect(neu.code, errorRestartBusy);
+        expect((await zahlung).ok, isTrue);
+        expect(neustarts, 0);
       },
     );
   });

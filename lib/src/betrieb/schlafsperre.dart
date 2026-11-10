@@ -17,6 +17,11 @@ const Duration schlafsperreHoechstdauer = vorgangHoechstdauer;
 /// Ruhezustandsfrist in den Energieoptionen ist eine Minute.
 const Duration windowsAuffrischen = Duration(seconds: 30);
 
+/// macOS: beginnt ein weiterer Vorgang und läuft `caffeinate` schon so lange,
+/// startet Connect ein neues mit voller Frist (und beendet das alte). Jünger
+/// lohnt der neue Prozess nicht: der Vorgang endet weit vor dessen `-t`.
+const Duration caffeinateErneuernAb = Duration(seconds: 60);
+
 /// `ES_SYSTEM_REQUIRED` (WinBase.h): setzt den Leerlauf-Zähler des Systems
 /// zurück, ohne einen Zustand zu hinterlassen.
 const int _esSystemRequired = 0x00000001;
@@ -57,13 +62,16 @@ class Schlafsperre implements BetriebsBeobachter {
     int? eigenePid,
     LeerlaufZuruecksetzen? windows,
     AgentLog? log,
+    DateTime Function()? clock,
     this.auffrischen = windowsAuffrischen,
     this.hoechstdauer = schlafsperreHoechstdauer,
+    this.erneuernAb = caffeinateErneuernAb,
   }) : _os = betriebssystem,
        _start = start,
        _pid = eigenePid ?? pid,
        _windows = windows ?? windowsLeerlaufZuruecksetzen,
-       _log = log;
+       _log = log,
+       _clock = clock ?? DateTime.now;
 
   final ConfigStore store;
   final String _os;
@@ -71,10 +79,15 @@ class Schlafsperre implements BetriebsBeobachter {
   final int _pid;
   final LeerlaufZuruecksetzen _windows;
   final AgentLog? _log;
+  final DateTime Function() _clock;
   final Duration auffrischen;
   final Duration hoechstdauer;
 
+  /// Siehe [caffeinateErneuernAb].
+  final Duration erneuernAb;
+
   Process? _caffeinate;
+  DateTime? _caffeinateSeit;
   Timer? _takt;
   Timer? _ende;
 
@@ -96,6 +109,35 @@ class Schlafsperre implements BetriebsBeobachter {
         await _caffeinateStarten();
       case 'windows':
         _windowsStarten();
+    }
+  });
+
+  /// Ein weiterer Vorgang: die Sperre gilt ab jetzt wieder volle
+  /// [hoechstdauer] (macOS: neues `caffeinate`, wenn das laufende älter als
+  /// [erneuernAb] ist; Windows: Ende neu gesetzt).
+  @override
+  void weiterhin() => _reihe(() async {
+    if (!(await store.load()).aktiv(Neuerung.schlafsperre)) return;
+    switch (_os) {
+      case 'macos':
+        final seit = _caffeinateSeit;
+        final alt = _caffeinate;
+        if (alt != null &&
+            seit != null &&
+            _clock().difference(seit) < erneuernAb) {
+          return;
+        }
+        // Erst das neue, dann das alte beenden: keine Lücke dazwischen.
+        _caffeinate = null;
+        await _caffeinateStarten();
+        alt?.kill();
+      case 'windows':
+        if (_takt == null) {
+          _windowsStarten();
+        } else {
+          _ende?.cancel();
+          _ende = Timer(hoechstdauer, _aufheben);
+        }
     }
   });
 
@@ -123,6 +165,17 @@ class Schlafsperre implements BetriebsBeobachter {
     prozess.stdout.drain<void>().ignore();
     prozess.stderr.drain<void>().ignore();
     _caffeinate = prozess;
+    _caffeinateSeit = _clock();
+    // Endet es von selbst (`-t` abgelaufen), startet der nächste Vorgang
+    // ein neues.
+    unawaited(
+      prozess.exitCode.then((_) {
+        if (identical(_caffeinate, prozess)) {
+          _caffeinate = null;
+          _caffeinateSeit = null;
+        }
+      }),
+    );
   }
 
   void _windowsStarten() {
@@ -145,6 +198,7 @@ class Schlafsperre implements BetriebsBeobachter {
   void _aufheben() {
     _caffeinate?.kill();
     _caffeinate = null;
+    _caffeinateSeit = null;
     _takt?.cancel();
     _takt = null;
     _ende?.cancel();

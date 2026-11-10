@@ -27,6 +27,17 @@ final RegExp _transactionId = RegExp(r'^\d{1,18}$');
 /// Connect hält gerade einen langen Aufruf für dieses Terminal (ab 1.5.0).
 const String errorTerminalBusy = 'terminal_busy';
 
+/// So lange gilt die Bestätigung einer Ersatzadresse für eine Geldbewegung
+/// ohne neue Diagnose. Ist sie älter, fragt Connect dort zuerst die Diagnose
+/// mit der TID (Gerätetest: 0,1–0,25 s) – Geld geht nie an ein Gerät, das
+/// die TID nicht eben bestätigt hat.
+const Duration umleitungOhneDiagnose = Duration(minutes: 15);
+
+/// Frist der Diagnose vor einer umgeleiteten Geldbewegung: ohne Weckversuch
+/// und kurz – antwortet die Ersatzadresse nicht, bleibt es beim Fehler der
+/// ursprünglichen Adresse.
+const Duration umleitungDiagnoseFrist = Duration(seconds: 3);
+
 /// Den rohen Status, den das Terminal selbst bei „beschäftigt“ nennt (409),
 /// trägt auch [errorTerminalBusy]: eine Kasse, die den Code noch nicht kennt,
 /// liest daran „nachweislich nichts belastet“ – wie bei der Antwort des
@@ -55,10 +66,6 @@ RouteRegistrar terminalRoutes({
 }) {
   return (Router router, AgentContext ctx) {
     final hps = bridge ?? HpsBridge(log: ctx.log);
-    final suche =
-        discover ??
-        (HpsBridge h, AgentContext c) =>
-            discoverTerminals(bridge: h, log: c.log);
     final t = _Terminal(
       hps: hps,
       ctx: ctx,
@@ -67,6 +74,10 @@ RouteRegistrar terminalRoutes({
       wiederfinder: wiederfinder,
       vorgaenge: vorgaenge,
     );
+    final suche =
+        discover ??
+        (HpsBridge h, AgentContext c) =>
+            discoverTerminals(bridge: h, log: c.log, belegung: t.belegung);
 
     router
       ..post('/v1/terminal/test', (Request r) => _handleTest(t, r))
@@ -122,13 +133,19 @@ class _Terminal {
   /// Kommt keine Verbindung zustande (`terminal_unreachable`, nachweislich
   /// nichts gesendet) und kennt Connect für [tid] eine andere, höchstens 24 h
   /// alt bestätigte Adresse, läuft derselbe Aufruf dort genau einmal – auch
-  /// Zahlung und Gutschrift. Ein Netzscan läuft hier nie.
+  /// Zahlung und Gutschrift ([geld]; vorher bei älterer Bestätigung eine
+  /// Diagnose dort). Ein Netzscan läuft hier nie.
+  ///
+  /// `endpoint` nennt die Adresse, an die der Aufruf zuletzt ging; kam auch
+  /// an der Ersatzadresse keine Verbindung zustande, die ursprüngliche
+  /// (`relocated: false`) – dann ging nirgends etwas hinaus.
   Future<Response> ausfuehren(
     Request request,
     (String, int) ziel, {
     required Future<Object?> Function(String host, int port) aufruf,
     String? tid,
     bool merken = false,
+    bool geld = false,
   }) async {
     final config = configOf(request);
     final umleiten = config.aktiv(Neuerung.terminalWiederfinden);
@@ -159,14 +176,27 @@ class _Terminal {
           jetzt: ctx.clock(),
         );
         if (alt == null) rethrow;
+        if (geld && !await _ersatzBestaetigt(alt, tid, config.terminal)) {
+          rethrow;
+        }
         ctx.log.info(
           'Terminal $tid: keine Verbindung unter $host:$port – derselbe '
           'Aufruf geht an die bestätigte Adresse ${alt.host}:${alt.port}.',
         );
+        try {
+          daten = await aufruf(alt.host, alt.port);
+        } on HpsWegFehler catch (zweiter) {
+          // Auch dort keine Verbindung: nirgends ging etwas hinaus, und die
+          // Antwort nennt die Adresse, die die Kasse geschickt hat.
+          if (zweiter.code == errorTerminalUnreachable) throw e;
+          host = alt.host;
+          port = alt.port;
+          umgeleitet = true;
+          rethrow;
+        }
         host = alt.host;
         port = alt.port;
         umgeleitet = true;
-        daten = await aufruf(host, port);
       }
     } on HpsWegFehler catch (e) {
       // Den rohen Terminal-Status mitgeben, wo es einen gab: die Kasse
@@ -193,6 +223,49 @@ class _Terminal {
       );
     }
     return okJson(<String, Object?>{'hps': daten, if (umleiten) ...endpoint()});
+  }
+
+  /// Ob die Ersatzadresse [alt] die TID für eine Geldbewegung frisch genug
+  /// bestätigt hat: höchstens [umleitungOhneDiagnose] alt, sonst eben jetzt
+  /// per Diagnose. Wirft nie.
+  Future<bool> _ersatzBestaetigt(
+    ({String host, int port}) alt,
+    String tid,
+    TerminalConfig? gemerkt,
+  ) async {
+    final am = gemerkt?.confirmedAt;
+    if (am != null) {
+      final alter = ctx.clock().difference(am);
+      if (!alter.isNegative && alter <= umleitungOhneDiagnose) return true;
+    }
+    try {
+      final antwort = await hps.diagnosis(
+        host: alt.host,
+        port: alt.port,
+        tid: tid,
+        frist: umleitungDiagnoseFrist,
+      );
+      if (tidBestaetigt(antwort, tid)) {
+        warmhalter?.merken(
+          alt.host,
+          alt.port,
+          tid: tid,
+          bestaetigt: true,
+          serie: terminalSerie(antwort),
+        );
+        return true;
+      }
+      ctx.log.info(
+        'Terminal $tid: ${alt.host}:${alt.port} bestätigt die TID nicht – '
+        'keine Umleitung.',
+      );
+    } on HpsWegFehler catch (f) {
+      ctx.log.info(
+        'Terminal $tid: ${alt.host}:${alt.port} antwortet nicht auf die '
+        'Diagnose (${f.code}) – keine Umleitung.',
+      );
+    }
+    return false;
   }
 
   /// Ein kurzer Aufruf (Diagnose, Test): `terminal_busy`, solange ein langer
@@ -258,6 +331,7 @@ class _Terminal {
         aufruf: aufruf,
         tid: tid,
         merken: merken,
+        geld: true,
       );
     } finally {
       if (vorgang != null) vorgaenge?.beende(vorgang);

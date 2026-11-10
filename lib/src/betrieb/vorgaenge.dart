@@ -32,6 +32,11 @@ abstract interface class BetriebsBeobachter {
   /// Der erste Vorgang beginnt.
   void belegt();
 
+  /// Ein weiterer Vorgang beginnt, während schon einer läuft. Datei und
+  /// Schlafsperre gelten ab jetzt wieder volle 6 min: eine Kette sich
+  /// überlappender Vorgänge darf länger dauern als einer allein.
+  void weiterhin();
+
   /// Der letzte Vorgang ist beendet oder abgelaufen.
   void frei();
 }
@@ -80,10 +85,8 @@ class LaufendeVorgaenge {
     final vorgang = Vorgang._(art, _clock());
     final warLeer = _laufend.isEmpty;
     _laufend.add(vorgang);
-    if (warLeer) {
-      for (final b in _beobachter) {
-        b.belegt();
-      }
+    for (final b in _beobachter) {
+      warLeer ? b.belegt() : b.weiterhin();
     }
     _ablaufPlanen();
     return vorgang;

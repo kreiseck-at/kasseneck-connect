@@ -21,7 +21,11 @@ const Duration warmhalteTimeout = Duration(seconds: 3);
 
 /// So oft hintereinander darf eine Berührung scheitern, bevor Connect das
 /// Terminal sucht (Spec 1.3: dreimal, rund zwei Minuten). Ein kurzer
-/// WLAN-Schlaf des Terminals löst so keine Suche aus.
+/// WLAN-Schlaf des Terminals löst so keine Suche aus. Bleibt es danach
+/// unerreichbar, stößt jede weitere Fehlberührung die Suche wieder an; die
+/// Suche selbst läuft höchstens alle fünf Minuten (`terminalSucheAbstand`) –
+/// so findet Connect ein Terminal, das über Nacht aus war und morgens eine
+/// neue Adresse hat.
 const int fehlberuehrungenBisSuche = 3;
 
 /// Eine Bestätigung derselben TID unter derselben Adresse wird höchstens so
@@ -64,8 +68,9 @@ class TerminalWarmhalter {
   final MacLeser? _macLesen;
   final DateTime Function() _clock;
 
-  /// Wird gerufen, wenn das Terminal [fehlberuehrungenBisSuche]-mal
-  /// hintereinander nicht antwortete (die Suche hängt sich hier an).
+  /// Wird gerufen, sobald das Terminal [fehlberuehrungenBisSuche]-mal
+  /// hintereinander nicht antwortete, und danach nach jeder weiteren
+  /// Fehlberührung (die Suche hängt sich hier an und drosselt selbst).
   void Function()? beiDauerndUnerreichbar;
 
   Timer? _timer;
@@ -211,7 +216,7 @@ class TerminalWarmhalter {
       return;
     }
     _fehlInFolge++;
-    if (_fehlInFolge == fehlberuehrungenBisSuche) {
+    if (_fehlInFolge >= fehlberuehrungenBisSuche) {
       beiDauerndUnerreichbar?.call();
     }
   }

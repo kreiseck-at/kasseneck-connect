@@ -4,9 +4,7 @@ import 'package:shelf/shelf.dart';
 import 'package:shelf_router/shelf_router.dart';
 
 import '../betrieb/vorgaenge.dart';
-import '../config/neuerungen.dart';
 import '../events/bus.dart';
-import 'auth.dart';
 import 'context.dart';
 import 'responses.dart';
 
@@ -20,11 +18,13 @@ const Duration neustartVerzug = Duration(milliseconds: 500);
 /// `POST /v1/restart` – für den Fernbefehl „Connect neu starten“.
 ///
 /// Nur wo der Autostart einen beendeten Agenten wieder startet (macOS
-/// `KeepAlive`, Linux systemd); sonst gibt es den Pfad nicht (`not_found`) und
-/// `features` nennt `restart` nicht. Während eines Drucks oder einer Zahlung
-/// `restart_busy` (409). Beginnt in der halben Sekunde bis zum Beenden doch
-/// noch ein Vorgang, wartet Connect dessen Ende ab (höchstens
-/// `vorgangHoechstdauer`).
+/// `KeepAlive`, Linux systemd) und Connect auch von dort gestartet wurde;
+/// sonst gibt es den Pfad nicht (`not_found`) und `features` nennt `restart`
+/// nicht. Während eines Drucks oder einer Zahlung `restart_busy` (409) – immer,
+/// auch mit abgeschaltetem `busy_lock`: der Not-Aus gilt der Belegung des
+/// Terminals und der Update-Sperre, ein Neustart riss den Vorgang dagegen
+/// sicher ab. Beginnt in der halben Sekunde bis zum Beenden doch noch ein
+/// Vorgang, wartet Connect dessen Ende ab (höchstens `vorgangHoechstdauer`).
 RouteRegistrar restartRoutes() {
   return (Router router, AgentContext ctx) {
     router.post('/v1/restart', (Request request) async {
@@ -37,8 +37,7 @@ RouteRegistrar restartRoutes() {
         );
       }
       final vorgaenge = ctx.vorgaenge;
-      final sperre = configOf(request).aktiv(Neuerung.betriebSperre);
-      if (sperre && (vorgaenge?.laufen ?? false)) {
+      if (vorgaenge?.laufen ?? false) {
         return failJson(
           errorRestartBusy,
           'Gerade läuft ein Druck oder eine Zahlung – danach neu starten.',
@@ -49,7 +48,7 @@ RouteRegistrar restartRoutes() {
       ctx.events.publish(eventAgentRestarting, <String, Object?>{
         'reason': 'restart',
       });
-      neustartPlanen(neustart: neustart, vorgaenge: sperre ? vorgaenge : null);
+      neustartPlanen(neustart: neustart, vorgaenge: vorgaenge);
       return okJson(<String, Object?>{'restarting': true});
     });
   };

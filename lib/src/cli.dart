@@ -131,9 +131,10 @@ Future<int> runCli(
         https: os == 'macos',
         runProcess: run,
         startProcess: start,
-        neustartMoeglich: () => _neustartMoeglich(
+        neustartMoeglich: () => neustartMoeglich(
           os,
           autostart ?? autostartForPlatform(paths: resolvedPaths),
+          environment ?? Platform.environment,
         ),
       );
     case 'betrieb-abwarten':
@@ -324,6 +325,31 @@ Future<int> _printDoctorReport(
   return 0;
 }
 
+/// Ob der Autostart einen beendeten Agenten wieder startet: macOS
+/// (`KeepAlive`) und Linux (systemd `Restart=always`) – nur, wenn er
+/// eingerichtet ist UND dieser Prozess von ihm gestartet wurde. launchd setzt
+/// dafür `XPC_SERVICE_NAME` auf das Label, systemd `INVOCATION_ID`; wer
+/// Connect von Hand im Terminal startet, hat keins von beiden, und nach dem
+/// Beenden käme niemand. Windows startet ihn erst bei der nächsten Anmeldung.
+Future<bool> neustartMoeglich(
+  String os,
+  Autostart autostart,
+  Map<String, String> umgebung,
+) async {
+  final vomAutostart = switch (os) {
+    'macos' => umgebung['XPC_SERVICE_NAME'] == autostartLabel,
+    'linux' => (umgebung['INVOCATION_ID'] ?? '').isNotEmpty,
+    _ => false,
+  };
+  if (!vomAutostart) return false;
+  try {
+    return await autostart.isInstalled();
+  } on Object {
+    // Unklar: dann lieber kein Neustart auf Zuruf.
+    return false;
+  }
+}
+
 /// `run` — Agent starten und laufen lassen, bis SIGINT/SIGTERM kommt.
 ///
 /// Der ganze Betrieb läuft in einer abgeschirmten Zone. Ein unbehandelter
@@ -337,19 +363,6 @@ Future<int> _printDoctorReport(
 /// Fehler aus der Wurzelzone beendet die Isolate auch mit Zuhörer, und zwar
 /// bevor dieser gerufen wird — der Fehler stünde dann nicht einmal mehr auf
 /// stderr. Die Zone ist der Schutz, nicht der Zuhörer.
-/// Ob der Autostart einen beendeten Agenten wieder startet: macOS
-/// (`KeepAlive`) und Linux (systemd `Restart=always`), und nur, wenn er
-/// eingerichtet ist. Windows startet ihn erst bei der nächsten Anmeldung.
-Future<bool> _neustartMoeglich(String os, Autostart autostart) async {
-  if (os != 'macos' && os != 'linux') return false;
-  try {
-    return await autostart.isInstalled();
-  } on Object {
-    // Unklar: dann lieber kein Neustart auf Zuruf.
-    return false;
-  }
-}
-
 Future<int> _runAgent(
   ConfigPaths paths,
   StringSink out,

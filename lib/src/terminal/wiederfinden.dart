@@ -103,19 +103,30 @@ class TerminalWiederfinder {
 
   Future<void> _imHintergrund() async {
     final zuletzt = _letzteImHintergrund;
-    if (zuletzt != null &&
-        _clock().difference(zuletzt) < terminalSucheAbstand) {
-      return;
+    if (zuletzt != null) {
+      final alter = _clock().difference(zuletzt);
+      if (!alter.isNegative && alter < terminalSucheAbstand) return;
     }
     final tid = (await store.load()).terminal?.tid;
     if (tid == null) return;
+    final arbeit = await _starte(tid);
+    // Die Sperrzeit gilt nur nach einer echten Suche: war das Terminal
+    // belegt, kommt der nächste Anstoß gleich wieder dran.
+    if (arbeit == null) return;
     _letzteImHintergrund = _clock();
-    await suche(tid);
+    await arbeit;
   }
 
   /// Sucht das Terminal [tid]; `null` ohne genau einen bestätigten Treffer,
   /// während eines langen Aufrufs oder abgeschaltet.
   Future<TerminalFund?> suche(String roheTid) async {
+    final arbeit = await _starte(roheTid);
+    return arbeit == null ? null : await arbeit;
+  }
+
+  /// Die laufende oder eine eben begonnene Suche nach [roheTid]; `null`, wenn
+  /// keine begann (angehalten, abgeschaltet, Terminal belegt).
+  Future<Future<TerminalFund?>?> _starte(String roheTid) async {
     // Das Terminal nimmt die TID nur ohne führende Nullen an.
     final tid = tidNormal(roheTid);
     final schluessel = tid;
@@ -143,8 +154,16 @@ class TerminalWiederfinder {
       final ergebnis = await _suche();
       final bestaetigt = <({String host, int port, String? serie})>{};
       for (final treffer in ergebnis.found) {
-        // Der Reihe nach, nie gleichzeitig – wie die Kasse.
+        // Der Reihe nach, nie gleichzeitig – wie die Kasse. Jede Diagnose ist
+        // als kurzer Aufruf angemeldet: eine Zahlung, die jetzt beginnt,
+        // wartet sie ab, und neben einer Zahlung geht keine hinaus.
         if (_belegung.irgendeins) return null;
+        final kurz = _belegung.kurzBeginnen(
+          tid: tid,
+          host: treffer.host,
+          port: treffer.port,
+        );
+        if (kurz == null) return null;
         try {
           final antwort = await _bridge.diagnosis(
             host: treffer.host,
@@ -164,6 +183,8 @@ class TerminalWiederfinder {
             'Terminal-Suche: ${treffer.host}:${treffer.port} bestätigt $tid '
             'nicht (${e.code}).',
           );
+        } finally {
+          _belegung.kurzBeenden(kurz);
         }
       }
       if (bestaetigt.length != 1) {

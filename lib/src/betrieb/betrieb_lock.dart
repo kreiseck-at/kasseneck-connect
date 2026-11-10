@@ -61,22 +61,40 @@ class BetriebsLock implements BetriebsBeobachter {
   /// Ist die letzte angestoßene Dateiänderung erledigt (Tests)?
   Future<void> get erledigt => _kette;
 
+  /// Wann der erste Vorgang der laufenden Belegung begann.
+  DateTime? _seit;
+
   @override
-  void belegt() => _reihe(() async {
+  void belegt() {
+    _seit = _clock();
+    _reihe(_schreiben);
+  }
+
+  /// Schreibt die Datei neu: ihr Änderungszeitpunkt, an dem das postinstall
+  /// die Frische misst, rückt auf jetzt.
+  @override
+  void weiterhin() => _reihe(_schreiben);
+
+  Future<void> _schreiben() async {
     if (!(await store.load()).aktiv(Neuerung.betriebSperre)) return;
+    final jetzt = _clock().toUtc();
     await datei.writeAsString(
       jsonEncode(<String, Object?>{
         'pid': pid,
-        'seit': _clock().toUtc().toIso8601String(),
+        'seit': (_seit?.toUtc() ?? jetzt).toIso8601String(),
+        'stand': jetzt.toIso8601String(),
       }),
       flush: true,
     );
-  });
+  }
 
   @override
-  void frei() => _reihe(() async {
-    if (datei.existsSync()) await datei.delete();
-  });
+  void frei() {
+    _seit = null;
+    _reihe(() async {
+      if (datei.existsSync()) await datei.delete();
+    });
+  }
 
   void _reihe(Future<void> Function() schritt) {
     _kette = _kette.then((_) async {

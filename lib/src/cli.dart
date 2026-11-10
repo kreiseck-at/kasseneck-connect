@@ -328,17 +328,20 @@ Future<int> _printDoctorReport(
 /// Ob der Autostart einen beendeten Agenten wieder startet: macOS
 /// (`KeepAlive`) und Linux (systemd `Restart=always`) – nur, wenn er
 /// eingerichtet ist UND dieser Prozess von ihm gestartet wurde. launchd setzt
-/// dafür `XPC_SERVICE_NAME` auf das Label, systemd `INVOCATION_ID`; wer
-/// Connect von Hand im Terminal startet, hat keins von beiden, und nach dem
-/// Beenden käme niemand. Windows startet ihn erst bei der nächsten Anmeldung.
+/// dafür `XPC_SERVICE_NAME` auf das Label, systemd `SYSTEMD_EXEC_PID` auf die
+/// Kennung des Hauptprozesses (anders als `INVOCATION_ID` erbt sie kein
+/// Prozess, den der Dienst selbst startet); wer Connect von Hand im Terminal
+/// startet, hat keins von beiden, und nach dem Beenden käme niemand. Windows
+/// startet ihn erst bei der nächsten Anmeldung.
 Future<bool> neustartMoeglich(
   String os,
   Autostart autostart,
-  Map<String, String> umgebung,
-) async {
+  Map<String, String> umgebung, {
+  int? eigenePid,
+}) async {
   final vomAutostart = switch (os) {
     'macos' => umgebung['XPC_SERVICE_NAME'] == autostartLabel,
-    'linux' => (umgebung['INVOCATION_ID'] ?? '').isNotEmpty,
+    'linux' => umgebung['SYSTEMD_EXEC_PID'] == '${eigenePid ?? pid}',
     _ => false,
   };
   if (!vomAutostart) return false;

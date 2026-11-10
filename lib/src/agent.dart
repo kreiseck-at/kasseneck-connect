@@ -467,10 +467,17 @@ class Agent {
       events: bus,
       log: log,
       clock: _clock,
-      suche: () =>
-          discoverTerminals(bridge: hps, log: log, interfaces: _schnittstellen),
+      suche: () => discoverTerminals(
+        bridge: hps,
+        log: log,
+        interfaces: _schnittstellen,
+        belegung: belegung,
+      ),
+      kasseZuletzt: () => _context?.kasseZuletzt,
     );
-    warmhalter.beiDauerndUnerreichbar = terminalSuche.imHintergrund;
+    warmhalter
+      ..beiDauerndUnerreichbar = terminalSuche.imHintergrund
+      ..beiWiederErreichbar = terminalSuche.wiederErreichbar;
     _terminalSuche = terminalSuche;
     ctx
       ..installationId = installationId

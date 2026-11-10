@@ -441,6 +441,7 @@ void main() {
       expect(ergebnis.found.single.host, '127.0.0.1');
       // Die Probe kennt die TID nicht — sie steht im Vertrag/Panel.
       expect(ergebnis.found.single.tids, isEmpty);
+      expect(ergebnis.toJson().containsKey('incomplete'), isFalse);
     });
 
     test('Terminal-Suche während einer Zahlung: keine Probe', () async {
@@ -462,6 +463,10 @@ void main() {
       );
       expect(ergebnis.found, isEmpty);
       expect(hps.aufrufe, isEmpty, reason: 'nie neben einer Zahlung');
+      // Die Kasse erfährt, dass die Suche unvollständig ist.
+      expect(ergebnis.unvollstaendig, isTrue);
+      expect(ergebnis.toJson()['incomplete'], isTrue);
+      expect(ergebnis.toJson()['note'], suchUnvollstaendigHinweis);
     });
 
     test('ein fremder Dienst auf dem HPS-Port ist kein Treffer', () async {
@@ -1216,11 +1221,15 @@ void main() {
   group('Gesamtfrist je Aufruf', () {
     late ServerSocket langsam;
     late Directory temp;
+    // Virtuelle Uhr der Brücke: der Fake stellt sie vor, während er antwortet.
+    late DateTime uhr;
 
     setUp(() async {
       temp = Directory.systemTemp.createTempSync('connect-frist-');
-      // Antwortet in zwei Etappen: Kopf nach 700 ms, Rumpf nach weiteren
-      // 700 ms. Jede für sich bliebe unter der Frist von 1 s.
+      uhr = DateTime(2026, 11, 10, 9);
+      // Antwortet in zwei Etappen. Bevor der Kopf hinausgeht, ist auf der
+      // virtuellen Uhr die ganze Frist verstrichen; der Rumpf folgt nach
+      // 300 ms echter Zeit.
       langsam = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
       langsam.listen((socket) {
         socket.done.ignore();
@@ -1234,8 +1243,8 @@ void main() {
           }
           gelesen.clear();
           const rumpf = '{"responseCode":"0"}';
-          await Future<void>.delayed(const Duration(milliseconds: 700));
           try {
+            uhr = uhr.add(const Duration(minutes: 1));
             socket.add(
               utf8.encode(
                 'HTTP/1.1 200 OK\r\n'
@@ -1243,7 +1252,7 @@ void main() {
                 'Content-Length: ${rumpf.length}\r\n\r\n',
               ),
             );
-            await Future<void>.delayed(const Duration(milliseconds: 700));
+            await Future<void>.delayed(const Duration(milliseconds: 300));
             socket.add(utf8.encode(rumpf));
             await socket.close();
           } on Object {
@@ -1259,9 +1268,12 @@ void main() {
     });
 
     test('Kopf und Rumpf teilen sich eine Frist', () async {
+      // Je Abschnitt eine eigene Frist (wie vorher) ließe den Rumpf noch eine
+      // Minute warten und käme an.
       final bruecke = HpsBridge(
         log: AgentLog(Directory(p.join(temp.path, 'logs'))),
-        kurzTimeout: const Duration(seconds: 1),
+        kurzTimeout: const Duration(minutes: 1),
+        clock: () => uhr,
       );
       final fehler = await bruecke
           .diagnosis(host: '127.0.0.1', port: langsam.port, tid: '12345678')

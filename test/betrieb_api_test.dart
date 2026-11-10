@@ -94,14 +94,25 @@ void main() {
         await neustartMoeglich('macos', eingerichtet, const <String, String>{}),
         isFalse,
       );
+      // systemd: SYSTEMD_EXEC_PID nennt den Hauptprozess des Dienstes.
       expect(
         await neustartMoeglich('linux', eingerichtet, <String, String>{
-          'INVOCATION_ID': '0123456789abcdef0123456789abcdef',
-        }),
+          'SYSTEMD_EXEC_PID': '4711',
+        }, eigenePid: 4711),
         isTrue,
       );
+      // Ein Prozess, den der Dienst gestartet hat (erbt die Variable), oder
+      // nur INVOCATION_ID: nie.
       expect(
-        await neustartMoeglich('linux', eingerichtet, const <String, String>{}),
+        await neustartMoeglich('linux', eingerichtet, <String, String>{
+          'SYSTEMD_EXEC_PID': '4711',
+        }, eigenePid: 4712),
+        isFalse,
+      );
+      expect(
+        await neustartMoeglich('linux', eingerichtet, <String, String>{
+          'INVOCATION_ID': '0123456789abcdef',
+        }, eigenePid: 4711),
         isFalse,
       );
       // Autostart nicht eingerichtet oder Windows: nie.

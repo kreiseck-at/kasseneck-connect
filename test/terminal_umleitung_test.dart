@@ -549,8 +549,10 @@ void main() {
           );
           final uhr = Stopwatch()..start();
           expect((await zahle(hps.port)).ok, isTrue);
-          expect(uhr.elapsed, lessThan(kurzeAbwartenHoechstens * 2));
+          // Gewartet hat sie (mindestens die 2 s) – aber nicht bis zum Ende
+          // der hängenden Diagnose: die steht noch, als die Zahlung fertig ist.
           expect(uhr.elapsed, greaterThanOrEqualTo(kurzeAbwartenHoechstens));
+          expect(hps.an('/api/terminals/').last.ende, isNull);
           await haengt;
         },
         timeout: const Timeout(Duration(seconds: 30)),

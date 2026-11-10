@@ -124,7 +124,8 @@ void main() {
         betriebssystem: 'macos',
         clock: () => jetzt,
       );
-      final uhr = Stopwatch()..start();
+      // Der Prozess antwortet nie: dass der Aufruf zurückkehrt, zeigt die
+      // Frist – ohne Messung der Wanduhr.
       expect(
         await arp.macFuer(
           '192.168.0.50',
@@ -132,7 +133,6 @@ void main() {
         ),
         isNull,
       );
-      expect(uhr.elapsed, lessThan(const Duration(seconds: 2)));
       expect(haengend.killed, hasLength(1), reason: 'Prozess beendet');
     });
   });

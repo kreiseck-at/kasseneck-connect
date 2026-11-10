@@ -52,16 +52,33 @@ class DiscoveredTerminal {
 
 /// Ergebnis der Terminal-Suche (Treffer + abgesuchte Netze, wie beim Drucker).
 class TerminalDiscoveryResult {
-  TerminalDiscoveryResult({required this.found, required this.scanned});
+  TerminalDiscoveryResult({
+    required this.found,
+    required this.scanned,
+    this.unvollstaendig = false,
+  });
 
   final List<DiscoveredTerminal> found;
   final List<ScannedSubnet> scanned;
 
+  /// Die Suche brach ab, weil eine Zahlung begann: [found] nennt nur die
+  /// Terminals bis dahin.
+  final bool unvollstaendig;
+
   Map<String, Object?> toJson() => <String, Object?>{
     'found': found.map((t) => t.toJson()).toList(),
     'scanned': scanned.map((s) => s.toJson()).toList(),
+    if (unvollstaendig) ...<String, Object?>{
+      'incomplete': true,
+      'note': suchUnvollstaendigHinweis,
+    },
   };
 }
+
+/// Satz an die Kasse, wenn die Terminal-Suche wegen einer Zahlung abbrach.
+const String suchUnvollstaendigHinweis =
+    'Am Terminal läuft gerade ein Vorgang – die Suche ist unvollständig. '
+    'Bitte danach noch einmal suchen.';
 
 /// Sucht Hobex-HPS-Terminals im Kassen-Netz.
 ///
@@ -111,7 +128,11 @@ Future<TerminalDiscoveryResult> discoverTerminals({
     for (final kandidat in offen) {
       if (belegung?.irgendeins ?? false) {
         log?.info('Terminal-Suche abgebrochen: ein Terminal-Aufruf beginnt.');
-        return TerminalDiscoveryResult(found: treffer, scanned: report);
+        return TerminalDiscoveryResult(
+          found: treffer,
+          scanned: report,
+          unvollstaendig: true,
+        );
       }
       if (await _istHps(bridge, kandidat.host, port, belegung)) {
         treffer.add(

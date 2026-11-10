@@ -22,11 +22,10 @@ void main() {
   }
 
   test('ohne betrieb.lock: sofort, still, Exit 0', () async {
-    final uhr = Stopwatch()..start();
     final (code, text) = await lauf();
     expect(code, 0);
+    // Gewartet hätte es „… s gewartet“ geschrieben.
     expect(text, isEmpty);
-    expect(uhr.elapsed, lessThan(const Duration(seconds: 2)));
   });
 
   test('verwaiste betrieb.lock (älter als 6 min): sofort weiter', () async {
@@ -35,9 +34,9 @@ void main() {
       ..setLastModifiedSync(
         DateTime.now().subtract(betriebLockFrisch + const Duration(minutes: 1)),
       );
-    final uhr = Stopwatch()..start();
-    expect((await lauf()).$1, 0);
-    expect(uhr.elapsed, lessThan(const Duration(seconds: 2)));
+    final (code, text) = await lauf();
+    expect(code, 0);
+    expect(text, isEmpty, reason: 'nicht gewartet');
   });
 
   test('frische betrieb.lock: wartet, bis sie weg ist', () async {

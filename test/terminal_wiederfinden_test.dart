@@ -265,14 +265,17 @@ void main() {
       await warteBis(() async => finder.suchen == 2);
     });
 
-    test('über Nacht aus, morgens unter neuer Adresse: die Suche wiederholt '
-        'sich gedrosselt und findet es', () async {
+    test('über Nacht aus, morgens unter neuer Adresse: nur bei offener Kasse, '
+        'Abstand 5 → 15 → 60 min, nach dem Fund wieder 5', () async {
+      // Ohne Takt: jede Berührung von Hand, die Uhr wird gestellt – kein
+      // Warten auf echte Zeit.
       funde = <DiscoveredTerminal>[]; // nachts: kein Terminal im Netz
       var amNeuenOrt = false;
+      DateTime? kasse;
       final w = TerminalWarmhalter(
         store: store,
         log: log,
-        intervall: const Duration(milliseconds: 10),
+        intervall: const Duration(days: 1),
         belegung: belegung,
         clock: () => jetzt,
         probe: (host, port, timeout) async =>
@@ -287,6 +290,7 @@ void main() {
         warmhalter: w,
         log: log,
         clock: () => jetzt,
+        kasseZuletzt: () => kasse,
         suche: () async {
           sucheAufrufe++;
           return TerminalDiscoveryResult(found: funde, scanned: const []);
@@ -299,17 +303,45 @@ void main() {
       });
       w
         ..beiDauerndUnerreichbar = finder.imHintergrund
+        ..beiWiederErreichbar = finder.wiederErreichbar
         ..startAus(await store.load());
 
-      await warteBis(() async => finder.suchen == 1, grund: 'erste Suche');
-      // Weitere Fehlberührungen in derselben Viertelstunde: keine Suche.
-      final beruehrt = w.beruehrungen;
-      await warteBis(() async => w.beruehrungen >= beruehrt + 5);
-      expect(finder.suchen, 1);
+      Future<void> beruehre({
+        Duration nach = const Duration(minutes: 1),
+      }) async {
+        jetzt = jetzt.add(nach);
+        await w.beruehren();
+        await finder.erledigt();
+      }
 
-      // Fünf Minuten später sucht es wieder – noch immer nichts.
-      jetzt = jetzt.add(terminalSucheAbstand);
-      await warteBis(() async => finder.suchen == 2, grund: 'zweite Suche');
+      // Nachts ist keine Kasse offen: keine Suche, so oft es auch ausfällt.
+      for (var i = 0; i < 20; i++) {
+        await beruehre();
+      }
+      expect(finder.suchen, 0);
+
+      // Die Kasse öffnet: erste Suche, ohne Fund.
+      kasse = jetzt;
+      await beruehre(nach: Duration.zero);
+      expect(finder.suchen, 1);
+      // Innerhalb von 5 min keine zweite.
+      kasse = jetzt.add(const Duration(minutes: 4));
+      await beruehre(nach: const Duration(minutes: 4));
+      expect(finder.suchen, 1);
+      // Nach 5 min die zweite – wieder nichts, der Abstand wächst auf 15.
+      kasse = jetzt.add(const Duration(minutes: 1));
+      await beruehre();
+      expect(finder.suchen, 2);
+      kasse = jetzt.add(const Duration(minutes: 14));
+      await beruehre(nach: const Duration(minutes: 14));
+      expect(finder.suchen, 2, reason: 'erst nach 15 min');
+      kasse = jetzt.add(const Duration(minutes: 1));
+      await beruehre();
+      expect(finder.suchen, 3);
+      // Jetzt 60 min.
+      kasse = jetzt.add(const Duration(minutes: 59));
+      await beruehre(nach: const Duration(minutes: 59));
+      expect(finder.suchen, 3);
 
       // Morgens: das Terminal ist unter neuer Adresse zurück.
       funde = <DiscoveredTerminal>[
@@ -320,12 +352,17 @@ void main() {
         ),
       ];
       amNeuenOrt = true;
-      jetzt = jetzt.add(terminalSucheAbstand);
-      await warteBis(
-        () async => (await store.load()).terminal?.port == richtig.port,
-        grund: 'neue Adresse',
-      );
-      await warteBis(() async => w.erreichbar ?? false, grund: 'erreichbar');
+      kasse = jetzt.add(const Duration(minutes: 1));
+      await beruehre();
+      expect(finder.suchen, 4);
+      expect((await store.load()).terminal?.port, richtig.port);
+      await beruehre();
+      expect(w.erreichbar, isTrue);
+      expect(terminalSucheAbstaende, const <Duration>[
+        Duration(minutes: 5),
+        Duration(minutes: 15),
+        Duration(minutes: 60),
+      ]);
     });
 
     test('die Sperrzeit gilt nur nach einer echten Suche', () async {

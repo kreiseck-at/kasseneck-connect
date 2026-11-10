@@ -12,10 +12,24 @@ import 'hps.dart';
 import 'tid.dart';
 import 'warmhalten.dart';
 
-/// Höchstens eine Suche im Hintergrund in diesem Abstand. Die Terminal-Suche
-/// klopft das ganze Netz ab (bis 18 s); ein ausgeschaltetes Terminal soll das
-/// nicht alle zwei Minuten auslösen.
+/// Abstände der Suchen im Hintergrund, solange das Terminal unerreichbar
+/// bleibt: erst 5 min, nach einer Suche ohne Fund 15 min, dann 60 min; nach
+/// einem Fund oder wenn es wieder antwortet, wieder 5 min. Die Suche klopft
+/// das ganze Netz ab (bis 18 s) – ein Terminal, das aus ist, soll das nicht
+/// den ganzen Tag alle paar Minuten auslösen.
+const List<Duration> terminalSucheAbstaende = <Duration>[
+  Duration(minutes: 5),
+  Duration(minutes: 15),
+  Duration(minutes: 60),
+];
+
+/// Der erste Abstand ([terminalSucheAbstaende]).
 const Duration terminalSucheAbstand = Duration(minutes: 5);
+
+/// Gesucht wird im Hintergrund nur, solange eine Kasse offen ist (gültiger
+/// Token in diesem Fenster, wie beim Statustakt): nachts und in fremden
+/// Netzen klopft Connect kein Netz ab.
+const Duration terminalKasseOffenFenster = Duration(minutes: 2);
 
 /// Ereignis: das Terminal ist still unter eine neue Adresse gezogen
 /// (`{tid, from, to}`). Für Log und Diagnose; die Kasse zeigt nichts.
@@ -60,7 +74,9 @@ class TerminalWiederfinder {
     EventBus? events,
     AgentLog? log,
     DateTime Function()? clock,
-  }) : _bridge = bridge,
+    DateTime? Function()? kasseZuletzt,
+  }) : _kasseZuletzt = kasseZuletzt,
+       _bridge = bridge,
        _suche = suche,
        _belegung = belegung,
        _warmhalter = warmhalter,
@@ -77,9 +93,20 @@ class TerminalWiederfinder {
   final AgentLog? _log;
   final DateTime Function() _clock;
 
+  /// Wann zuletzt eine Kasse mit gültigem Token kam; `null`: keine Angabe –
+  /// dann gilt die Kasse als offen (Einbettungen ohne Kontext).
+  final DateTime? Function()? _kasseZuletzt;
+
   final Map<String, Future<TerminalFund?>> _laufend =
       <String, Future<TerminalFund?>>{};
   DateTime? _letzteImHintergrund;
+
+  /// Suchen ohne Fund in Folge; bestimmt den Abstand zur nächsten
+  /// ([terminalSucheAbstaende]).
+  int _ohneFund = 0;
+
+  /// Laufende Anstöße im Hintergrund (Tests, Anhalten).
+  final Set<Future<void>> _hintergrund = <Future<void>>{};
 
   /// Wie viele Suchen wirklich liefen (Tests).
   int suchen = 0;
@@ -91,21 +118,54 @@ class TerminalWiederfinder {
   Future<void> beenden() async {
     _beendet = true;
     try {
-      await Future.wait(_laufend.values.toList()).timeout(beendenHoechstens);
+      await Future.wait(<Future<Object?>>[
+        ..._hintergrund,
+        ..._laufend.values,
+      ]).timeout(beendenHoechstens);
     } on TimeoutException {
       // Eine Suche, die noch im Netz hängt, schreibt nach dem Ende nichts.
     }
   }
 
   /// Suche im Hintergrund für das gemerkte Terminal (nach drei
-  /// Fehlberührungen) – höchstens einmal je [terminalSucheAbstand].
-  void imHintergrund() => unawaited(_imHintergrund());
+  /// Fehlberührungen und danach weiter) – nur bei offener Kasse und im
+  /// wachsenden Abstand [terminalSucheAbstaende].
+  void imHintergrund() {
+    late final Future<void> lauf;
+    lauf = _imHintergrund().whenComplete(() {
+      _hintergrund.remove(lauf);
+    });
+    _hintergrund.add(lauf);
+  }
+
+  /// Wartet auf die Anstöße im Hintergrund und die laufenden Suchen.
+  Future<void> erledigt() async {
+    while (_hintergrund.isNotEmpty || _laufend.isNotEmpty) {
+      await Future.wait(<Future<Object?>>[..._hintergrund, ..._laufend.values]);
+    }
+  }
+
+  /// Das Terminal antwortet wieder: der nächste Ausfall beginnt beim kurzen
+  /// Abstand.
+  void wiederErreichbar() => _ohneFund = 0;
+
+  /// Ob gerade eine Kasse offen ist.
+  bool get _kasseOffen {
+    final quelle = _kasseZuletzt;
+    if (quelle == null) return true;
+    final zuletzt = quelle();
+    if (zuletzt == null) return false;
+    final alter = _clock().difference(zuletzt);
+    return !alter.isNegative && alter <= terminalKasseOffenFenster;
+  }
 
   Future<void> _imHintergrund() async {
+    if (!_kasseOffen) return;
     final zuletzt = _letzteImHintergrund;
     if (zuletzt != null) {
+      final stufe = (_ohneFund - 1).clamp(0, terminalSucheAbstaende.length - 1);
       final alter = _clock().difference(zuletzt);
-      if (!alter.isNegative && alter < terminalSucheAbstand) return;
+      if (!alter.isNegative && alter < terminalSucheAbstaende[stufe]) return;
     }
     final tid = (await store.load()).terminal?.tid;
     if (tid == null) return;
@@ -114,7 +174,8 @@ class TerminalWiederfinder {
     // belegt, kommt der nächste Anstoß gleich wieder dran.
     if (arbeit == null) return;
     _letzteImHintergrund = _clock();
-    await arbeit;
+    final fund = await arbeit;
+    _ohneFund = fund != null ? 0 : _ohneFund + 1;
   }
 
   /// Sucht das Terminal [tid]; `null` ohne genau einen bestätigten Treffer,

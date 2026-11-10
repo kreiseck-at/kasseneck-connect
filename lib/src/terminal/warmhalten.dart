@@ -73,6 +73,9 @@ class TerminalWarmhalter {
   /// Fehlberührung (die Suche hängt sich hier an und drosselt selbst).
   void Function()? beiDauerndUnerreichbar;
 
+  /// Wird gerufen, wenn das Terminal nach Fehlberührungen wieder antwortet.
+  void Function()? beiWiederErreichbar;
+
   Timer? _timer;
   String? _host;
   int _port = hpsDefaultPort;
@@ -184,13 +187,14 @@ class TerminalWarmhalter {
     _port = port;
     _fehlInFolge = 0;
     _timer?.cancel();
-    _timer = Timer.periodic(intervall, (_) => _beruehren());
+    _timer = Timer.periodic(intervall, (_) => beruehren());
     log.info(
       'Terminal-Wachhalten an: $host:$port (alle ${intervall.inSeconds} s).',
     );
   }
 
-  Future<void> _beruehren() async {
+  /// Eine Berührung (der Takt ruft sie; Tests auch direkt).
+  Future<void> beruehren() async {
     final host = _host;
     if (host == null) return;
     // Während einer Zahlung hält die Zahlung selbst das Terminal wach; eine
@@ -212,6 +216,7 @@ class TerminalWarmhalter {
       _zuletztErreichbar = ergebnis;
     }
     if (ergebnis) {
+      if (_fehlInFolge > 0) beiWiederErreichbar?.call();
       _fehlInFolge = 0;
       return;
     }

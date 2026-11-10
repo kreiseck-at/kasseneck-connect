@@ -115,8 +115,10 @@ class HpsBridge {
     this.verbindungTimeout = hpsVerbindungTimeout,
     String? betriebssystem,
     Future<ConnectionTask<Socket>> Function(Uri, String?, int?)? verbinden,
+    DateTime Function()? clock,
   }) : betriebssystem = betriebssystem ?? Platform.operatingSystem,
-       _verbinden = verbinden;
+       _verbinden = verbinden,
+       _clock = clock ?? DateTime.now;
 
   final AgentLog log;
 
@@ -138,6 +140,9 @@ class HpsBridge {
   /// Nur für Tests: ersetzt den Verbindungsaufbau des `HttpClient`
   /// (`HttpClient.connectionFactory`), etwa durch einen, der nie fertig wird.
   final Future<ConnectionTask<Socket>> Function(Uri, String?, int?)? _verbinden;
+
+  /// Uhr der Gesamtfrist je Aufruf (Tests geben eine eigene vor).
+  final DateTime Function() _clock;
 
   /// Kurzer Aufruf mit EINEM Weckversuch: ein Terminal im WLAN-Stromsparmodus
   /// verschlaeft gern die erste Anfrage (sie weckt nur das Funkmodul) und
@@ -347,9 +352,9 @@ class HpsBridge {
     // Je Abschnitt eine eigene hieße bei der Zahlung bis zu zweimal vier
     // Minuten, und die Belegung des Terminals liefe vorher ab.
     final zeitlimit = timeout ?? kurzTimeout;
-    final uhr = Stopwatch()..start();
+    final beginn = _clock();
     Duration rest() {
-      final r = zeitlimit - uhr.elapsed;
+      final r = zeitlimit - _clock().difference(beginn);
       return r.isNegative ? Duration.zero : r;
     }
 

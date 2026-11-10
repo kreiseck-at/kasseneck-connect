@@ -15,6 +15,7 @@ import 'api/routes_update.dart';
 import 'api/server.dart';
 import 'bluetooth/bridge.dart';
 import 'bluetooth/helper.dart';
+import 'config/installation.dart';
 import 'config/model.dart';
 import 'config/store.dart';
 import 'downloads.dart';
@@ -207,6 +208,9 @@ class Agent {
   /// Kopplung an (Code erzeugen, loggen, Browser öffnen).
   Future<void> start() async {
     if (_server != null) return;
+
+    // Vor allem anderen: die Kasse fragt die Kennung schon im ersten Status.
+    await sichereInstallationId(store, log: log);
 
     // Der Druckstapel gehört zum Agenten: Registry, Warteschlange und Suche
     // hängen alle am selben Ereignisbus, den A4 an `/v1/events` weiterreicht.

@@ -190,7 +190,7 @@ class PrinterRegistry {
     return printers
         .map(
           (printer) => <String, Object?>{
-            ...printer.toJson(),
+            ...printer.toApiJson(),
             'state': stateOf(printer.id).wireName,
           },
         )

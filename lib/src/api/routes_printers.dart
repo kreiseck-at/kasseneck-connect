@@ -103,7 +103,7 @@ Future<Response> handlePutPrinter(
   final saved = await registry.upsert(parsed.printer!);
   return okJson(<String, Object?>{
     'printer': <String, Object?>{
-      ...saved.toJson(),
+      ...saved.toApiJson(),
       'state': registry.stateOf(saved.id).wireName,
     },
   });

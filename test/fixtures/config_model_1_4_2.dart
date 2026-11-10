@@ -1,0 +1,463 @@
+/// Unveränderte Kopie des Konfigurationsmodells aus Connect 1.4.2
+/// (`git show v1.4.2:lib/src/config/model.dart`), nur der Import angepasst.
+/// Damit prüft `config_rueckwaerts_test.dart`, dass 1.4.2 eine von dieser
+/// Fassung geschriebene `config.json` noch lädt – nie von Hand ändern.
+///
+/// Typisiertes Konfigurationsmodell des Agenten.
+///
+/// Alle `fromJson`-Fabriken sind bewusst tolerant: fehlende oder unbrauchbare
+/// Felder fallen auf den Standardwert zurück, damit eine von Hand verpfuschte
+/// oder ältere `config.json` den Agenten nicht am Start hindert.
+library;
+
+import 'package:kasseneck_connect/src/bluetooth/uuids.dart';
+
+/// Aktuelle Schemaversion der `config.json`.
+const int currentSchemaVersion = 1;
+
+/// Standardport der lokalen API.
+const int defaultAgentPort = 27182;
+
+/// Standardport des HTTPS-Zugangs (Ausweich bis 27197). Eigene Portreihe,
+/// damit HTTP auf 27182 ff. für bestehende Kassen unverändert bleibt.
+const int defaultHttpsPort = 27190;
+
+/// Standard-Update-Kanal.
+const String defaultUpdateChannel = 'stable';
+
+/// Anbindungsart eines Druckers.
+enum PrinterKind {
+  /// Roher Bytestrom über TCP 9100.
+  tcp9100('tcp9100', 9100),
+
+  /// Epson ePOS-Print über HTTP(S).
+  epos('epos', 80);
+
+  const PrinterKind(this.wireName, this.defaultPort);
+
+  /// Bezeichner in JSON und API.
+  final String wireName;
+
+  /// Voreingestellter Port dieser Anbindung.
+  final int defaultPort;
+
+  /// Liest eine Anbindungsart; unbekannte Werte werden zu [tcp9100].
+  static PrinterKind fromWireName(Object? value) {
+    for (final kind in PrinterKind.values) {
+      if (kind.wireName == value) return kind;
+    }
+    return PrinterKind.tcp9100;
+  }
+}
+
+/// Ein konfigurierter Drucker.
+class PrinterConfig {
+  PrinterConfig({
+    required this.id,
+    required this.name,
+    required this.kind,
+    required this.host,
+    int? port,
+    this.devid,
+  }) : port = port ?? kind.defaultPort;
+
+  /// Stabile ID (wird vom Agenten vergeben).
+  final String id;
+
+  /// Anzeigename in der Kasse.
+  final String name;
+
+  final PrinterKind kind;
+
+  /// IP oder Hostname.
+  final String host;
+
+  final int port;
+
+  /// Geräte-ID für ePOS (`local_printer`), sonst `null`.
+  final String? devid;
+
+  PrinterConfig copyWith({
+    String? id,
+    String? name,
+    PrinterKind? kind,
+    String? host,
+    int? port,
+    String? devid,
+  }) {
+    return PrinterConfig(
+      id: id ?? this.id,
+      name: name ?? this.name,
+      kind: kind ?? this.kind,
+      host: host ?? this.host,
+      port: port ?? this.port,
+      devid: devid ?? this.devid,
+    );
+  }
+
+  Map<String, Object?> toJson() => <String, Object?>{
+    'id': id,
+    'name': name,
+    'kind': kind.wireName,
+    'host': host,
+    'port': port,
+    if (devid != null) 'devid': devid,
+  };
+
+  static PrinterConfig fromJson(Map<String, Object?> json) {
+    final kind = PrinterKind.fromWireName(json['kind']);
+    return PrinterConfig(
+      id: readString(json['id']) ?? '',
+      name: readString(json['name']) ?? '',
+      kind: kind,
+      host: readString(json['host']) ?? '',
+      port: readInt(json['port']) ?? kind.defaultPort,
+      devid: readString(json['devid']),
+    );
+  }
+
+  @override
+  String toString() => 'PrinterConfig($id, ${kind.wireName}, $host:$port)';
+}
+
+/// Ein konfiguriertes Zahlungsterminal (v1.1: `hobex`).
+class TerminalConfig {
+  TerminalConfig({
+    this.kind = 'hobex',
+    required this.host,
+    this.port = 8080,
+    this.tid,
+  });
+
+  final String kind;
+  final String host;
+  final int port;
+
+  /// Terminal-ID, falls das Terminal mehrere führt.
+  final String? tid;
+
+  TerminalConfig copyWith({
+    String? kind,
+    String? host,
+    int? port,
+    String? tid,
+  }) {
+    return TerminalConfig(
+      kind: kind ?? this.kind,
+      host: host ?? this.host,
+      port: port ?? this.port,
+      tid: tid ?? this.tid,
+    );
+  }
+
+  Map<String, Object?> toJson() => <String, Object?>{
+    'kind': kind,
+    'host': host,
+    'port': port,
+    if (tid != null) 'tid': tid,
+  };
+
+  static TerminalConfig fromJson(Map<String, Object?> json) => TerminalConfig(
+    kind: readString(json['kind']) ?? 'hobex',
+    host: readString(json['host']) ?? '',
+    port: readInt(json['port']) ?? 8080,
+    tid: readString(json['tid']),
+  );
+
+  @override
+  String toString() => 'TerminalConfig($kind, $host:$port)';
+}
+
+/// Ein vom Kunden zugelassenes Bluetooth-Gerät (Waage, Lesegerät …).
+///
+/// Nur zugelassene Geräte darf die Kasse über die Brücke ansprechen; die
+/// Kennung ist die CoreBluetooth-UUID des Geräts auf diesem Rechner.
+class BluetoothDeviceConfig {
+  BluetoothDeviceConfig({
+    required String id,
+    required this.name,
+    required this.approvedAt,
+  }) : id = id.toLowerCase();
+
+  /// CoreBluetooth-Kennung, immer klein geschrieben.
+  final String id;
+
+  /// Name aus dem Scan; fehlt er, steht hier die Kennung.
+  final String name;
+
+  /// Zeitpunkt der Zulassung.
+  final DateTime approvedAt;
+
+  Map<String, Object?> toJson() => <String, Object?>{
+    'id': id,
+    'name': name,
+    'approvedAt': approvedAt.toUtc().toIso8601String(),
+  };
+
+  /// Liest einen Eintrag; `null` bei ungültiger Kennung oder fehlendem bzw.
+  /// kaputtem Zeitpunkt (der Eintrag wird dann beim Laden übersprungen).
+  static BluetoothDeviceConfig? fromJson(Map<String, Object?> json) {
+    final id = readString(json['id']);
+    if (id == null || !isValidDeviceId(id)) return null;
+    final approvedAt = readDateTime(json['approvedAt']);
+    if (approvedAt == null) return null;
+    final name = readString(json['name']);
+    return BluetoothDeviceConfig(
+      id: id,
+      // Unbenannte Geräte melden im Scan keinen Namen.
+      name: (name == null || name.isEmpty) ? id.toLowerCase() : name,
+      approvedAt: approvedAt.toUtc(),
+    );
+  }
+
+  @override
+  String toString() => 'BluetoothDeviceConfig($id, $name)';
+}
+
+/// Offener Kopplungsvorgang: Code, Ablauf, Fehlversuche, Sperre.
+///
+/// Der Code steht im Klartext in der Datei — er ist sechsstellig, zehn Minuten
+/// gültig und steht ohnehin im Log bzw. auf der Konsole (`kasseneck-connect
+/// pair`). Ein Hash brächte hier keine Sicherheit, verhinderte aber, dass ein
+/// zweiter Prozess (CLI neben laufendem Agent) denselben Vorgang sieht.
+class PairingState {
+  const PairingState({
+    this.code,
+    this.expiresAt,
+    this.failedAttempts = 0,
+    this.lockedUntil,
+  });
+
+  /// Kein Vorgang offen.
+  static const PairingState none = PairingState();
+
+  /// Sechsstelliger Code, `null` wenn kein Vorgang offen ist.
+  final String? code;
+
+  /// Zeitpunkt, ab dem [code] nicht mehr gilt.
+  final DateTime? expiresAt;
+
+  /// Fehlversuche seit dem letzten gültigen Code.
+  final int failedAttempts;
+
+  /// Sperre nach zu vielen Fehlversuchen.
+  final DateTime? lockedUntil;
+
+  bool get isEmpty =>
+      code == null &&
+      expiresAt == null &&
+      failedAttempts == 0 &&
+      lockedUntil == null;
+
+  PairingState copyWith({
+    String? code,
+    DateTime? expiresAt,
+    int? failedAttempts,
+    DateTime? lockedUntil,
+    bool clearCode = false,
+    bool clearLock = false,
+  }) {
+    return PairingState(
+      code: clearCode ? null : (code ?? this.code),
+      expiresAt: clearCode ? null : (expiresAt ?? this.expiresAt),
+      failedAttempts: failedAttempts ?? this.failedAttempts,
+      lockedUntil: clearLock ? null : (lockedUntil ?? this.lockedUntil),
+    );
+  }
+
+  Map<String, Object?> toJson() => <String, Object?>{
+    if (code != null) 'code': code,
+    if (expiresAt != null) 'expiresAt': expiresAt!.toIso8601String(),
+    'failedAttempts': failedAttempts,
+    if (lockedUntil != null) 'lockedUntil': lockedUntil!.toIso8601String(),
+  };
+
+  static PairingState fromJson(Map<String, Object?> json) => PairingState(
+    code: readString(json['code']),
+    expiresAt: readDateTime(json['expiresAt']),
+    failedAttempts: readInt(json['failedAttempts']) ?? 0,
+    lockedUntil: readDateTime(json['lockedUntil']),
+  );
+
+  @override
+  String toString() =>
+      'PairingState(${code == null ? 'kein Code' : 'Code offen'}, '
+      '$failedAttempts Fehlversuche)';
+}
+
+/// Gesamte Konfiguration des Agenten (`config.json`).
+class AgentConfig {
+  AgentConfig({
+    this.schemaVersion = currentSchemaVersion,
+    this.port = defaultAgentPort,
+    this.httpsPort = defaultHttpsPort,
+    List<String>? tokenHashes,
+    List<PrinterConfig>? printers,
+    this.terminal,
+    this.updateChannel = defaultUpdateChannel,
+    this.pairing = PairingState.none,
+    this.allowDevOrigins = false,
+    List<BluetoothDeviceConfig>? bluetoothDevices,
+  }) : tokenHashes = List<String>.unmodifiable(tokenHashes ?? const <String>[]),
+       printers = List<PrinterConfig>.unmodifiable(
+         printers ?? const <PrinterConfig>[],
+       ),
+       bluetoothDevices = List<BluetoothDeviceConfig>.unmodifiable(
+         bluetoothDevices ?? const <BluetoothDeviceConfig>[],
+       );
+
+  final int schemaVersion;
+
+  /// Port der lokalen API (Standard 27182, Fallback 27183–27189).
+  final int port;
+
+  /// Port des HTTPS-Zugangs (Standard 27190, Fallback 27191–27197); der
+  /// Agent merkt sich hier, wo er zuletzt lauschte.
+  final int httpsPort;
+
+  /// SHA-256-Hashes der ausgegebenen Tokens — Klartext-Tokens werden nie gespeichert.
+  final List<String> tokenHashes;
+
+  final List<PrinterConfig> printers;
+
+  final TerminalConfig? terminal;
+
+  final String updateChannel;
+
+  /// Offener Kopplungsvorgang (leer, wenn keiner läuft).
+  final PairingState pairing;
+
+  /// Lässt zusätzlich `http://localhost:<port>` und `http://127.0.0.1:<port>`
+  /// als Herkunft zu — nur für die Entwicklung der Kasse.
+  ///
+  /// Standard `false`: auf einem Kundenrechner darf keine beliebige lokale
+  /// Webseite den Agenten ansprechen.
+  final bool allowDevOrigins;
+
+  /// Zugelassene Bluetooth-Geräte (Obergrenze prüft die Brücke, nicht das Modell).
+  final List<BluetoothDeviceConfig> bluetoothDevices;
+
+  AgentConfig copyWith({
+    int? schemaVersion,
+    int? port,
+    int? httpsPort,
+    List<String>? tokenHashes,
+    List<PrinterConfig>? printers,
+    TerminalConfig? terminal,
+    bool clearTerminal = false,
+    String? updateChannel,
+    PairingState? pairing,
+    bool? allowDevOrigins,
+    List<BluetoothDeviceConfig>? bluetoothDevices,
+  }) {
+    return AgentConfig(
+      schemaVersion: schemaVersion ?? this.schemaVersion,
+      port: port ?? this.port,
+      httpsPort: httpsPort ?? this.httpsPort,
+      tokenHashes: tokenHashes ?? this.tokenHashes,
+      printers: printers ?? this.printers,
+      terminal: clearTerminal ? null : (terminal ?? this.terminal),
+      updateChannel: updateChannel ?? this.updateChannel,
+      pairing: pairing ?? this.pairing,
+      allowDevOrigins: allowDevOrigins ?? this.allowDevOrigins,
+      bluetoothDevices: bluetoothDevices ?? this.bluetoothDevices,
+    );
+  }
+
+  Map<String, Object?> toJson() => <String, Object?>{
+    'schemaVersion': schemaVersion,
+    'port': port,
+    'httpsPort': httpsPort,
+    'tokenHashes': tokenHashes,
+    'printers': printers.map((p) => p.toJson()).toList(),
+    'terminal': terminal?.toJson(),
+    'updateChannel': updateChannel,
+    if (!pairing.isEmpty) 'pairing': pairing.toJson(),
+    'allowDevOrigins': allowDevOrigins,
+    'bluetoothDevices': bluetoothDevices.map((d) => d.toJson()).toList(),
+  };
+
+  static AgentConfig fromJson(Map<String, Object?> json) {
+    final terminalJson = readMap(json['terminal']);
+    final pairingJson = readMap(json['pairing']);
+    return AgentConfig(
+      pairing: pairingJson == null
+          ? PairingState.none
+          : PairingState.fromJson(pairingJson),
+      allowDevOrigins: json['allowDevOrigins'] == true,
+      schemaVersion: readInt(json['schemaVersion']) ?? currentSchemaVersion,
+      // Port 0 (freier Port vom System) ist nur programmatisch sinnvoll; aus
+      // der Datei gelesen wäre er ein Fehler und ergäbe bei jedem Start einen
+      // anderen Port, den die Kasse nicht findet.
+      port: _readPort(json['port']),
+      httpsPort: _readPort(json['httpsPort'], fallback: defaultHttpsPort),
+      tokenHashes: readStringList(json['tokenHashes']),
+      printers: readMapList(
+        json['printers'],
+      ).map(PrinterConfig.fromJson).toList(),
+      terminal: terminalJson == null
+          ? null
+          : TerminalConfig.fromJson(terminalJson),
+      updateChannel: readString(json['updateChannel']) ?? defaultUpdateChannel,
+      bluetoothDevices: readMapList(
+        json['bluetoothDevices'],
+      ).map(BluetoothDeviceConfig.fromJson).nonNulls.toList(),
+    );
+  }
+
+  @override
+  String toString() =>
+      'AgentConfig(v$schemaVersion, port $port, https $httpsPort, '
+      '${tokenHashes.length} Token, '
+      '${printers.length} Drucker)';
+}
+
+/// Liest einen Port aus der Datei; 0 oder Unsinn ergibt [fallback].
+int _readPort(Object? value, {int fallback = defaultAgentPort}) {
+  final port = readInt(value);
+  if (port == null || port <= 0 || port > 65535) return fallback;
+  return port;
+}
+
+/// Liest einen String, wenn der Wert einer ist.
+String? readString(Object? value) => value is String ? value : null;
+
+/// Liest eine ganze Zahl; akzeptiert auch numerische Strings.
+int? readInt(Object? value) {
+  if (value is int) return value;
+  if (value is num) return value.toInt();
+  if (value is String) return int.tryParse(value);
+  return null;
+}
+
+/// Liest einen Zeitpunkt aus einer ISO-8601-Zeichenkette.
+DateTime? readDateTime(Object? value) {
+  if (value is! String) return null;
+  return DateTime.tryParse(value);
+}
+
+/// Liest eine Map mit String-Schlüsseln.
+Map<String, Object?>? readMap(Object? value) {
+  if (value is Map<String, Object?>) return value;
+  if (value is Map) {
+    return value.map((key, dynamic v) => MapEntry('$key', v as Object?));
+  }
+  return null;
+}
+
+/// Liest eine Liste von Strings; Fremdtypen werden übersprungen.
+List<String> readStringList(Object? value) {
+  if (value is! List) return const <String>[];
+  return value.whereType<String>().toList();
+}
+
+/// Liest eine Liste von Maps; Fremdtypen werden übersprungen.
+List<Map<String, Object?>> readMapList(Object? value) {
+  if (value is! List) return const <Map<String, Object?>>[];
+  final result = <Map<String, Object?>>[];
+  for (final entry in value) {
+    final map = readMap(entry);
+    if (map != null) result.add(map);
+  }
+  return result;
+}

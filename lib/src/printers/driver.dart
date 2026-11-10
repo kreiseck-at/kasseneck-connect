@@ -21,6 +21,10 @@ const String errorPaperOut = 'paper_out';
 /// `printer_status`).
 const String errorCoverOpen = 'cover_open';
 
+/// Ein Drucker, der nachweislich auf `DLE EOT` antwortet, schweigt: Deckel
+/// offen oder Papier heraus. Kein Byte ging hinaus (ab 1.5.0).
+const String errorPrinterNotReady = 'printer_not_ready';
+
 /// Derselbe `jobId` läuft noch.
 const String errorPrintInProgress = 'print_in_progress';
 

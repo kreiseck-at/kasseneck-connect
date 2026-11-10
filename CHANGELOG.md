@@ -20,8 +20,12 @@ Kasse entscheidet an `features`.
   `POST /v1/printers/discover` nennt je Fund `model` und `serial`.
 - **Papier und Deckel** vor jedem Bon (`DLE EOT 2/4`, ePOS-Statusbits):
   `paper_out` und `cover_open` statt eines stillen „gedruckt“, kein Byte
-  gesendet; „fast leer“ druckt. Statustakt alle 60 s bei offener Kasse,
-  `POST /v1/printers/{id}/status`, Felder `paper`, `cover`, `statusAt`.
+  gesendet; „fast leer“ druckt. Ein Drucker, der schon einmal gültig auf
+  `DLE EOT` geantwortet hat (`statusCapableAt`) und jetzt schweigt, ist nicht
+  bereit (Epson TM-T20III mit offenem Deckel oder ohne Papier):
+  `printer_not_ready`, kein Byte gesendet. Statustakt alle 60 s bei offener
+  Kasse, `POST /v1/printers/{id}/status`, Felder `paper`, `cover`,
+  `readiness`, `statusAt`.
 - **Wiederfinden:** Drucker unter neuer Adresse (schnell im Auftrag, gründlich
   im Hintergrund), Terminal per TID; Terminal-Aufrufe ohne Verbindung laufen
   genau einmal an der bestätigten Adresse derselben TID. `endpoint` in jeder

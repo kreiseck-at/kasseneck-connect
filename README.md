@@ -411,6 +411,7 @@ schnelle Benachrichtigung obendrauf.
 | `print_in_progress` | derselbe Auftrag läuft gerade noch |
 | `paper_out` | ab 1.5.0: Papierende vor dem Druck gemeldet – **kein Byte gesendet**, derselbe Auftrag geht nach dem Einlegen |
 | `cover_open` | ab 1.5.0: Deckel offen vor dem Druck – kein Byte gesendet |
+| `printer_not_ready` | ab 1.5.0: ein Drucker, der sonst auf `DLE EOT` antwortet, schweigt (Deckel offen, Papier heraus) – kein Byte gesendet |
 | `device_not_found` | ab 1.5.0: `locate` ohne eindeutigen Treffer |
 | `update_device_busy` | ab 1.5.0: ein Druck oder eine Zahlung läuft – danach aktualisieren (HTTP 409) |
 | `restart_busy` | ab 1.5.0: ein Druck oder eine Zahlung läuft (HTTP 409) |
@@ -566,7 +567,7 @@ der Versionsnummer:
 | Fähigkeit | Inhalt |
 |---|---|
 | `identity` | Kennung je Drucker (`identity: {model, serial, mac, state}`), `installationId` (auch ohne Token) |
-| `printer_status` | `paper` (`ok`, `near_end`, `out`, `unknown`), `cover` (`closed`, `open`, `unknown`), `statusAt` je Drucker, `POST /v1/printers/{id}/status`, `paper_out`, `cover_open` |
+| `printer_status` | `paper` (`ok`, `near_end`, `out`, `unknown`), `cover` (`closed`, `open`, `unknown`), `readiness` (`ready`, `not_ready`, `unknown`), `statusAt` je Drucker, `POST /v1/printers/{id}/status`, `paper_out`, `cover_open`, `printer_not_ready` |
 | `relocate` | Wiederfinden, `endpoint` in Terminal-Antworten, `locate` für Drucker und Terminal |
 | `busy_lock` | Update-, Neustart- und Schlafsperre, `betrieb.lock`, `terminal_busy` |
 | `diagnosis` | `GET /v1/diagnosis` |
@@ -594,7 +595,12 @@ blockiert den Druck nie.
 **Papier und Deckel.** Vor jedem Bon `DLE EOT 2` und `DLE EOT 4` (9100) bzw.
 die Statusbits eines leeren ePOS-Auftrags. Gezählt wird nur eine Antwort mit
 den festen Bits; blockiert wird nur bei Papierende oder offenem Deckel
-(`paper_out`, `cover_open`, kein Byte gesendet), „fast leer“ druckt. Solange
+(`paper_out`, `cover_open`, kein Byte gesendet), „fast leer“ druckt. Ein
+Epson TM-T20III meldet beides nicht als Bits, sondern schweigt (Gerätetest):
+Hat ein Drucker schon einmal gültig auf `DLE EOT` geantwortet
+(`statusCapableAt` in der `config.json`), heißt Schweigen auf zwei Verbindungen
+nacheinander „nicht bereit“ – `printer_not_ready`, kein Byte gesendet,
+höchstens 1,5 s. Ein Drucker, der nie geantwortet hat, druckt wie bisher. Solange
 eine Kasse offen ist (gültiger Token in den letzten 2 min), fragt Connect jeden
 Drucker alle 60 s ab – ein Takt für alle Kassen, über die Warteschlange, nie
 neben einem Bon.

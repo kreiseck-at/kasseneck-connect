@@ -90,6 +90,7 @@ class PrinterConfig {
     this.mac,
     this.identifiedAt,
     this.identitySource,
+    this.statusCapableAt,
     Map<String, Object?>? extras,
   }) : port = port ?? kind.defaultPort,
        extras = Map<String, Object?>.unmodifiable(
@@ -127,6 +128,12 @@ class PrinterConfig {
   /// Woher die Kennung stammt.
   final KennungsQuelle? identitySource;
 
+  /// Seit wann der Drucker nachweislich auf `DLE EOT` antwortet. Schweigt ein
+  /// solcher Drucker, ist er nicht bereit (Gerätetest TM-T20III: mit offenem
+  /// Deckel oder ohne Papier beantwortet er `DLE EOT` gar nicht) – bei einem,
+  /// der nie geantwortet hat, heißt Schweigen nur „unbekannt“.
+  final DateTime? statusCapableAt;
+
   /// Felder, die diese Fassung nicht kennt (aus einer neueren Fassung); sie
   /// überleben das Schreiben unverändert.
   final Map<String, Object?> extras;
@@ -146,6 +153,7 @@ class PrinterConfig {
     String? mac,
     DateTime? identifiedAt,
     KennungsQuelle? identitySource,
+    DateTime? statusCapableAt,
   }) {
     return PrinterConfig(
       id: id ?? this.id,
@@ -159,6 +167,7 @@ class PrinterConfig {
       mac: mac ?? this.mac,
       identifiedAt: identifiedAt ?? this.identifiedAt,
       identitySource: identitySource ?? this.identitySource,
+      statusCapableAt: statusCapableAt ?? this.statusCapableAt,
       extras: extras,
     );
   }
@@ -195,6 +204,8 @@ class PrinterConfig {
     if (identifiedAt != null)
       'identifiedAt': identifiedAt!.toUtc().toIso8601String(),
     if (identitySource != null) 'identitySource': identitySource!.wireName,
+    if (statusCapableAt != null)
+      'statusCapableAt': statusCapableAt!.toUtc().toIso8601String(),
   };
 
   static const Set<String> _bekannteFelder = <String>{
@@ -209,6 +220,7 @@ class PrinterConfig {
     'mac',
     'identifiedAt',
     'identitySource',
+    'statusCapableAt',
   };
 
   static PrinterConfig fromJson(Map<String, Object?> json) {
@@ -225,6 +237,7 @@ class PrinterConfig {
       mac: normalizeMac(readString(json['mac'])),
       identifiedAt: readDateTime(json['identifiedAt'])?.toUtc(),
       identitySource: KennungsQuelle.fromWireName(json['identitySource']),
+      statusCapableAt: readDateTime(json['statusCapableAt'])?.toUtc(),
       extras: _unbekannte(json, _bekannteFelder),
     );
   }

@@ -31,8 +31,10 @@ class DruckerErkennung {
     required ArpTabelle arp,
     required InterfaceProbe schnittstellen,
     FundGedaechtnis? funde,
+    DateTime Function()? clock,
     this.budget = erkennungsBudget,
-  }) : _abfrage = abfrage,
+  }) : _clock = clock ?? DateTime.now,
+       _abfrage = abfrage,
        _arp = arp,
        _schnittstellen = schnittstellen,
        _funde = funde;
@@ -41,6 +43,7 @@ class DruckerErkennung {
   final ArpTabelle _arp;
   final InterfaceProbe _schnittstellen;
   final FundGedaechtnis? _funde;
+  final DateTime Function() _clock;
 
   /// Zeitbudget der Abfrage-Verbindung.
   final Duration budget;
@@ -51,6 +54,7 @@ class DruckerErkennung {
     var modelQuelle = model == null ? null : KennungsQuelle.mdns;
     var serial = fund?.serial;
     var serialQuelle = serial == null ? null : KennungsQuelle.mdns;
+    DateTime? statusfaehigAm;
 
     if (drucker.kind == PrinterKind.tcp9100) {
       final antworten = await _abfrage.frage(
@@ -70,6 +74,7 @@ class DruckerErkennung {
         serial = antworten.seriennummer;
         serialQuelle = KennungsQuelle.escpos;
       }
+      if (antworten.offlineGrund != null) statusfaehigAm = _clock();
     }
 
     final mac = await macImSelbenNetz(drucker.host, _arp, _schnittstellen);
@@ -79,6 +84,7 @@ class DruckerErkennung {
       serial: serial,
       serialQuelle: serialQuelle,
       mac: mac,
+      statusfaehigAm: statusfaehigAm,
     );
   }
 }

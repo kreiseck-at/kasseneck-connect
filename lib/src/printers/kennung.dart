@@ -106,6 +106,7 @@ class ErkannteKennung {
     this.serial,
     this.serialQuelle,
     this.mac,
+    this.statusfaehigAm,
   });
 
   static const ErkannteKennung keine = ErkannteKennung();
@@ -116,7 +117,11 @@ class ErkannteKennung {
   final KennungsQuelle? serialQuelle;
   final String? mac;
 
-  bool get leer => model == null && serial == null && mac == null;
+  /// Wann das Gerät gültig auf `DLE EOT` geantwortet hat (`null`: nicht).
+  final DateTime? statusfaehigAm;
+
+  bool get leer =>
+      model == null && serial == null && mac == null && statusfaehigAm == null;
 }
 
 /// Trägt [erkannt] in [drucker] ein – nur, was dort noch fehlt.
@@ -132,11 +137,16 @@ PrinterConfig? ergaenzeKennung(
   final model = drucker.model ?? erkannt.model;
   final serial = drucker.serial ?? erkannt.serial;
   final mac = drucker.mac ?? normalizeMac(erkannt.mac);
+  final statusfaehig =
+      drucker.statusCapableAt ?? erkannt.statusfaehigAm?.toUtc();
   if (model == drucker.model &&
       serial == drucker.serial &&
-      mac == drucker.mac) {
+      mac == drucker.mac &&
+      statusfaehig == drucker.statusCapableAt) {
     return null;
   }
+  final kennungNeu =
+      model != drucker.model || serial != drucker.serial || mac != drucker.mac;
   final quelle = serial != null
       ? (drucker.serial != null ? drucker.identitySource : erkannt.serialQuelle)
       : mac != null
@@ -146,8 +156,9 @@ PrinterConfig? ergaenzeKennung(
     model: model,
     serial: serial,
     mac: mac,
-    identifiedAt: jetzt,
+    identifiedAt: kennungNeu ? jetzt : drucker.identifiedAt,
     identitySource: quelle,
+    statusCapableAt: statusfaehig,
   );
 }
 

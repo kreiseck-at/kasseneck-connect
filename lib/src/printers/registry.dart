@@ -137,6 +137,7 @@ class PrinterRegistry {
       mac: alt.mac,
       identifiedAt: alt.identifiedAt,
       identitySource: alt.identitySource,
+      statusCapableAt: alt.statusCapableAt,
       extras: alt.extras,
     );
   }
@@ -235,6 +236,34 @@ class PrinterRegistry {
     });
   }
 
+  /// Merkt sich: [drucker] antwortet auf `DLE EOT` (`statusCapableAt`).
+  /// Einmal je Drucker und Adresse; wirft nie.
+  Future<void> statusfaehigMerken(PrinterConfig drucker, DateTime am) async {
+    if (drucker.statusCapableAt != null) return;
+    try {
+      await store.mutate((config) {
+        final printers = config.printers.toList();
+        final index = printers.indexWhere((p) => p.id == drucker.id);
+        if (index < 0) return config;
+        final aktuell = printers[index];
+        if (aktuell.statusCapableAt != null ||
+            aktuell.host != drucker.host ||
+            aktuell.port != drucker.port) {
+          return config;
+        }
+        printers[index] = aktuell.copyWith(statusCapableAt: am.toUtc());
+        return config.copyWith(printers: printers);
+      });
+      _log?.info('Drucker ${drucker.id} antwortet auf DLE EOT.');
+    } on Object catch (e) {
+      // Dann gilt er weiter als nie geantwortet: Schweigen heißt unbekannt,
+      // gedruckt wird wie bis 1.4.2.
+      _log?.warn(
+        'Drucker ${drucker.id}: Statusfähigkeit nicht gespeichert: $e',
+      );
+    }
+  }
+
   /// Papier und Deckel eines ePOS-Druckers über einen leeren Auftrag; `null`,
   /// wenn er nicht antwortet oder kein ePOS-Drucker ist. Wirft nie.
   Future<DruckerZustand?> eposZustand(
@@ -267,6 +296,7 @@ class PrinterRegistry {
       <String, Object?>{
         'paper': lage.zustand.papier.wireName,
         'cover': lage.zustand.deckel.wireName,
+        'readiness': lage.zustand.bereitschaft.wireName,
         'statusAt': lage.zustandAm?.toIso8601String(),
       };
 

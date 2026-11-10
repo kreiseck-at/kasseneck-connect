@@ -32,17 +32,40 @@ enum Deckel {
   final String wireName;
 }
 
-/// Was der Drucker über Papier und Deckel gemeldet hat.
+/// Ob der Drucker druckbereit ist (`readiness` in der API).
+enum Bereitschaft {
+  /// Er hat gültig auf `DLE EOT` geantwortet.
+  bereit('ready'),
+
+  /// Er hat schon gültig geantwortet und schweigt jetzt: Deckel offen oder
+  /// Papier heraus (Gerätetest TM-T20III, ohne Statusbits).
+  nichtBereit('not_ready'),
+
+  unbekannt('unknown');
+
+  const Bereitschaft(this.wireName);
+
+  final String wireName;
+}
+
+/// Was der Drucker über Papier, Deckel und Bereitschaft gemeldet hat.
 class DruckerZustand {
   const DruckerZustand({
     this.papier = Papier.unbekannt,
     this.deckel = Deckel.unbekannt,
+    this.bereitschaft = Bereitschaft.unbekannt,
   });
 
   static const DruckerZustand unbekannt = DruckerZustand();
 
+  /// Ein statusfähiger Drucker, der schweigt.
+  static const DruckerZustand nichtBereit = DruckerZustand(
+    bereitschaft: Bereitschaft.nichtBereit,
+  );
+
   final Papier papier;
   final Deckel deckel;
+  final Bereitschaft bereitschaft;
 
   /// Der Fehler, mit dem ein Druck vor dem ersten Byte abgelehnt wird; `null`,
   /// wenn gedruckt werden darf.
@@ -56,6 +79,9 @@ class DruckerZustand {
     if (deckel == Deckel.offen) {
       return const PrinterFailure(errorCoverOpen, coverOpenMessage);
     }
+    if (bereitschaft == Bereitschaft.nichtBereit) {
+      return const PrinterFailure(errorPrinterNotReady, notReadyMessage);
+    }
     return null;
   }
 
@@ -63,13 +89,16 @@ class DruckerZustand {
   bool operator ==(Object other) =>
       other is DruckerZustand &&
       other.papier == papier &&
-      other.deckel == deckel;
+      other.deckel == deckel &&
+      other.bereitschaft == bereitschaft;
 
   @override
-  int get hashCode => Object.hash(papier, deckel);
+  int get hashCode => Object.hash(papier, deckel, bereitschaft);
 
   @override
-  String toString() => 'DruckerZustand(${papier.wireName}, ${deckel.wireName})';
+  String toString() =>
+      'DruckerZustand(${papier.wireName}, ${deckel.wireName}, '
+      '${bereitschaft.wireName})';
 }
 
 /// Satz an die Kasse bei Papierende (Spec, Meldungstabelle).
@@ -77,6 +106,10 @@ const String paperOutMessage = 'Drucker: Papier leer – neue Rolle einlegen.';
 
 /// Satz an die Kasse bei offenem Deckel.
 const String coverOpenMessage = 'Drucker: Deckel offen – bitte schließen.';
+
+/// Satz an die Kasse, wenn ein statusfähiger Drucker schweigt.
+const String notReadyMessage =
+    'Drucker nicht bereit – Deckel schließen und Papier prüfen.';
 
 // Epson ESC/POS Command Reference, „DLE EOT n“:
 // n = 2 (Offline-Grund): Bit 2 = Deckel offen, Bit 5 = Druck wegen
@@ -118,7 +151,13 @@ DruckerZustand zustandAusDleEot({int? offlineGrund, int? rollensensor}) {
   } else {
     papier = Papier.unbekannt;
   }
-  return DruckerZustand(papier: papier, deckel: deckel);
+  return DruckerZustand(
+    papier: papier,
+    deckel: deckel,
+    bereitschaft: offline != null || rolle != null
+        ? Bereitschaft.bereit
+        : Bereitschaft.unbekannt,
+  );
 }
 
 // Epson ePOS-Print, Attribut `status` der Antwort (ASB-Bits, Epson „ePOS-Print
@@ -135,6 +174,7 @@ DruckerZustand zustandAusEposStatus(String status) {
     return DruckerZustand.unbekannt;
   }
   return DruckerZustand(
+    bereitschaft: Bereitschaft.bereit,
     papier: (wert & _asbLeer) != 0
         ? Papier.leer
         : (wert & _asbFastLeer) != 0

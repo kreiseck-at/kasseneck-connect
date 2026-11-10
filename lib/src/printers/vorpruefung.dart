@@ -22,6 +22,12 @@ import 'zustand.dart';
 /// `stummDauer`.
 const Duration vorpruefungBudget = Duration(milliseconds: 500);
 
+/// Zeitbudget der Prüfungen bei einem statusfähigen Drucker: zwei Versuche zu
+/// je `bereitFrist` samt Verbindungsaufbau und Seriennummer. Ein bereiter
+/// Drucker antwortet in Millisekunden; die 1,5 s zahlt nur einer, der schweigt
+/// (Vorgabe nach dem Gerätetest: höchstens 1,5 s, nur in diesem Fehlerfall).
+const Duration vorpruefungBudgetStatusfaehig = Duration(milliseconds: 1500);
+
 /// Nach einem Kennungskonflikt ohne Fund sucht Connect so lange nicht erneut
 /// vor jedem Bon (das schnelle Wiederfinden kostet bis zu 4 s). Ein getauschter
 /// Drucker unter derselben Adresse druckt so wieder ohne Wartezeit.
@@ -70,6 +76,7 @@ class DruckVorpruefung {
     AgentLog? log,
     DateTime Function()? clock,
     this.budget = vorpruefungBudget,
+    this.budgetStatusfaehig = vorpruefungBudgetStatusfaehig,
   }) : _abfrage = abfrage,
        _arp = arp,
        _schnittstellen = schnittstellen,
@@ -90,6 +97,10 @@ class DruckVorpruefung {
   /// Zeitbudget der Prüfungen (ohne Wiederfinden).
   final Duration budget;
 
+  /// Zeitbudget bei einem statusfähigen Drucker (zwei Versuche, wenn er
+  /// schweigt).
+  final Duration budgetStatusfaehig;
+
   ConfigStore get _store => registry.store;
 
   /// Prüft [drucker] vor einem Bon. Wirft nie.
@@ -102,8 +113,11 @@ class DruckVorpruefung {
     if (!kennungSchalter && !statusAn) return DruckFreigabe(drucker);
 
     final uhr = Stopwatch()..start();
+    final grenze = statusAn && drucker.statusCapableAt != null
+        ? budgetStatusfaehig
+        : budget;
     Duration rest() {
-      final r = budget - uhr.elapsed;
+      final r = grenze - uhr.elapsed;
       return r.isNegative ? Duration.zero : r;
     }
 
@@ -144,18 +158,46 @@ class DruckVorpruefung {
               mac: mac,
               frisch: frisch,
             );
-        if ((fragSerie || statusAn) && !lage.stumm(jetzt)) {
+        final fragen = <EscPosFrage>{
+          if (statusAn) EscPosFrage.rollensensor,
+          if (fragSerie) EscPosFrage.seriennummer,
+        };
+        // Ein Drucker, der schon gültig geantwortet hat, wird immer gefragt:
+        // schweigt er, ist er nicht bereit (Gerätetest TM-T20III).
+        final statusfaehig = statusAn && drucker.statusCapableAt != null;
+        if (statusfaehig) {
+          final antworten = await _abfrage.frageBereit(
+            drucker.host,
+            drucker.port,
+            fragen: fragen,
+            budget: rest(),
+          );
+          geseheneSerie = antworten.seriennummer;
+          if (antworten.stumm) {
+            // Steht unter der Adresse nachweislich ein anderes Gerät (andere
+            // MAC), sagt sein Schweigen nichts über den eingerichteten
+            // Drucker – dann wie bis 1.4.2.
+            zustand = mac == MacVergleich.anders
+                ? null
+                : DruckerZustand.nichtBereit;
+          } else if (antworten.verbunden) {
+            zustand = zustandAusDleEot(
+              offlineGrund: antworten.offlineGrund,
+              rollensensor: antworten.rollensensor,
+            );
+          }
+        } else if (fragen.isNotEmpty && !lage.stumm(jetzt)) {
           final antworten = await _abfrage.frage(
             drucker.host,
             drucker.port,
-            fragen: <EscPosFrage>{
-              if (statusAn) EscPosFrage.rollensensor,
-              if (fragSerie) EscPosFrage.seriennummer,
-            },
+            fragen: fragen,
             budget: rest(),
           );
           if (antworten.stumm) _alsStummMerken(drucker, lage, jetzt);
           geseheneSerie = antworten.seriennummer;
+          if (antworten.offlineGrund != null) {
+            unawaited(registry.statusfaehigMerken(drucker, jetzt));
+          }
           if (statusAn && antworten.verbunden && !antworten.stumm) {
             zustand = zustandAusDleEot(
               offlineGrund: antworten.offlineGrund,

@@ -150,20 +150,34 @@ class DruckerStatusDienst {
 
     switch (drucker.kind) {
       case PrinterKind.tcp9100:
-        // Ein stummes Gerät bekommt keine Abfrage, nur den Verbindungstest
-        // wie bis 1.4.2.
-        if (lage.stumm(jetzt)) return _nurErreichbar(drucker);
-        final antworten = await _abfrage.frage(
-          drucker.host,
-          drucker.port,
-          fragen: const <EscPosFrage>{EscPosFrage.rollensensor},
-          budget: budget,
-        );
+        final statusfaehig = drucker.statusCapableAt != null;
+        // Ein stummes Gerät, das nie geantwortet hat, bekommt keine Abfrage,
+        // nur den Verbindungstest wie bis 1.4.2.
+        if (!statusfaehig && lage.stumm(jetzt)) return _nurErreichbar(drucker);
+        const fragen = <EscPosFrage>{EscPosFrage.rollensensor};
+        final antworten = statusfaehig
+            ? await _abfrage.frageBereit(
+                drucker.host,
+                drucker.port,
+                fragen: fragen,
+                budget: budget,
+              )
+            : await _abfrage.frage(
+                drucker.host,
+                drucker.port,
+                fragen: fragen,
+                budget: budget,
+              );
         registry.noteState(
           drucker.id,
           antworten.verbunden ? PrinterState.online : PrinterState.offline,
         );
-        if (antworten.stumm) {
+        if (antworten.offlineGrund != null && !statusfaehig) {
+          await registry.statusfaehigMerken(drucker, jetzt);
+        }
+        if (antworten.stumm && statusfaehig) {
+          registry.noteZustand(drucker.id, DruckerZustand.nichtBereit, jetzt);
+        } else if (antworten.stumm) {
           _alsStumm(drucker, lage, jetzt);
         } else if (antworten.verbunden) {
           registry.noteZustand(

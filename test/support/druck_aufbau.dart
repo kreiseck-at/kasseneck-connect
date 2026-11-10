@@ -138,6 +138,7 @@ class DruckAufbau {
     String? mac,
     String id = 'p_ab12cd34',
     String host = '127.0.0.1',
+    DateTime? statusCapableAt,
   }) async {
     await store.mutate(
       (c) => c.copyWith(
@@ -151,6 +152,7 @@ class DruckAufbau {
             port: port,
             serial: serial,
             mac: mac,
+            statusCapableAt: statusCapableAt,
           ),
         ],
       ),

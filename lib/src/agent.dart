@@ -317,6 +317,7 @@ class Agent {
         arp: arp,
         schnittstellen: _schnittstellen,
         funde: funde,
+        clock: _clock,
       ),
     );
     final status = DruckerStatusDienst(

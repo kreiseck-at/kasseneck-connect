@@ -10,6 +10,17 @@ import 'tcp9100.dart' show SocketConnector;
 /// antwortet, gilt als stumm – und kostet den Bon nicht das ganze Budget.
 const Duration handshakeFrist = Duration(milliseconds: 250);
 
+/// So lange bekommt ein Drucker, der schon gültig auf `DLE EOT` geantwortet
+/// hat, für die Antwort. Gerätetest TM-T20III: Antwort in wenigen
+/// Millisekunden; mit offenem Deckel oder ohne Papier nimmt er die Verbindung
+/// an und schweigt. 500 ms trennen beides sicher.
+const Duration bereitFrist = Duration(milliseconds: 500);
+
+/// Versuche auf je neuer Verbindung, bevor ein statusfähiger Drucker als
+/// nicht bereit gilt. Der zweite fängt einen Drucker ab, der gerade erst
+/// wieder aufwacht.
+const int bereitVersuche = 2;
+
 /// Was eine Abfrage-Verbindung wissen will.
 enum EscPosFrage {
   /// `DLE EOT 2`: Deckel, Stopp wegen Papierende.
@@ -95,6 +106,7 @@ class EscPosAbfrage {
     int port, {
     required Set<EscPosFrage> fragen,
     required Duration budget,
+    Duration handshake = handshakeFrist,
   }) async {
     final uhr = Stopwatch()..start();
     Duration rest() {
@@ -120,7 +132,7 @@ class EscPosAbfrage {
       final offline = await leser.statusByte(
         socket,
         dleEot(dleEotOfflineGrund),
-        rest() < handshakeFrist ? rest() : handshakeFrist,
+        rest() < handshake ? rest() : handshake,
       );
       if (offline == null) {
         return const EscPosAntworten(verbunden: true);
@@ -149,6 +161,33 @@ class EscPosAbfrage {
       await leser.schliessen();
       socket.destroy();
     }
+  }
+
+  /// Fragt einen Drucker, der schon gültig geantwortet hat: je Versuch
+  /// [bereitFrist] auf die erste Antwort, bei Schweigen ein zweiter Versuch
+  /// auf neuer Verbindung (höchstens [bereitVersuche]). Liefert die letzten
+  /// Antworten; `stumm` heißt dann „nicht bereit“.
+  Future<EscPosAntworten> frageBereit(
+    String host,
+    int port, {
+    required Set<EscPosFrage> fragen,
+    required Duration budget,
+  }) async {
+    final uhr = Stopwatch()..start();
+    var antworten = const EscPosAntworten(verbunden: false);
+    for (var versuch = 1; versuch <= bereitVersuche; versuch++) {
+      final rest = budget - uhr.elapsed;
+      if (rest <= Duration.zero) break;
+      antworten = await frage(
+        host,
+        port,
+        fragen: fragen,
+        budget: rest,
+        handshake: bereitFrist,
+      );
+      if (!antworten.stumm) break;
+    }
+    return antworten;
   }
 }
 

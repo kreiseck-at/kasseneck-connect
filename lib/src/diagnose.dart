@@ -60,6 +60,7 @@ Map<String, Object?> konfigurationFuerDiagnose(
         'mac': d.mac,
         'identifiedAt': d.identifiedAt?.toIso8601String(),
         'identitySource': d.identitySource?.wireName,
+        'statusCapableAt': d.statusCapableAt?.toIso8601String(),
       },
   ],
   'terminal': switch (config.terminal) {

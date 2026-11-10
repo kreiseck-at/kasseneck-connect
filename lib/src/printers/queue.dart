@@ -329,7 +329,8 @@ class PrintQueue {
       printerId,
       failure.code == errorPrintRefused ||
               failure.code == errorPaperOut ||
-              failure.code == errorCoverOpen
+              failure.code == errorCoverOpen ||
+              failure.code == errorPrinterNotReady
           ? PrinterState.online
           : PrinterState.offline,
     );

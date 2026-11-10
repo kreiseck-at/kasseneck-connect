@@ -55,6 +55,14 @@ class FakeHpsServer {
     aufrufe.add(aufruf);
     _offen++;
     if (_offen > _hoechstOffen) _hoechstOffen = _offen;
+    var beendet = false;
+    void beenden() {
+      if (beendet) return;
+      beendet = true;
+      _offen--;
+      aufruf.ende = DateTime.now();
+    }
+
     try {
       aufruf.rumpf = await utf8.decoder.bind(anfrage).join();
       for (final eintrag in verzoegerung.entries) {
@@ -62,14 +70,18 @@ class FakeHpsServer {
           await Future<void>.delayed(eintrag.value);
         }
       }
+      // Beendet, bevor die Antwort hinausgeht: der Absender schickt seinen
+      // nächsten Aufruf erst danach, und dessen Beginn soll nie vor diesem
+      // Ende liegen.
+      final antwort = jsonEncode(_antwort(aufruf.pfad));
+      beenden();
       anfrage.response
         ..statusCode = 200
         ..headers.contentType = ContentType.json
-        ..write(jsonEncode(_antwort(aufruf.pfad)));
+        ..write(antwort);
       await anfrage.response.close();
     } finally {
-      _offen--;
-      aufruf.ende = DateTime.now();
+      beenden();
     }
   }
 

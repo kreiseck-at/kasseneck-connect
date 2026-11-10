@@ -21,6 +21,10 @@ class FakeVerbindung {
   final DateTime beginn;
   DateTime? ende;
   final List<int> bytes = <int>[];
+
+  /// Wann das erste und das letzte Byte ankam (`null` ohne Bytes).
+  DateTime? ersterByte;
+  DateTime? letzterByte;
 }
 
 /// Fake-Bondrucker auf TCP 9100: nimmt rohe Bytes an und protokolliert sie.
@@ -83,8 +87,37 @@ class FakeTcpPrinter {
   /// Wie oft sich jemand verbunden hat.
   int get connections => _connections;
 
-  /// Wie viele Verbindungen höchstens zugleich offen waren.
-  int get hoechstGleichzeitig => _hoechstGleichzeitig;
+  /// Wie viele Verbindungen höchstens zugleich Bytes schickten: die
+  /// Zeiträume vom ersten bis zum letzten Byte je Verbindung. Gemessen an
+  /// Annahme und Schließen sähe es anders aus – das Schließen meldet sich
+  /// hier oft erst nach der nächsten Annahme, obwohl der Absender längst
+  /// fertig war.
+  int get hoechstGleichzeitig {
+    final punkte =
+        <(DateTime, int)>[
+          for (final v in verbindungen)
+            if (v.ersterByte != null) ...<(DateTime, int)>[
+              (v.ersterByte!, 1),
+              (v.letzterByte!, -1),
+            ],
+        ]..sort((a, b) {
+          final zeit = a.$1.compareTo(b.$1);
+          // Bei gleicher Zeit zuerst das Ende: Ende und Beginn im selben
+          // Augenblick ist keine Überschneidung.
+          return zeit != 0 ? zeit : a.$2.compareTo(b.$2);
+        });
+    var aktiv = 0;
+    var hoechst = 0;
+    for (final (_, schritt) in punkte) {
+      aktiv += schritt;
+      if (aktiv > hoechst) hoechst = aktiv;
+    }
+    return hoechst;
+  }
+
+  /// Wie viele Verbindungen höchstens zugleich angenommen waren (Annahme bis
+  /// Schließen, wie der Fake es sieht).
+  int get hoechstAngenommen => _hoechstGleichzeitig;
 
   /// Die Bytes der Druckverbindungen (alles, was nicht nur aus Abfragen
   /// `DLE EOT`/`GS I` bestand).
@@ -136,6 +169,10 @@ class FakeTcpPrinter {
         _reads.add(
           socket.listen(
             (daten) {
+              final jetzt = DateTime.now();
+              verbindung
+                ..ersterByte ??= jetzt
+                ..letzterByte = jetzt;
               _received.addAll(daten);
               verbindung.bytes.addAll(daten);
               if (druckdaten) return;

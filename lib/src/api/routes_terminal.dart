@@ -195,6 +195,36 @@ class _Terminal {
     return okJson(<String, Object?>{'hps': daten, if (umleiten) ...endpoint()});
   }
 
+  /// Ein kurzer Aufruf (Diagnose, Test): `terminal_busy`, solange ein langer
+  /// das Terminal belegt; sonst angemeldet, damit eine Zahlung ihn abwartet.
+  Future<Response> kurz(
+    Request request,
+    (String, int) ziel, {
+    required String? tid,
+    required Future<Object?> Function(String host, int port) aufruf,
+  }) async {
+    if (!sperrtBei(request)) {
+      return ausfuehren(request, ziel, aufruf: aufruf, tid: tid, merken: true);
+    }
+    final angemeldet = belegung.kurzBeginnen(
+      tid: tid,
+      host: ziel.$1,
+      port: ziel.$2,
+    );
+    if (angemeldet == null) return besetzt();
+    try {
+      return await ausfuehren(
+        request,
+        ziel,
+        aufruf: aufruf,
+        tid: tid,
+        merken: true,
+      );
+    } finally {
+      belegung.kurzBeenden(angemeldet);
+    }
+  }
+
   /// Ein langer Aufruf: belegt das Terminal für seine Dauer und zählt als
   /// laufender Vorgang.
   Future<Response> lang(
@@ -217,6 +247,11 @@ class _Terminal {
     }
     final vorgang = vorgaenge?.beginne(VorgangsArt.terminal);
     try {
+      // Neue kurze Aufrufe lehnt die Belegung ab jetzt ab; die schon
+      // unterwegs sind, laufen zu Ende, bevor die Zahlung hinausgeht.
+      if (beleg != null) {
+        await belegung.kurzeAbwarten(tid: tid, host: ziel.$1, port: ziel.$2);
+      }
       return await ausfuehren(
         request,
         ziel,
@@ -268,15 +303,10 @@ Future<Response> _handleTest(_Terminal t, Request request) async {
   final ziel = _ziel(body.data!);
   if (ziel == null) return _zielFehler();
   final tid = _tidAus(body.data!['tid']);
-  if (t.sperrtBei(request) &&
-      t.belegung.belegt(tid: tid, host: ziel.$1, port: ziel.$2)) {
-    return t.besetzt();
-  }
-  return t.ausfuehren(
+  return t.kurz(
     request,
     ziel,
     tid: tid.isEmpty ? null : tid,
-    merken: true,
     aufruf: (host, port) async {
       final antwort = tid.isEmpty
           ? await t.hps.probe(host: host, port: port)
@@ -302,15 +332,10 @@ Future<Response> _handleDiagnosis(_Terminal t, Request request) async {
   if (!_tid.hasMatch(tid)) {
     return failJson(errorBadRequest, 'Es fehlt die Terminal-ID (tid).');
   }
-  if (t.sperrtBei(request) &&
-      t.belegung.belegt(tid: tid, host: ziel.$1, port: ziel.$2)) {
-    return t.besetzt();
-  }
-  return t.ausfuehren(
+  return t.kurz(
     request,
     ziel,
     tid: tid,
-    merken: true,
     aufruf: (host, port) => t.hps.diagnosis(host: host, port: port, tid: tid),
   );
 }

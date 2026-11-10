@@ -406,6 +406,53 @@ void main() {
         expect(hps.an('/api/terminals/'), isEmpty);
       });
 
+      test(
+        'eine Diagnose, die vor der Zahlung begann, läuft zu Ende, bevor '
+        'die Zahlung hinausgeht; eine hängende hält sie höchstens 2 s auf',
+        () async {
+          hps.verzoegerung['/api/terminals/'] = const Duration(
+            milliseconds: 400,
+          );
+          Future<AgentAntwort> diagnose() => anAgent(
+            server.port,
+            'POST',
+            '/v1/terminal/diagnosis',
+            token: token,
+            rumpf: <String, Object?>{
+              'host': '127.0.0.1',
+              'port': hps.port,
+              'tid': _tid,
+            },
+          );
+          final erste = diagnose();
+          await warteBis(
+            () async => hps.an('/api/terminals/').isNotEmpty,
+            grund: 'Diagnose am Terminal',
+          );
+          hps.verzoegerung['/api/transaction/payment'] = Duration.zero;
+          final zahlung = await zahle(hps.port);
+          expect(zahlung.ok, isTrue);
+          expect((await erste).ok, isTrue);
+          final d = hps.an('/api/terminals/').single;
+          final z = hps.an('/api/transaction/payment').single;
+          expect(z.beginn.isBefore(d.ende!), isFalse, reason: 'nacheinander');
+
+          // Hängt eine Diagnose, geht die Zahlung nach höchstens 2 s trotzdem.
+          hps.verzoegerung['/api/terminals/'] = const Duration(seconds: 6);
+          final haengt = diagnose();
+          await warteBis(
+            () async => hps.an('/api/terminals/').length == 2,
+            grund: 'zweite Diagnose am Terminal',
+          );
+          final uhr = Stopwatch()..start();
+          expect((await zahle(hps.port)).ok, isTrue);
+          expect(uhr.elapsed, lessThan(kurzeAbwartenHoechstens * 2));
+          expect(uhr.elapsed, greaterThanOrEqualTo(kurzeAbwartenHoechstens));
+          await haengt;
+        },
+        timeout: const Timeout(Duration(seconds: 30)),
+      );
+
       test('Aufhebung während der Zahlung: terminal_busy, nie ans Terminal '
           '(HPS 1.14.4 hing dabei 30 s)', () async {
         final zahlung = zahle(hps.port);

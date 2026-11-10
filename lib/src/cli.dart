@@ -8,6 +8,7 @@ import 'autostart/autostart.dart';
 import 'config/paths.dart';
 import 'config/store.dart';
 import 'doctor.dart';
+import 'log/launchd_logs.dart';
 import 'log/logger.dart';
 import 'pairing/pairing.dart';
 import 'process_runner.dart';
@@ -381,6 +382,8 @@ Future<int> _serveAgent(
   required ProcessRunner runProcess,
   required ProcessStarter startProcess,
 }) async {
+  // launchd hängt Ausgabe und Fehler unbegrenzt an; beim Start kürzen.
+  kuerzeLaunchdLogs(paths.logDirectory, log: log);
   // Mit Log: eine unbrauchbare config.json soll laut auffallen.
   final store = ConfigStore(paths, log: log);
   final config = await store.load();

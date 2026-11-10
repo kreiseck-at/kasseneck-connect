@@ -264,7 +264,7 @@ class HpsBridge {
   /// [originalTransactionId] verweist auf die erstattete Zahlung. Auf eine
   /// unbekannte Original-Kennung antwortet das Terminal `9002` "Invalid
   /// Transaction": kein Kartenfluss, keine Auszahlung (gemessen 27.08.2026,
-  /// TID 3600335, HPS 1.10.0, FW 7.3.6, Antwort nach 1,2 s).
+  /// Testterminal, HPS 1.10.0, FW 7.3.6, Antwort nach 1,2 s).
   Future<Object?> refund({
     required String host,
     required int port,
@@ -305,7 +305,7 @@ class HpsBridge {
   /// einen JSON-Rumpf schicken.
   ///
   /// [amountCents] ist PFLICHT: ein Void ohne Betrag weist das Terminal mit
-  /// `400 Missing amount` ab (gemessen 27.08.2026, TID 3600335, HPS 1.10.0,
+  /// `400 Missing amount` ab (gemessen 27.08.2026, Testterminal, HPS 1.10.0,
   /// FW 7.3.6). Einen falschen Betrag prueft es dabei NICHT gegen das
   /// Original — ein Void mit abweichendem Betrag wurde ebenso mit `0`
   /// beantwortet. Ein zweiter Void auf eine bereits aufgehobene Zahlung ist

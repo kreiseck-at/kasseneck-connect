@@ -197,10 +197,10 @@ void main() {
         final antwort = await senden('/v1/terminal/test', {
           'host': '127.0.0.1',
           'port': hps.port,
-          'tid': '3600335',
+          'tid': '12345678',
         });
         expect(antwort['ok'], isTrue);
-        expect(hps.aufrufe.single.pfad, '/api/terminals/3600335/diagnosis');
+        expect(hps.aufrufe.single.pfad, '/api/terminals/12345678/diagnosis');
         expect((antwort['hps'] as Map)['deviceStatus'], 'IN_OPERATION');
       },
     );
@@ -648,7 +648,7 @@ void main() {
         final antwort = await senden('/v1/terminal/payment', <String, Object?>{
           'host': '127.0.0.1',
           'port': hps.port,
-          'tid': '3600335',
+          'tid': '12345678',
           'transactionId': '178786910603700000',
           'amountCents': 1,
         });
@@ -666,7 +666,7 @@ void main() {
         // Status. Dann darf auch keiner behauptet werden.
         final antwort = await senden('/v1/terminal/payment', <String, Object?>{
           'host': '127.0.0.1', 'port': 1, // nichts hoert dort
-          'tid': '3600335', 'transactionId': '178786910603700000',
+          'tid': '12345678', 'transactionId': '178786910603700000',
           'amountCents': 1,
         });
         expect(antwort['ok'], isFalse);

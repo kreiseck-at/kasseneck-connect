@@ -9,6 +9,7 @@ import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'api/context.dart';
 import 'api/faehigkeiten.dart';
 import 'api/routes_bluetooth.dart';
+import 'api/routes_diagnosis.dart';
 import 'api/routes_events.dart';
 import 'api/routes_printers.dart';
 import 'api/routes_restart.dart';
@@ -446,6 +447,7 @@ class Agent {
         Faehigkeit.druckerStatus,
         Faehigkeit.wiederfinden,
         Faehigkeit.betriebSperre,
+        Faehigkeit.diagnose,
         if (_neustart != null) Faehigkeit.neustart,
       });
     _warmhalter = warmhalter..startAus(await store.load());
@@ -459,6 +461,7 @@ class Agent {
         vorgaenge: vorgaenge,
       ),
       restartRoutes(),
+      diagnosisRoutes(),
       printerRoutes(
         registry: registry,
         queue: queue,

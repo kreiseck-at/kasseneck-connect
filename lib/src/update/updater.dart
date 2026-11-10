@@ -181,6 +181,14 @@ class ConnectUpdater {
     );
   }
 
+  /// Stand für die Diagnose: laufende Version, zuletzt bekannte neueste
+  /// (ohne GitHub zu fragen), letzter Fehler.
+  Map<String, Object?> stand() => <String, Object?>{
+    'current': current,
+    'latest': _feed.gemerkt(platformKey)?.version,
+    'lastError': _lastError,
+  };
+
   /// Startet die Aktualisierung und kehrt sofort zurück; der Rest meldet sich
   /// über `update.progress`, `update.failed` und `agent.restarting`.
   Future<void> start() async {

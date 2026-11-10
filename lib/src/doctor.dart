@@ -89,6 +89,7 @@ class DoctorReport {
     required this.lastErrors,
     this.bluetoothHelper,
     this.tls,
+    this.abgeschaltet = const <String>[],
   });
 
   final String version;
@@ -123,6 +124,9 @@ class DoctorReport {
   /// Zertifikate für HTTPS; `null` außerhalb von macOS (dort gibt es den
   /// Zugang noch nicht).
   final DoctorTls? tls;
+
+  /// Abgeschaltete Neuerungen (`disabledFeatures` in der `config.json`).
+  final List<String> abgeschaltet;
 
   bool get paired => tokenCount > 0;
 
@@ -204,6 +208,7 @@ Future<DoctorReport> collectDoctorReport({
     logFile: AgentLog.fileIn(paths.logDirectory).path,
     configExists: paths.configFile.existsSync(),
     tokenCount: config.tokenHashes.length,
+    abgeschaltet: config.disabledFeatures,
     ports: ports,
     printers: await states(),
     autostartInstalled: await resolvedAutostart.isInstalled(),
@@ -311,6 +316,9 @@ String formatDoctorReport(DoctorReport report) {
     ..writeln(
       '  Kopplung       ${report.paired ? 'ja (${report.tokenCount} Kasse'
                 '${report.tokenCount == 1 ? '' : 'n'})' : 'nein — `kasseneck-connect pair` starten'}',
+    )
+    ..writeln(
+      '  Neuerungen     ${report.abgeschaltet.isEmpty ? 'alle an' : 'abgeschaltet: ${report.abgeschaltet.join(', ')}'}',
     )
     ..writeln()
     ..writeln('Lokale API (127.0.0.1)');

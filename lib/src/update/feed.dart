@@ -79,6 +79,9 @@ class UpdateFeed {
     return _entry(platformKey);
   }
 
+  /// Der zuletzt abgerufene Stand für [platformKey] – ohne Abruf (Diagnose).
+  FeedEntry? gemerkt(String platformKey) => _entry(platformKey);
+
   bool _stale() {
     final now = _clock();
     final failed = _failedAt;

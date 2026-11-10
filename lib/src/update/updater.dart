@@ -22,6 +22,14 @@ const String errorUpdateSignatureInvalid = 'update_signature_invalid';
 const String errorUpdateNotNewer = 'update_not_newer';
 const String errorUpdateOpenFailed = 'update_open_failed';
 
+/// Ein Druck oder eine Zahlung läuft (ab 1.5.0, `busy_lock`).
+const String errorUpdateDeviceBusy = 'update_device_busy';
+
+/// So lange wartet eine geladene Aktualisierung vor dem Öffnen des Installers
+/// höchstens auf das Ende laufender Vorgänge (Spec 1.5: 10 min). Danach
+/// öffnet sie trotzdem – das postinstall wartet dann noch einmal.
+const Duration updateWarteHoechstens = Duration(minutes: 10);
+
 /// So lange bleibt ein geladenes Paket liegen, bevor [ConnectUpdater.cleanup]
 /// es entfernt.
 const Duration _keepDownloads = Duration(hours: 24);
@@ -113,12 +121,22 @@ class ConnectUpdater {
     this.current = agentVersion,
     String? operatingSystem,
     DateTime Function()? clock,
-  }) : _feed = feed,
+    Future<bool> Function()? beschaeftigt,
+    Future<bool> Function(Duration hoechstens)? warteBisFrei,
+  }) : _beschaeftigt = beschaeftigt,
+       _warteBisFrei = warteBisFrei,
+       _feed = feed,
        _download = download,
        _run = run,
        _events = events,
        _os = operatingSystem ?? Platform.operatingSystem,
        _clock = clock ?? DateTime.now;
+
+  /// Ob gerade ein Druck oder eine Zahlung läuft (und die Sperre gilt).
+  final Future<bool> Function()? _beschaeftigt;
+
+  /// Wartet, bis nichts mehr läuft; `false` nach [updateWarteHoechstens].
+  final Future<bool> Function(Duration hoechstens)? _warteBisFrei;
 
   final UpdateFeed _feed;
   final Downloader _download;
@@ -176,6 +194,12 @@ class ConnectUpdater {
       throw const UpdateFailure(
         errorUpdateBusy,
         'Die Aktualisierung läuft bereits.',
+      );
+    }
+    if (await _beschaeftigt?.call() ?? false) {
+      throw const UpdateFailure(
+        errorUpdateDeviceBusy,
+        'Gerade läuft ein Druck oder eine Zahlung – danach aktualisieren.',
       );
     }
     final entry = await _feed.latest(platformKey);
@@ -248,6 +272,12 @@ class ConnectUpdater {
         );
       }
 
+      // Kam während des Ladens ein Druck oder eine Zahlung dazu, öffnet der
+      // Installer erst danach: sein postinstall startet Connect neu.
+      if (await _beschaeftigt?.call() ?? false) {
+        _melde(entry, 'waiting', 100);
+        await _warteBisFrei?.call(updateWarteHoechstens);
+      }
       _melde(entry, 'ready', 100);
       _events.publish(eventAgentRestarting, <String, Object?>{
         'reason': 'update',

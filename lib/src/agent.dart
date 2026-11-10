@@ -7,16 +7,22 @@ import 'package:shelf/shelf.dart';
 import 'package:shelf/shelf_io.dart' as shelf_io;
 
 import 'api/context.dart';
+import 'api/faehigkeiten.dart';
 import 'api/routes_bluetooth.dart';
 import 'api/routes_events.dart';
 import 'api/routes_printers.dart';
+import 'api/routes_restart.dart';
 import 'api/routes_terminal.dart';
 import 'api/routes_update.dart';
 import 'api/server.dart';
+import 'betrieb/betrieb_lock.dart';
+import 'betrieb/schlafsperre.dart';
+import 'betrieb/vorgaenge.dart';
 import 'bluetooth/bridge.dart';
 import 'bluetooth/helper.dart';
 import 'config/installation.dart';
 import 'config/model.dart';
+import 'config/neuerungen.dart';
 import 'config/store.dart';
 import 'downloads.dart';
 import 'events/bus.dart';
@@ -97,9 +103,11 @@ class Agent {
     LocalCertificates? certificates,
     String? betriebssystem,
     InterfaceProbe? schnittstellen,
+    Future<void> Function()? neustart,
     SocketConnector? geraeteVerbindung,
     TcpProbe? geraeteProbe,
   }) : _clock = clock ?? DateTime.now,
+       _neustart = neustart,
        _geraeteProbe = geraeteProbe ?? tcpReachable,
        _betriebssystem = betriebssystem ?? Platform.operatingSystem,
        _schnittstellen = schnittstellen ?? listLocalIpv4Interfaces,
@@ -155,6 +163,10 @@ class Agent {
   final PrintQueue? _queue;
   final PrinterDiscovery? _discovery;
 
+  /// Beendet den Prozess für einen Neustart durch den Autostart; `null`, wo
+  /// der Autostart das nicht kann (dann kein `POST /v1/restart`).
+  final Future<void> Function()? _neustart;
+
   /// Betriebssystem für `arp` und die Schlafsperre (Tests setzen es fest).
   final String _betriebssystem;
 
@@ -202,6 +214,8 @@ class Agent {
   AgentContext? _context;
   TerminalWarmhalter? _warmhalter;
   DruckerStatusDienst? _status;
+  LaufendeVorgaenge? _vorgaenge;
+  Schlafsperre? _schlafsperre;
   PrinterRegistry? _printers;
   BluetoothBridge? _bluetooth;
   List<RouteRegistrar> _routes = const <RouteRegistrar>[];
@@ -250,6 +264,26 @@ class Agent {
     // hängen alle am selben Ereignisbus, den A4 an `/v1/events` weiterreicht.
     final bus = _events ?? EventBus();
     _ownsEvents = _events == null;
+
+    // Laufende Vorgänge (Druck, Zahlung) – einmal für den ganzen Agenten.
+    final betriebsLock = BetriebsLock(store: store, log: log, clock: _clock);
+    final schlafsperre = Schlafsperre(
+      store: store,
+      betriebssystem: _betriebssystem,
+      start: _startProcess,
+      log: log,
+    );
+    final vorgaenge = LaufendeVorgaenge(
+      clock: _clock,
+      beobachter: <BetriebsBeobachter>[betriebsLock, schlafsperre],
+    );
+    _vorgaenge = vorgaenge;
+    _schlafsperre = schlafsperre;
+    // Eine Datei aus einem abgestürzten Lauf: hier läuft noch nichts.
+    betriebsLock.frei();
+    // Eine Belegung der Terminals für alle Kassen und Tabs; solange sie
+    // steht, sucht Connect nicht im Netz.
+    final belegung = TerminalBelegung(clock: _clock);
     final registry =
         _registry ??
         PrinterRegistry(
@@ -302,12 +336,14 @@ class Agent {
       schnittstellen: _schnittstellen,
       events: bus,
       tcp: _geraeteProbe,
+      zahlungLaeuft: () => belegung.irgendeins,
       log: log,
       clock: _clock,
     );
     status.beiDauerndVerfehlt = wiederfinder.gruendlichImHintergrund;
     queue
       ..nachErfolg = kennung.nachKontakt
+      ..vorgaenge = vorgaenge
       ..wiederfinder = wiederfinder
       ..vorpruefung = DruckVorpruefung(
         registry: registry,
@@ -371,14 +407,16 @@ class Agent {
         cacheDir: Directory(p.join(store.paths.directory.path, 'updates')),
         platformKey: platformKey,
         clock: _clock,
+        beschaeftigt: () async =>
+            vorgaenge.laufen &&
+            (await store.load()).aktiv(Neuerung.betriebSperre),
+        warteBisFrei: (hoechstens) => vorgaenge.leer(hoechstens: hoechstens),
       );
       ctx.updater = updater;
       unawaited(updater.cleanup());
     }
     _context = ctx;
-    // Terminal: eine Belegung für alle Kassen und Tabs, Wachhalter mit TID,
-    // Suche nach drei Fehlberührungen.
-    final belegung = TerminalBelegung(clock: _clock);
+    // Terminal: Wachhalter mit TID, Suche nach drei Fehlberührungen.
     final warmhalter = TerminalWarmhalter(
       store: store,
       log: log,
@@ -399,7 +437,17 @@ class Agent {
           discoverTerminals(bridge: hps, log: log, interfaces: _schnittstellen),
     );
     warmhalter.beiDauerndUnerreichbar = terminalSuche.imHintergrund;
-    ctx.terminalZustand = warmhalter.statusFeld;
+    ctx
+      ..terminalZustand = warmhalter.statusFeld
+      ..vorgaenge = vorgaenge
+      ..neustart = _neustart
+      ..faehigkeiten.addAll(<Faehigkeit>{
+        Faehigkeit.identitaet,
+        Faehigkeit.druckerStatus,
+        Faehigkeit.wiederfinden,
+        Faehigkeit.betriebSperre,
+        if (_neustart != null) Faehigkeit.neustart,
+      });
     _warmhalter = warmhalter..startAus(await store.load());
     _routes = <RouteRegistrar>[
       eventRoutes(),
@@ -408,7 +456,9 @@ class Agent {
         warmhalter: warmhalter,
         belegung: belegung,
         wiederfinder: terminalSuche,
+        vorgaenge: vorgaenge,
       ),
+      restartRoutes(),
       printerRoutes(
         registry: registry,
         queue: queue,
@@ -467,6 +517,12 @@ class Agent {
     _warmhalter?.stop();
     await _status?.stop();
     _status = null;
+    _vorgaenge?.stop();
+    _vorgaenge = null;
+    // Kein caffeinate über das Ende des Agenten hinaus.
+    _schlafsperre?.frei();
+    await _schlafsperre?.erledigt;
+    _schlafsperre = null;
     _tlsTimer?.cancel();
     _tlsTimer = null;
     // Eine laufende Zertifikatsprüfung zu Ende gehen lassen: sie bände sonst

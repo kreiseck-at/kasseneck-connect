@@ -5,6 +5,7 @@ import 'package:args/args.dart';
 
 import 'agent.dart';
 import 'autostart/autostart.dart';
+import 'betrieb/betrieb_lock.dart';
 import 'config/paths.dart';
 import 'config/store.dart';
 import 'doctor.dart';
@@ -29,6 +30,7 @@ const List<String> agentCommands = <String>[
   'install-autostart',
   'uninstall-autostart',
   'zertifikat-vertrauen',
+  'betrieb-abwarten',
   'doctor',
   'version',
 ];
@@ -129,7 +131,21 @@ Future<int> runCli(
         https: os == 'macos',
         runProcess: run,
         startProcess: start,
+        neustartMoeglich: () => _neustartMoeglich(
+          os,
+          autostart ?? autostartForPlatform(paths: resolvedPaths),
+        ),
       );
+    case 'betrieb-abwarten':
+      final gewartet = await warteAufFreienBetrieb(
+        betriebLockDatei(resolvedPaths.directory),
+      );
+      if (gewartet > Duration.zero) {
+        stdoutSink.writeln(
+          'Ein Druck oder eine Zahlung lief – ${gewartet.inSeconds} s gewartet.',
+        );
+      }
+      return 0;
     case 'pair':
       return _printPairingCode(resolvedPaths, stdoutSink);
     case 'install-autostart':
@@ -321,6 +337,19 @@ Future<int> _printDoctorReport(
 /// Fehler aus der Wurzelzone beendet die Isolate auch mit Zuhörer, und zwar
 /// bevor dieser gerufen wird — der Fehler stünde dann nicht einmal mehr auf
 /// stderr. Die Zone ist der Schutz, nicht der Zuhörer.
+/// Ob der Autostart einen beendeten Agenten wieder startet: macOS
+/// (`KeepAlive`) und Linux (systemd `Restart=always`), und nur, wenn er
+/// eingerichtet ist. Windows startet ihn erst bei der nächsten Anmeldung.
+Future<bool> _neustartMoeglich(String os, Autostart autostart) async {
+  if (os != 'macos' && os != 'linux') return false;
+  try {
+    return await autostart.isInstalled();
+  } on Object {
+    // Unklar: dann lieber kein Neustart auf Zuruf.
+    return false;
+  }
+}
+
 Future<int> _runAgent(
   ConfigPaths paths,
   StringSink out,
@@ -331,6 +360,7 @@ Future<int> _runAgent(
   required bool https,
   required ProcessRunner runProcess,
   required ProcessStarter startProcess,
+  required Future<bool> Function() neustartMoeglich,
 }) {
   final log = AgentLog(paths.logDirectory);
   final done = Completer<int>();
@@ -350,6 +380,7 @@ Future<int> _runAgent(
           https: https,
           runProcess: runProcess,
           startProcess: startProcess,
+          neustartMoeglich: neustartMoeglich,
         );
       } on Object catch (e) {
         // Der Ablauf selbst ist gescheitert — das beendet den Befehl.
@@ -381,11 +412,13 @@ Future<int> _serveAgent(
   required bool https,
   required ProcessRunner runProcess,
   required ProcessStarter startProcess,
+  required Future<bool> Function() neustartMoeglich,
 }) async {
   // launchd hängt Ausgabe und Fehler unbegrenzt an; beim Start kürzen.
   kuerzeLaunchdLogs(paths.logDirectory, log: log);
   // Mit Log: eine unbrauchbare config.json soll laut auffallen.
   final store = ConfigStore(paths, log: log);
+  final neustartAngefordert = Completer<void>();
   final config = await store.load();
   final agent = Agent(
     store: store,
@@ -399,6 +432,15 @@ Future<int> _serveAgent(
     preferredHttpsPort: config.httpsPort,
     runProcess: runProcess,
     startProcess: startProcess,
+    // Neustart auf Zuruf: der Agent hält an, der Prozess endet, der
+    // Autostart startet ihn neu.
+    neustart: await neustartMoeglich()
+        ? () async {
+            if (!neustartAngefordert.isCompleted) {
+              neustartAngefordert.complete();
+            }
+          }
+        : null,
   );
 
   try {
@@ -419,7 +461,13 @@ Future<int> _serveAgent(
     out.writeln('Kopplungscode: $pending (10 Minuten gültig)');
   }
 
-  await (awaitShutdown ?? _awaitShutdownSignal)();
+  await Future.any(<Future<void>>[
+    (awaitShutdown ?? _awaitShutdownSignal)(),
+    neustartAngefordert.future,
+  ]);
+  if (neustartAngefordert.isCompleted) {
+    log.info('Connect beendet sich für den Neustart.');
+  }
   await agent.stop();
   return 0;
 }
@@ -478,6 +526,10 @@ void _writeUsage(StringSink sink, ArgParser parser) {
     ..writeln(
       '  zertifikat-vertrauen Der lokalen Zertifizierungsstelle für HTTPS '
       'vertrauen (Mac).',
+    )
+    ..writeln(
+      '  betrieb-abwarten     Warten, bis kein Druck und keine Zahlung läuft '
+      '(höchstens 5 min).',
     )
     ..writeln('  doctor               Diagnose ausgeben.')
     ..writeln('  version              Version ausgeben.')

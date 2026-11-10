@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:typed_data';
 
+import '../betrieb/vorgaenge.dart';
 import '../config/model.dart';
 import '../events/bus.dart';
 import '../log/logger.dart';
@@ -82,6 +83,10 @@ class PrintQueue {
   /// einer neuen Adresse (nur zusammen mit [vorpruefung]).
   DruckerWiederfinder? wiederfinder;
 
+  /// Zählt jeden angenommenen Auftrag als laufenden Vorgang (Update- und
+  /// Schlafsperre), vom Annehmen bis zum Ergebnis.
+  LaufendeVorgaenge? vorgaenge;
+
   /// Laufende Kette je Drucker — daran hängt sich der nächste Auftrag an.
   final Map<String, Future<void>> _chains = <String, Future<void>>{};
 
@@ -141,6 +146,7 @@ class PrintQueue {
 
     final record = _JobRecord(_clock());
     _jobs[key] = record;
+    final vorgang = vorgaenge?.beginne(VorgangsArt.druck);
 
     final completer = Completer<PrintResult>();
     final previous = _chains[printerId] ?? Future<void>.value();
@@ -199,6 +205,7 @@ class PrintQueue {
           detail: <String, Object?>{'reason': '$e'},
         );
       } finally {
+        if (vorgang != null) vorgaenge?.beende(vorgang);
         if (!completer.isCompleted) completer.complete(result);
       }
     });

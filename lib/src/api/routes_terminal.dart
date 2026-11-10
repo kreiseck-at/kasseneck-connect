@@ -1,6 +1,7 @@
 import 'package:shelf/shelf.dart';
 import 'package:shelf_router/shelf_router.dart';
 
+import '../betrieb/vorgaenge.dart';
 import '../config/model.dart';
 import '../config/neuerungen.dart';
 import '../terminal/belegung.dart';
@@ -50,6 +51,7 @@ RouteRegistrar terminalRoutes({
   Future<TerminalDiscoveryResult> Function(HpsBridge, AgentContext)? discover,
   TerminalBelegung? belegung,
   TerminalWiederfinder? wiederfinder,
+  LaufendeVorgaenge? vorgaenge,
 }) {
   return (Router router, AgentContext ctx) {
     final hps = bridge ?? HpsBridge(log: ctx.log);
@@ -63,6 +65,7 @@ RouteRegistrar terminalRoutes({
       warmhalter: warmhalter,
       belegung: belegung ?? TerminalBelegung(clock: ctx.clock),
       wiederfinder: wiederfinder,
+      vorgaenge: vorgaenge,
     );
 
     router
@@ -89,6 +92,7 @@ class _Terminal {
     required this.warmhalter,
     required this.belegung,
     required this.wiederfinder,
+    required this.vorgaenge,
   });
 
   final HpsBridge hps;
@@ -96,6 +100,9 @@ class _Terminal {
   final TerminalWarmhalter? warmhalter;
   final TerminalBelegung belegung;
   final TerminalWiederfinder? wiederfinder;
+
+  /// Zählt lange Aufrufe als laufende Vorgänge (Update- und Schlafsperre).
+  final LaufendeVorgaenge? vorgaenge;
 
   /// `terminal_busy`: nachweislich nichts gesendet.
   Response besetzt() => failJson(
@@ -186,7 +193,8 @@ class _Terminal {
     return okJson(<String, Object?>{'hps': daten, if (umleiten) ...endpoint()});
   }
 
-  /// Ein langer Aufruf: belegt das Terminal für seine Dauer.
+  /// Ein langer Aufruf: belegt das Terminal für seine Dauer und zählt als
+  /// laufender Vorgang.
   Future<Response> lang(
     Request request,
     (String, int) ziel, {
@@ -195,22 +203,17 @@ class _Terminal {
     required Future<Object?> Function(String host, int port) aufruf,
     bool merken = false,
   }) async {
-    if (!sperrtBei(request)) {
-      return ausfuehren(
-        request,
-        ziel,
-        aufruf: aufruf,
+    TerminalBeleg? beleg;
+    if (sperrtBei(request)) {
+      beleg = belegung.belegen(
         tid: tid,
-        merken: merken,
+        host: ziel.$1,
+        port: ziel.$2,
+        art: art,
       );
+      if (beleg == null) return besetzt();
     }
-    final beleg = belegung.belegen(
-      tid: tid,
-      host: ziel.$1,
-      port: ziel.$2,
-      art: art,
-    );
-    if (beleg == null) return besetzt();
+    final vorgang = vorgaenge?.beginne(VorgangsArt.terminal);
     try {
       return await ausfuehren(
         request,
@@ -220,7 +223,8 @@ class _Terminal {
         merken: merken,
       );
     } finally {
-      belegung.freigeben(beleg);
+      if (vorgang != null) vorgaenge?.beende(vorgang);
+      if (beleg != null) belegung.freigeben(beleg);
     }
   }
 }

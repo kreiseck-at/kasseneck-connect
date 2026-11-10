@@ -11,20 +11,16 @@ import 'driver.dart';
 import 'erkennung.dart' show macImSelbenNetz;
 import 'kennung.dart';
 import 'lage.dart';
+import 'registry.dart';
+import 'zustand.dart';
 
 /// Zeitbudget aller Prüfungen vor einem Bon (MAC, Abfrage-Verbindung).
 ///
 /// Vorgabe des Inhabers: höchstens 600 ms Zuschlag je Druck. 500 ms lassen
 /// Luft für das Einplanen; ein gesunder Drucker antwortet in Millisekunden,
 /// das Budget zahlt nur ein Gerät, das schweigt – und das einmal je
-/// [stummDauer].
+/// `stummDauer`.
 const Duration vorpruefungBudget = Duration(milliseconds: 500);
-
-/// So lange gilt ein Gerät nach einer Abfrage ohne gültige Antwort als stumm:
-/// vor seinen Bons geht keine Abfrage-Verbindung hinaus, gedruckt wird ohne
-/// Zuschlag wie bis 1.4.2. Zehn Minuten, damit ein Drucker, der nur kurz
-/// beschäftigt war, bald wieder geprüft wird.
-const Duration stummDauer = Duration(minutes: 10);
 
 /// Nach einem Kennungskonflikt ohne Fund sucht Connect so lange nicht erneut
 /// vor jedem Bon (das schnelle Wiederfinden kostet bis zu 4 s). Ein getauschter
@@ -66,11 +62,10 @@ typedef SchnellesWiederfinden =
 /// unberührt: Fragen gehen über eine eigene Abfrage-Verbindung davor.
 class DruckVorpruefung {
   DruckVorpruefung({
-    required this.store,
+    required this.registry,
     required EscPosAbfrage abfrage,
     required ArpTabelle arp,
     required InterfaceProbe schnittstellen,
-    required this.lagen,
     this.schnellesWiederfinden,
     AgentLog? log,
     DateTime Function()? clock,
@@ -81,11 +76,11 @@ class DruckVorpruefung {
        _log = log,
        _clock = clock ?? DateTime.now;
 
-  final ConfigStore store;
+  /// Drucker, Laufzeitstand und ePOS-Abruf.
+  final PrinterRegistry registry;
   final EscPosAbfrage _abfrage;
   final ArpTabelle _arp;
   final InterfaceProbe _schnittstellen;
-  final DruckerLagen lagen;
   final AgentLog? _log;
   final DateTime Function() _clock;
 
@@ -95,13 +90,16 @@ class DruckVorpruefung {
   /// Zeitbudget der Prüfungen (ohne Wiederfinden).
   final Duration budget;
 
+  ConfigStore get _store => registry.store;
+
   /// Prüft [drucker] vor einem Bon. Wirft nie.
   Future<VorpruefungsErgebnis> pruefe(
     PrinterConfig drucker,
     AgentConfig config,
   ) async {
-    final kennungAn = config.aktiv(Neuerung.druckerKennung);
-    if (!kennungAn) return DruckFreigabe(drucker);
+    final kennungSchalter = config.aktiv(Neuerung.druckerKennung);
+    final statusAn = config.aktiv(Neuerung.druckerStatus);
+    if (!kennungSchalter && !statusAn) return DruckFreigabe(drucker);
 
     final uhr = Stopwatch()..start();
     Duration rest() {
@@ -110,19 +108,20 @@ class DruckVorpruefung {
     }
 
     final jetzt = _clock();
-    final lage = lagen.von(drucker.id);
-    if (!drucker.hatKennung) {
+    final lage = registry.lagen.von(drucker.id);
+    final kennungAn = kennungSchalter && drucker.hatKennung;
+    if (kennungSchalter && !drucker.hatKennung) {
       _hinweisEinmalJeTag(
         lage,
         jetzt,
         'Drucker ${drucker.id} hat noch keine Kennung – Druck ohne Prüfung.',
       );
-      return DruckFreigabe(drucker);
     }
 
+    // 1. MAC aus der ARP-Tabelle: kein Byte an den Drucker.
     var mac = MacVergleich.unbekannt;
     String? geseheneMac;
-    if (drucker.mac != null) {
+    if (kennungAn && drucker.mac != null) {
       geseheneMac = await macImSelbenNetz(
         drucker.host,
         _arp,
@@ -131,67 +130,122 @@ class DruckVorpruefung {
       );
       mac = vergleicheMac(drucker.mac, geseheneMac);
     }
-
     final frisch = lage.frisch(jetzt);
-    final fragen =
-        drucker.kind == PrinterKind.tcp9100 &&
-        !lage.stumm(jetzt) &&
-        seriennummerFragen(
-          gespeicherteSerie: drucker.serial,
-          mac: mac,
-          frisch: frisch,
-        );
+
+    // 2. Eine Abfrage für Seriennummer und Status zusammen.
     String? geseheneSerie;
-    if (fragen) {
-      final antworten = await _abfrage.frage(
-        drucker.host,
-        drucker.port,
-        fragen: const <EscPosFrage>{EscPosFrage.seriennummer},
-        budget: rest(),
-      );
-      if (antworten.stumm) {
-        lage.stummBis = jetzt.add(stummDauer);
-        _log?.info(
-          'Drucker ${drucker.id} antwortet nicht auf DLE EOT – '
-          '${stummDauer.inMinutes} min ohne Abfrage.',
-        );
-      }
-      geseheneSerie = antworten.seriennummer;
+    DruckerZustand? zustand;
+    switch (drucker.kind) {
+      case PrinterKind.tcp9100:
+        final fragSerie =
+            kennungAn &&
+            seriennummerFragen(
+              gespeicherteSerie: drucker.serial,
+              mac: mac,
+              frisch: frisch,
+            );
+        if ((fragSerie || statusAn) && !lage.stumm(jetzt)) {
+          final antworten = await _abfrage.frage(
+            drucker.host,
+            drucker.port,
+            fragen: <EscPosFrage>{
+              if (statusAn) EscPosFrage.rollensensor,
+              if (fragSerie) EscPosFrage.seriennummer,
+            },
+            budget: rest(),
+          );
+          if (antworten.stumm) _alsStummMerken(drucker, lage, jetzt);
+          geseheneSerie = antworten.seriennummer;
+          if (statusAn && antworten.verbunden && !antworten.stumm) {
+            zustand = zustandAusDleEot(
+              offlineGrund: antworten.offlineGrund,
+              rollensensor: antworten.rollensensor,
+            );
+          }
+        }
+      case PrinterKind.epos:
+        if (statusAn) zustand = await registry.eposZustand(drucker, rest());
     }
 
-    final befund = beurteileKennung(
-      gespeicherteSerie: drucker.serial,
-      mac: mac,
-      geseheneSerie: geseheneSerie,
-      frisch: frisch,
-    );
-    switch (befund) {
-      case KennungsLage.bestaetigt:
-        final warKonflikt = lage.kennung == KennungsLage.konflikt;
-        lage
-          ..kennung = KennungsLage.bestaetigt
-          ..konfliktSerie = null
-          ..konfliktSucheBis = null;
-        if (geseheneSerie != null) lage.kennungBestaetigtAm = jetzt;
-        if (mac == MacVergleich.gleich) lage.kennungBestaetigtAm = jetzt;
-        if (warKonflikt) {
-          _log?.info('Drucker ${drucker.id}: Kennung wieder bestätigt.');
-        }
-        if (mac == MacVergleich.anders && geseheneSerie != null) {
-          await _neueMac(drucker, geseheneMac!);
-        }
-        return DruckFreigabe(drucker);
-      case KennungsLage.unbekannt:
-        _hinweisEinmalJeTag(
-          lage,
-          jetzt,
-          'Drucker ${drucker.id}: Kennung unter ${drucker.host}:'
-          '${drucker.port} nicht prüfbar – Druck wie bisher.',
-        );
-        return DruckFreigabe(drucker);
-      case KennungsLage.konflikt:
-        return _konflikt(drucker, config, lage, geseheneSerie!, jetzt);
+    // 3. Kennung.
+    if (kennungAn) {
+      final befund = beurteileKennung(
+        gespeicherteSerie: drucker.serial,
+        mac: mac,
+        geseheneSerie: geseheneSerie,
+        frisch: frisch,
+      );
+      switch (befund) {
+        case KennungsLage.bestaetigt:
+          await _bestaetigt(
+            drucker,
+            lage,
+            jetzt,
+            mac,
+            geseheneMac,
+            geseheneSerie,
+          );
+        case KennungsLage.unbekannt:
+          _hinweisEinmalJeTag(
+            lage,
+            jetzt,
+            'Drucker ${drucker.id}: Kennung unter ${drucker.host}:'
+            '${drucker.port} nicht prüfbar – Druck wie bisher.',
+          );
+        case KennungsLage.konflikt:
+          // Papier und Deckel eines fremden Geräts zählen nicht.
+          return _konflikt(drucker, config, lage, geseheneSerie!, jetzt);
+      }
     }
+
+    // 4. Papier und Deckel: blockiert wird nur, was das Gerät gemeldet hat.
+    if (zustand != null) {
+      registry.noteZustand(drucker.id, zustand, jetzt);
+      final sperre = zustand.sperre;
+      if (sperre != null) {
+        _log?.warn(
+          'Drucker ${drucker.id}: ${sperre.code} – kein Byte gesendet.',
+        );
+        return DruckAbgelehnt(sperre);
+      }
+    }
+    return DruckFreigabe(drucker);
+  }
+
+  Future<void> _bestaetigt(
+    PrinterConfig drucker,
+    DruckerLage lage,
+    DateTime jetzt,
+    MacVergleich mac,
+    String? geseheneMac,
+    String? geseheneSerie,
+  ) async {
+    final warKonflikt = lage.kennung == KennungsLage.konflikt;
+    lage
+      ..kennung = KennungsLage.bestaetigt
+      ..konfliktSerie = null
+      ..konfliktSucheBis = null;
+    if (geseheneSerie != null || mac == MacVergleich.gleich) {
+      lage.kennungBestaetigtAm = jetzt;
+    }
+    if (warKonflikt) {
+      _log?.info('Drucker ${drucker.id}: Kennung wieder bestätigt.');
+    }
+    if (mac == MacVergleich.anders && geseheneSerie != null) {
+      await _neueMac(drucker, geseheneMac!);
+    }
+  }
+
+  void _alsStummMerken(
+    PrinterConfig drucker,
+    DruckerLage lage,
+    DateTime jetzt,
+  ) {
+    lage.alsStummMerken(jetzt);
+    _log?.info(
+      'Drucker ${drucker.id} antwortet nicht auf DLE EOT – '
+      '${stummDauer.inMinutes} min ohne Abfrage.',
+    );
   }
 
   /// Bewiesen ein anderer Drucker unter der Adresse: erst schnell suchen,
@@ -237,7 +291,7 @@ class DruckVorpruefung {
   /// damit der nächste Bon ohne Frage geht.
   Future<void> _neueMac(PrinterConfig drucker, String mac) async {
     try {
-      await store.mutate((config) {
+      await _store.mutate((config) {
         final printers = config.printers.toList();
         final index = printers.indexWhere((p) => p.id == drucker.id);
         if (index < 0 || printers[index].host != drucker.host) return config;

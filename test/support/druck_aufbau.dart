@@ -64,11 +64,10 @@ class DruckAufbau {
     registry = PrinterRegistry(store: store, log: log, events: events);
     queue = PrintQueue(registry: registry, events: events, log: log);
     vorpruefung = DruckVorpruefung(
-      store: store,
+      registry: registry,
       abfrage: EscPosAbfrage(),
       arp: arp,
       schnittstellen: () async => schnittstellen,
-      lagen: registry.lagen,
       log: log,
       clock: () => jetzt,
     );

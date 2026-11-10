@@ -1,10 +1,27 @@
 import 'kennung.dart';
+import 'zustand.dart';
+
+/// So lange gilt ein Gerät nach einer Abfrage ohne gültige Antwort als stumm:
+/// vor seinen Bons geht keine Abfrage-Verbindung hinaus, gedruckt wird ohne
+/// Zuschlag wie bis 1.4.2, und der Takt prüft nur die Erreichbarkeit. Zehn
+/// Minuten, damit ein Drucker, der nur kurz beschäftigt war, bald wieder
+/// geprüft wird.
+const Duration stummDauer = Duration(minutes: 10);
 
 /// Was Connect im Lauf über einen Drucker weiß – nur im Speicher.
 ///
 /// Der Stand altert sofort und hat in der `config.json` nichts verloren; nach
 /// einem Neustart beginnt jeder Drucker als „unbekannt“, wie bis 1.4.2.
 class DruckerLage {
+  /// Zuletzt gemeldetes Papier und Deckel.
+  DruckerZustand zustand = DruckerZustand.unbekannt;
+
+  /// Wann [zustand] gemeldet wurde; `null`: nie.
+  DateTime? zustandAm;
+
+  /// Wie oft der Statustakt den Drucker zuletzt hintereinander nicht sah.
+  int verfehltInFolge = 0;
+
   /// Letzte Beurteilung der Kennung unter der eingerichteten Adresse.
   KennungsLage kennung = KennungsLage.unbekannt;
 
@@ -36,6 +53,9 @@ class DruckerLage {
     final alter = jetzt.difference(am);
     return !alter.isNegative && alter < kennungFrisch;
   }
+
+  /// Merkt sich ab [jetzt] für [stummDauer]: das Gerät schweigt.
+  void alsStummMerken(DateTime jetzt) => stummBis = jetzt.add(stummDauer);
 
   /// Ob das Gerät bis [jetzt] als stumm gilt.
   bool stumm(DateTime jetzt) {

@@ -10,6 +10,7 @@ import 'epos.dart';
 import 'kennung.dart';
 import 'lage.dart';
 import 'tcp9100.dart';
+import 'zustand.dart';
 
 /// Zeichenvorrat der Drucker-IDs (Base32 ohne verwechselbare Zeichen).
 const String printerIdAlphabet = 'abcdefghijklmnopqrstuvwxyz234567';
@@ -216,11 +217,48 @@ class PrinterRegistry {
   void noteState(String id, PrinterState state) {
     if (_states[id] == state) return;
     _states[id] = state;
+    final lage = lagen.vorhanden(id);
     _events?.publish(eventPrinterState, <String, Object?>{
       'printerId': id,
       'state': state.wireName,
+      if (lage != null && lage.zustandAm != null) ..._zustandsFelder(lage),
     });
   }
+
+  /// Papier und Deckel eines ePOS-Druckers über einen leeren Auftrag; `null`,
+  /// wenn er nicht antwortet oder kein ePOS-Drucker ist. Wirft nie.
+  Future<DruckerZustand?> eposZustand(
+    PrinterConfig printer,
+    Duration frist,
+  ) async {
+    final treiber = driverFor(printer);
+    if (treiber is! EposPrinter) return null;
+    final antwort = await treiber.statusbits(timeout: frist);
+    return antwort == null ? null : zustandAusEposStatus(antwort.status);
+  }
+
+  /// Merkt sich Papier und Deckel und meldet eine Änderung als
+  /// `printer.state` (mit `state`, `paper`, `cover`, `statusAt`).
+  void noteZustand(String id, DruckerZustand zustand, DateTime am) {
+    final lage = lagen.von(id);
+    final geaendert = lage.zustand != zustand;
+    lage
+      ..zustand = zustand
+      ..zustandAm = am.toUtc();
+    if (!geaendert) return;
+    _events?.publish(eventPrinterState, <String, Object?>{
+      'printerId': id,
+      'state': stateOf(id).wireName,
+      ..._zustandsFelder(lage),
+    });
+  }
+
+  static Map<String, Object?> _zustandsFelder(DruckerLage lage) =>
+      <String, Object?>{
+        'paper': lage.zustand.papier.wireName,
+        'cover': lage.zustand.deckel.wireName,
+        'statusAt': lage.zustandAm?.toIso8601String(),
+      };
 
   /// Drucker samt Zustand für `GET /v1/printers` und die Langform des Status.
   ///
@@ -235,13 +273,13 @@ class PrinterRegistry {
   }
 
   /// Ein Drucker für die API: die Felder aus 1.4.2 (`toApiJson`, `state`),
-  /// dazu ab 1.5.0 `identity` mit der Kennung und ihrer Lage.
+  /// dazu ab 1.5.0 `paper`, `cover`, `statusAt` und `identity`.
   ///
   /// Neue Felder stehen nur da, wenn sie etwas sagen: ein Drucker, über den
   /// nichts bekannt ist, sieht aus wie in 1.4.2 (fehlend heißt unbekannt).
   Map<String, Object?> zusammenfassung(PrinterConfig printer) {
-    final kennung =
-        lagen.vorhanden(printer.id)?.kennung ?? KennungsLage.unbekannt;
+    final lage = lagen.vorhanden(printer.id);
+    final kennung = lage?.kennung ?? KennungsLage.unbekannt;
     final mitKennung =
         printer.model != null ||
         printer.hatKennung ||
@@ -249,6 +287,7 @@ class PrinterRegistry {
     return <String, Object?>{
       ...printer.toApiJson(),
       'state': stateOf(printer.id).wireName,
+      if (lage != null && lage.zustandAm != null) ..._zustandsFelder(lage),
       if (mitKennung)
         'identity': <String, Object?>{
           'model': printer.model,

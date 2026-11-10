@@ -12,8 +12,11 @@ void main() {
   late DruckAufbau a;
   late FakeTcpPrinter drucker;
 
+  // Hier geht es nur um die Kennung; Papier und Deckel prüft
+  // status_vor_dem_druck_test.dart (und das Zusammenspiel dort).
   setUp(() async {
     a = DruckAufbau.erstellen();
+    await a.abschalten(<Neuerung>[Neuerung.druckerStatus]);
     drucker = await FakeTcpPrinter.start(
       dleEot: _gesund,
       gsI: const <int, String>{67: 'TM-m30III', 68: _serie},
@@ -156,7 +159,10 @@ void main() {
   });
 
   test('printer_identity aus: weder arp noch Abfrage', () async {
-    await a.abschalten(<Neuerung>[Neuerung.druckerKennung]);
+    await a.abschalten(<Neuerung>[
+      Neuerung.druckerKennung,
+      Neuerung.druckerStatus,
+    ]);
     final id = await a.drucker(drucker.port, serial: _serie, mac: _mac);
     a.arpMac = '00:26:ab:00:00:09';
     drucker.gsI[68] = 'X5ZT000999';
@@ -207,7 +213,10 @@ void main() {
     });
 
     test('printer_relocate aus: keine Suche', () async {
-      await a.abschalten(<Neuerung>[Neuerung.druckerWiederfinden]);
+      await a.abschalten(<Neuerung>[
+        Neuerung.druckerWiederfinden,
+        Neuerung.druckerStatus,
+      ]);
       final id = await a.drucker(drucker.port, serial: _serie);
       a.vorpruefung.schnellesWiederfinden = (_) async {
         a.wiederfindenAufrufe++;

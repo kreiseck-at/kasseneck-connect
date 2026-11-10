@@ -123,6 +123,19 @@ class EposPrinter implements PrinterDriver {
     }
   }
 
+  /// Die Statusbits des Geräts über einen leeren Auftrag (wie [status]);
+  /// `null`, wenn keine verwertbare Antwort kam. Wirft nie.
+  Future<EposResult?> statusbits({
+    Duration timeout = defaultPrintTimeout,
+  }) async {
+    try {
+      final response = await _post(_statusEnvelope(), timeout);
+      return response.status == 200 ? parseEposResponse(response.body) : null;
+    } on PrinterFailure {
+      return null;
+    }
+  }
+
   /// Schickt einen SOAP-Rumpf an den Dienst und liefert Status und Antwort.
   ///
   /// [_Sent] merkt sich, ob die Anfrage schon auf der Leitung war: solange nur

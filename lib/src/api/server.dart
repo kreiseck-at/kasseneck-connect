@@ -50,6 +50,6 @@ Handler buildHandler(
   return const Pipeline()
       .addMiddleware(configLoader(ctx.store))
       .addMiddleware(corsMiddleware(environment: environment))
-      .addMiddleware(tokenAuth())
+      .addMiddleware(tokenAuth(beiGueltigemToken: ctx.kasseGesehen))
       .addHandler(router.call);
 }

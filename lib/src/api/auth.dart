@@ -76,13 +76,17 @@ Middleware configLoader(ConfigStore store) {
 ///
 /// `GET /v1/status` läuft auch ohne Token durch; die Route sieht am
 /// [contextAuthenticated]-Flag, ob sie die Kurz- oder die Langform liefert.
-Middleware tokenAuth() {
+///
+/// [beiGueltigemToken] erfährt jede Anfrage mit gültigem Token (daran hängt
+/// der Statustakt: nur bei offener Kasse).
+Middleware tokenAuth({void Function()? beiGueltigemToken}) {
   return (Handler innerHandler) {
     return (Request request) async {
       final config = configOf(request);
       final token = requestToken(request);
       final authenticated =
           token != null && config.tokenHashes.contains(hashToken(token));
+      if (authenticated) beiGueltigemToken?.call();
 
       if (!authenticated &&
           !isPublicRoute(

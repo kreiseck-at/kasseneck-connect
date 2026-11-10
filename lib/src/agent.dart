@@ -29,6 +29,7 @@ import 'printers/erkennung.dart';
 import 'printers/funde.dart';
 import 'printers/queue.dart';
 import 'printers/registry.dart';
+import 'printers/statustakt.dart';
 import 'printers/tcp9100.dart' show SocketConnector;
 import 'printers/vorpruefung.dart';
 import 'process_runner.dart';
@@ -190,6 +191,7 @@ class Agent {
 
   AgentContext? _context;
   TerminalWarmhalter? _warmhalter;
+  DruckerStatusDienst? _status;
   PrinterRegistry? _printers;
   BluetoothBridge? _bluetooth;
   List<RouteRegistrar> _routes = const <RouteRegistrar>[];
@@ -266,14 +268,22 @@ class Agent {
         funde: funde,
       ),
     );
+    final status = DruckerStatusDienst(
+      registry: registry,
+      queue: queue,
+      abfrage: abfrage,
+      kasseZuletzt: () => _context?.kasseZuletzt,
+      log: log,
+      clock: _clock,
+    );
+    _status = status;
     queue
       ..nachErfolg = kennung.nachKontakt
       ..vorpruefung = DruckVorpruefung(
-        store: store,
+        registry: registry,
         abfrage: abfrage,
         arp: arp,
         schnittstellen: _schnittstellen,
-        lagen: registry.lagen,
         log: log,
         clock: _clock,
       );
@@ -345,6 +355,7 @@ class Agent {
         queue: queue,
         kennung: kennung,
         funde: funde,
+        status: status,
         discovery: _discovery ?? PrinterDiscovery(log: log),
       ),
       bluetoothRoutes(bridge: bluetooth),
@@ -365,6 +376,8 @@ class Agent {
     log.info(
       '$agentName $agentVersion lauscht auf http://127.0.0.1:${server.port}',
     );
+
+    _status?.start();
 
     final config = await store.load();
     if (config.port != server.port) {
@@ -392,6 +405,8 @@ class Agent {
   /// gehen), nach [gracefulStopTimeout] mit Nachdruck.
   Future<void> stop() async {
     _warmhalter?.stop();
+    await _status?.stop();
+    _status = null;
     _tlsTimer?.cancel();
     _tlsTimer = null;
     // Eine laufende Zertifikatsprüfung zu Ende gehen lassen: sie bände sonst

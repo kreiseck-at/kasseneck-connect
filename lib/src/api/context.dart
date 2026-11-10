@@ -116,6 +116,13 @@ class AgentContext {
   /// wirft — sie muss keinen Neustart überdauern.
   DateTime? lastPairRequestAt;
 
+  /// Wann zuletzt eine Anfrage mit gültigem Token kam – daran sieht der
+  /// Statustakt, ob eine Kasse offen ist. Ein Wert für alle Kassen und Tabs.
+  DateTime? kasseZuletzt;
+
+  /// Merkt sich eine Anfrage mit gültigem Token.
+  void kasseGesehen() => kasseZuletzt = clock();
+
   Future<AgentConfig> config() => store.load();
 
   int get uptimeSeconds => clock().difference(startedAt).inSeconds;

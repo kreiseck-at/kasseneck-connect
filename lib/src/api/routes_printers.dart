@@ -10,6 +10,7 @@ import '../printers/erkennung.dart';
 import '../printers/funde.dart';
 import '../printers/queue.dart';
 import '../printers/registry.dart';
+import '../printers/statustakt.dart';
 import 'context.dart';
 import 'responses.dart';
 import 'routes_print.dart';
@@ -38,6 +39,7 @@ RouteRegistrar printerRoutes({
   PrinterDiscovery? discovery,
   Kennungspflege? kennung,
   FundGedaechtnis? funde,
+  DruckerStatusDienst? status,
 }) {
   return (Router router, AgentContext ctx) {
     final search = discovery ?? PrinterDiscovery(log: ctx.log);
@@ -66,6 +68,12 @@ RouteRegistrar printerRoutes({
         (Request r, String id) => handleTestPrint(queue, r, id),
       )
       ..post('/v1/print', (Request r) => handlePrint(queue, r));
+    if (status != null) {
+      router.post(
+        '/v1/printers/<id>/status',
+        (Request r, String id) => handlePrinterStatus(status, id),
+      );
+    }
   };
 }
 
@@ -139,6 +147,20 @@ Future<Response> handleDeletePrinter(
   }
   queue.forgetPrinter(id);
   return okJson(<String, Object?>{'id': id});
+}
+
+/// `POST /v1/printers/{id}/status` — fragt Papier, Deckel und Erreichbarkeit
+/// sofort ab (über die Warteschlange, nie neben einem Bon) und liefert den
+/// Drucker wie `GET /v1/printers`.
+Future<Response> handlePrinterStatus(
+  DruckerStatusDienst status,
+  String id,
+) async {
+  final drucker = await status.jetzt(id);
+  if (drucker == null) {
+    return failJson(errorPrinterUnknown, 'Diesen Drucker gibt es nicht.');
+  }
+  return okJson(<String, Object?>{'printer': drucker});
 }
 
 /// `POST /v1/printers/discover` — `{scan?: bool}`.

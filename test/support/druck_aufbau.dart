@@ -15,8 +15,9 @@ final Uint8List beispielBon = Uint8List.fromList(<int>[
 ]);
 
 /// Erfundenes Modell, das in den Tests als „im Gerätetest bewiesen“ gilt
-/// ([testModelle]); die Liste des Betriebs ist bis zur Messung leer.
-const String bewiesenesTestModell = 'TM-T20III';
+/// ([testModelle]). Bewusst KEIN echtes Modell: die Liste des Betriebs
+/// ([bewieseneModelle]) darf die Tests nicht mitbestimmen.
+const String bewiesenesTestModell = 'TM-PROBE9';
 
 /// Die bewiesenen Modelle der Tests.
 const List<BewiesenesModell> testModelle = <BewiesenesModell>[

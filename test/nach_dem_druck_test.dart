@@ -318,8 +318,9 @@ void main() {
         ),
         isTrue,
       );
-      // Die Liste des Betriebs ist bis zum Gerätetest leer.
-      expect(bewieseneModelle, isEmpty);
+      // Die Liste des Betriebs führt nur am Gerät gemessene Modelle
+      // (Gerätetest 11.11.2026: TM-T20III), nie das erfundene Testmodell.
+      expect(bewieseneModelle.map((m) => m.modell), <String>['TM-T20III']);
       expect(
         modellBewiesen(drucker.copyWith(modelSource: KennungsQuelle.escpos)),
         isFalse,

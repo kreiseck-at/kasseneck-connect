@@ -35,10 +35,21 @@ class BewiesenesModell {
   final String gemessen;
 }
 
-/// Die im Gerätetest bewiesenen Modelle. Leer bis zur Messung: ein Eintrag
-/// kommt erst, wenn das Modell am Gerät alle Punkte von
-/// [BewiesenesModell.gemessen] bestanden hat.
-const List<BewiesenesModell> bewieseneModelle = <BewiesenesModell>[];
+/// Die im Gerätetest bewiesenen Modelle. Ein Eintrag kommt erst, wenn das
+/// Modell am Gerät alle Punkte von [BewiesenesModell.gemessen] bestanden hat.
+const List<BewiesenesModell> bewieseneModelle = <BewiesenesModell>[
+  BewiesenesModell(
+    modell: 'TM-T20III',
+    geraet: 'Epson TM-T20III, Firmware 20.05, über Netzwerk (9100)',
+    datum: '2026-11-11',
+    gemessen:
+        'DLE EOT 2 und 4 antworten sofort (Deckel zu, Papier da); '
+        'Deckel offen und Rolle heraus: Verbindung angenommen, keine Antwort '
+        'am Stück (10.11. und 11.11.2026); nach dem Schließen antwortet er '
+        'nach rund 3 s wieder; nach einem Bon von 8 KB schweigt er rund '
+        '0,5 s und antwortet nach 1,0 s – weit unter schweigenMindestdauer.',
+  ),
+];
 
 /// Ob [drucker] ein bewiesenes Modell ist: 9100, Modell über `GS I 67`
 /// gelesen und in [liste].

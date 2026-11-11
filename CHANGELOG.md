@@ -28,8 +28,10 @@ Felder, Routen und Codes sind additiv; die Kasse entscheidet an `features`.
 - **Gerätekennung der Drucker** aus mDNS-TXT (Frist 0,5 s), `GS I 67/68` und
   ARP – beim Anlegen, nach einer Druckersuche und auf Zuruf, nie wegen eines
   Bons. Nach einem `GS I` ohne gültige Antwort folgt keines mehr; ein Gerät,
-  das `DLE EOT`, aber nicht `GS I 67` beantwortet, bekommt `GS I` nur noch beim
-  Anlegen (`idQueryUnansweredAt`, `PUT` setzt es zurück). Nur eine andere
+  das `DLE EOT`, aber nicht `GS I 67` beantwortet (volle Frist, kein eigener
+  Bon druckt), bekommt frühestens 6 h später ein zweites und danach keins mehr
+  (`idQueryMissedAt`, `idQueryUnansweredAt`; erst eine andere Adresse oder Art
+  setzt beides zurück). Nur eine andere
   Seriennummer beweist einen anderen Drucker; der Druck
   wird dadurch nie blockiert. Steht dort dauerhaft ein anderer und ist der alte
   nirgends zu finden, übernimmt Connect die neue Kennung (`relocations` mit
@@ -43,7 +45,8 @@ Felder, Routen und Codes sind additiv; die Kasse entscheidet an `features`.
   Papier): `printer_not_ready`, kein Byte gesendet; kürzeres Schweigen (etwa
   während eines fremden Bons) druckt wie bisher. Lückenlos heißt: solange er
   schweigt, fragt Connect alle 5 s nach (über die Warteschlange, nie neben
-  einem eigenen Bon); liegen zwei stumme Beobachtungen mehr als 10 s
+  einem eigenen Bon, nie an ein Gerät mit anderer MAC); liegen zwei stumme
+  Beobachtungen mehr als 10 s
   auseinander, beginnt die Strecke neu. Vor einem Bon fragt Connect nicht,
   solange der eigene vorige noch druckt (Bons direkt hintereinander ohne
   Zuschlag). Statustakt alle 60 s bei offener Kasse,
@@ -55,6 +58,11 @@ Felder, Routen und Codes sind additiv; die Kasse entscheidet an `features`.
   1.4.2 nach einer eigenen Abfrage-Verbindung (Erkennung nach dem Anlegen oder
   einer Suche, Statusabfrage, Suche): der Testdruck direkt nach dem Anlegen
   geht so wie in 1.4.2.
+- **Mehrere Kassen an einem Drucker:** fragt ein anderer Rechner einen
+  bewiesenen Drucker gerade ab und lehnt er deshalb ab, gilt er nach eigenem
+  Kontakt in den letzten 10 s als belegt (Wiederholung bis 3 s, ohne „gibt
+  langsam frei“); nach einer abgelehnten Druckverbindung folgt der zweite
+  Versuch nach 0,6 s – nie weniger Druckversuche als bis 1.4.2.
 - **Wiederfinden:** Drucker unter neuer Adresse nur mit derselben über
   `GS I 68` gelesenen Seriennummer (die MAC ist nur ein Hinweis), nie unter der
   Adresse eines anderen eingerichteten Druckers; die gründliche Suche schickt

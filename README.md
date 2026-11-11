@@ -635,9 +635,15 @@ Repeater mit MAC-NAT –, wird nicht gespeichert). Nur ein über `GS I 67`
 gelesenes Modell (`modelSource: escpos`) kann ein bewiesenes sein. Bleibt ein
 `GS I` ohne gültige Antwort, folgt auf derselben Verbindung keines mehr. Ein
 Gerät, das `DLE EOT`, aber nicht `GS I 67` beantwortet (etwa ein Nachbau, der
-die Zeichen sonst auf den nächsten Bon drucken könnte), bekommt `GS I` danach
-nur noch beim Anlegen (`idQueryUnansweredAt` in der `config.json`; ein `PUT`
-setzt es zurück) – nach einer Suche und auf Zuruf nur `DLE EOT`.
+die Zeichen sonst auf den nächsten Bon drucken könnte), bekommt höchstens
+noch ein zweites `GS I`, frühestens 6 h später (`idQueryMissedAt`); bleibt
+auch das ohne Antwort, nie mehr (`idQueryUnansweredAt`) – auch nicht beim
+erneuten Anlegen derselben Adresse, denn danach folgt nicht immer ein
+Testdruck (die Kasse legt Funde einer Suche ohne an). Erst eine andere Adresse
+oder Art setzt beides zurück. Gezählt wird ein Schweigen auf `GS I` nur mit
+voller Frist (mindestens 1 s) und nicht, solange ein eigener Bon noch druckt
+(`GS I` ist kein Echtzeitbefehl und wartet hinter seinen Daten); ein echter
+Drucker, der einmal zu spät antwortet, bekommt so eine zweite Gelegenheit.
 
 Vor dem Bon eines bewiesenen Modells vergleicht Connect die MAC (ohne Bytes an
 den Drucker); weicht sie ab oder fehlt sie, fragt es `GS I 68`. **Nur eine
@@ -670,9 +676,10 @@ Ein Epson TM-T20III meldet beides nicht als Bits, sondern schweigt
 und schon **30 s lückenlos beobachtet** dauert: keine zwei stummen
 Beobachtungen liegen mehr als 10 s auseinander, und dazwischen kam keine
 gültige Antwort. Sobald ein solcher Drucker schweigt, fragt Connect alle 5 s
-nach (nur bewiesene Modelle, nur bei offener Kasse, über die Warteschlange,
-nie neben einem eigenen Bon, ein Versuch mit 500 ms) – bis er antwortet,
-nicht mehr erreichbar ist oder die Kasse zu ist. Zwei Stichproben im Abstand
+nach (nur bewiesene Modelle, nur bei offener Kasse, nie an ein Gerät mit
+nachweislich anderer MAC, über die Warteschlange, nie neben einem eigenen
+Bon, ein Versuch mit 500 ms) – bis er antwortet, eine Nachfrage keine
+Verbindung bekommt oder die Kasse zu ist. Zwei Stichproben im Abstand
 des Takts, die zufällig beide einen Bon eines anderen Rechners treffen,
 ergeben so nie „nicht bereit“. Ein Drucker, der gerade den Bon eines anderen
 Rechners druckt, schweigt ebenfalls, aber nie so lange; bis dahin wird
@@ -700,6 +707,17 @@ nach dem Anlegen oder einer Suche, Statusabfrage, Suche) – ohne sie wäre der
 Bon gegangen; ebenso wartet die Statusabfrage auf Zuruf nach der Erkennung.
 Ab da gilt der Drucker als „gibt langsam frei“: keine Abfrage mehr vor seinen
 Bons und kein Takt (bis zum Neustart von Connect).
+
+**Mehrere Kassen an einem Drucker.** Ein anderer Rechner kann ein bewiesenes
+Modell gerade abfragen (Takt, Nachfrage), und ein Drucker, der nur eine
+Verbindung zugleich annimmt, lehnt dann ab. Lehnt ein statusfähiger Drucker
+die Abfrage vor dem Bon ab, obwohl dieser Rechner in den letzten 10 s mit ihm
+verbunden war, gilt er als belegt: dieselbe Wiederholung wie bei der langsamen
+Freigabe (höchstens 3 s, ohne Suche), aber ohne „gibt langsam frei“. Wird bei
+einem bewiesenen Modell ein Druckversuch abgelehnt, folgt der zweite erst nach
+0,6 s, auch wenn schon die Abfrage keine Verbindung bekam – nie weniger
+Druckversuche als bis 1.4.2. Jeder andere Drucker wiederholt sofort wie bis
+1.4.2.
 
 **Wiederfinden.** Übernommen wird eine neue Adresse nur mit derselben, über
 `GS I 68` gelesenen Seriennummer; die MAC zeigt nur, wo zuerst gefragt wird,
@@ -729,7 +747,8 @@ Ein ausgeschalteter Drucker kostet nie länger als bis 1.4.2 (zwei
 Verbindungsversuche mit je 5 s): ein nicht bewiesenes Modell nimmt genau den
 Weg von 1.4.2; bei einem bewiesenen zählt die Abfrage ohne Verbindung
 (höchstens 1,5 s) als erster Versuch, es folgen die Suche über die ARP-Tabelle
-(meist Millisekunden, höchstens 2 s) und ein Druckversuch.
+(meist Millisekunden, höchstens 2 s) und ein Druckversuch; ein zweiter nur,
+wenn das Gerät ablehnt (dann ist es da, nur belegt).
 
 **Sperren.** Druckaufträge und lange Terminal-Aufrufe zählen als laufende
 Vorgänge, für alle Kassen und Tabs zusammen. Solange einer läuft, lehnt

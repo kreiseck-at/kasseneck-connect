@@ -10,6 +10,10 @@ const String _alteSerie = 'X5ZT000123';
 const String _neueSerie = 'X5ZT000999';
 const String _adresse = '192.168.0.50';
 
+/// MAC des alten Druckers: ohne sie sucht Connect nicht gründlich (Bytes nur
+/// an Geräte desselben Herstellers).
+const String _alteMac = '00:26:ab:00:00:01';
+
 /// Unter der Adresse eines Druckers steht dauerhaft ein anderer (Gerät
 /// getauscht, die Kasse richtet nichts neu ein): nach drei Bons über
 /// mindestens eine Stunde und wenn der alte nirgends zu finden ist, übernimmt
@@ -64,7 +68,12 @@ void main() {
 
   test('drei Bons über eine Stunde, der alte nirgends: Kennung übernommen, '
       'relocations mit kind replaced', () async {
-    final id = await a.drucker(9100, host: _adresse, serial: _alteSerie);
+    final id = await a.drucker(
+      9100,
+      host: _adresse,
+      serial: _alteSerie,
+      mac: _alteMac,
+    );
     await bons(id, const <Duration>[
       Duration.zero,
       Duration(minutes: 30),
@@ -95,7 +104,12 @@ void main() {
   });
 
   test('drei Bons, aber kürzer als eine Stunde: nichts übernommen', () async {
-    final id = await a.drucker(9100, host: _adresse, serial: _alteSerie);
+    final id = await a.drucker(
+      9100,
+      host: _adresse,
+      serial: _alteSerie,
+      mac: _alteMac,
+    );
     await bons(id, const <Duration>[
       Duration.zero,
       Duration(minutes: 10),
@@ -107,7 +121,12 @@ void main() {
   });
 
   test('eine Stunde, aber nur zwei Bons: nichts übernommen', () async {
-    final id = await a.drucker(9100, host: _adresse, serial: _alteSerie);
+    final id = await a.drucker(
+      9100,
+      host: _adresse,
+      serial: _alteSerie,
+      mac: _alteMac,
+    );
     await bons(id, const <Duration>[Duration.zero, Duration(minutes: 90)]);
     expect((await gespeichert()).serial, _alteSerie);
   });
@@ -120,11 +139,16 @@ void main() {
         gsI: const <int, String>{68: _alteSerie},
       );
       addTearDown(alter.stop);
-      final id = await a.drucker(9100, host: _adresse, serial: _alteSerie);
-      // Die schnelle Suche im Auftrag kennt keine MAC; der alte steht erst
-      // seit eben unter .61, die gründliche Suche findet ihn.
+      final id = await a.drucker(
+        9100,
+        host: _adresse,
+        serial: _alteSerie,
+        mac: _alteMac,
+      );
+      // Die ARP-Tabelle kennt .61 noch nicht (schnelle Suche ohne Fund);
+      // der alte steht erst seit eben dort, die gründliche Suche findet ihn.
       await bons(id, const <Duration>[Duration.zero, Duration(minutes: 30)]);
-      netz.stelle('192.168.0.61', 9100, alter.port);
+      netz.stelle('192.168.0.61', 9100, alter.port, macNachKontakt: _alteMac);
       await bons(id, const <Duration>[Duration(minutes: 31)]);
       final eintrag = await gespeichert();
       expect(eintrag.serial, _alteSerie);
@@ -135,7 +159,12 @@ void main() {
 
   test('während einer Zahlung wird nicht gesucht und nichts übernommen; '
       'danach schon', () async {
-    final id = await a.drucker(9100, host: _adresse, serial: _alteSerie);
+    final id = await a.drucker(
+      9100,
+      host: _adresse,
+      serial: _alteSerie,
+      mac: _alteMac,
+    );
     a.zahlung = true;
     await bons(id, const <Duration>[
       Duration.zero,

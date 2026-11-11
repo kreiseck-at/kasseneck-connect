@@ -253,6 +253,17 @@ class DruckerWiederfinder {
       return null;
     }
     _letzteGruendliche[id] = _clock();
+    // Die gründliche Suche schickt Bytes nur an Geräte desselben Herstellers
+    // (siehe _gruendlichSuchen); ohne gemerkte MAC wüsste sie nicht, welche –
+    // dann sucht sie gar nicht (und der alte Drucker gilt nicht als
+    // „nirgends zu finden“).
+    if (macHersteller(drucker.mac) == null) {
+      _log?.info(
+        'Drucker $id: keine gemerkte MAC – keine gründliche Suche (Bytes '
+        'nur an Geräte desselben Herstellers).',
+      );
+      return null;
+    }
     return _einmal(id, () => _gruendlichSuchen(drucker));
   }
 
@@ -319,8 +330,15 @@ class DruckerWiederfinder {
     return _uebernimmEinzigen(drucker, kandidaten, 'schnell');
   }
 
+  /// Netzscan (nur Verbindungsaufbau, kein Byte), dann `DLE EOT` und
+  /// `GS I 68` – aber nur an Adressen, deren MAC in der ARP-Tabelle dieselbe
+  /// Herstellerkennung (OUI) trägt wie die gemerkte des Druckers. Ein Büro-
+  /// oder Etikettendrucker auf 9100 bekam bis 1.4.2 nie ein Byte von
+  /// Connect; ein Laser im Raw-Modus druckte daraus womöglich eine Seite.
   Future<PrinterConfig?> _gruendlichSuchen(PrinterConfig drucker) async {
     if (!await _eindeutig(drucker)) return null;
+    final hersteller = macHersteller(drucker.mac);
+    if (hersteller == null) return null;
     final uhr = Stopwatch()..start();
     final netze = scanInterfaces(await _schnittstellen());
     final offen = <String>[];
@@ -336,12 +354,19 @@ class DruckerWiederfinder {
       offen.addAll(treffer.map((t) => t.host).where((h) => h != drucker.host));
     }
     // Nach dem Scan stehen frische Einträge in der ARP-Tabelle: Adressen mit
-    // derselben MAC zuerst gefragt, dann die übrigen offenen.
+    // derselben MAC zuerst gefragt, dann die übrigen offenen desselben
+    // Herstellers. Ohne Eintrag (kein ARP, anderes Netz) kein Byte.
     final tabelle = await _arp.alle();
-    final zuerst = _hinweise(drucker, tabelle).where(offen.contains).toList();
+    final gleicherHersteller = offen
+        .where((h) => macHersteller(tabelle[h]) == hersteller)
+        .toList();
+    final zuerst = _hinweise(
+      drucker,
+      tabelle,
+    ).where(gleicherHersteller.contains).toList();
     final zuFragen = <String>[
       ...zuerst,
-      ...offen.where((h) => !zuerst.contains(h)),
+      ...gleicherHersteller.where((h) => !zuerst.contains(h)),
     ].take(gruendlichHoechstKandidaten);
     final kandidaten = <DruckerKandidat>[];
     for (final host in zuFragen) {
@@ -398,12 +423,24 @@ class DruckerWiederfinder {
     );
     final antworten = anderer == null
         ? await fragen()
-        : await _queue!.exclusive(anderer.id, fragen);
-    return DruckerKandidat(
+        : await _queue!.exclusive(anderer.id, () async {
+            final a = await fragen();
+            // Ein Bon an den anderen Drucker direkt danach wartet auf die
+            // Freigabe dieser Verbindung (DruckerLage.ebenAbgefragt).
+            if (a.verbunden) registry.lagen.von(anderer.id).abgefragt();
+            return a;
+          });
+    final kandidat = DruckerKandidat(
       host: host,
       port: drucker.port,
       serie: antworten.seriennummer,
     );
+    // Der gesuchte Drucker selbst: ein Bon an die neue Adresse direkt danach
+    // wartet ebenso auf die Freigabe.
+    if (antworten.verbunden && kandidatBestaetigt(drucker, kandidat)) {
+      registry.lagen.von(drucker.id).abgefragt();
+    }
+    return kandidat;
   }
 
   /// Der eingerichtete Drucker (nicht [drucker]) unter [host]:Port von
@@ -449,6 +486,7 @@ class DruckerWiederfinder {
   ) async {
     if (_beendet) return null;
     PrinterConfig? neu;
+    var doppelt = false;
     final jetzt = _clock();
     await registry.store.mutate((config) {
       final printers = config.printers.toList();
@@ -458,6 +496,19 @@ class DruckerWiederfinder {
       // Inzwischen anders eingerichtet (Kasse, zweite Suche): nichts ändern.
       if (aktuell.host != drucker.host || aktuell.port != drucker.port) {
         neu = aktuell;
+        return config;
+      }
+      // Unter der neuen Adresse steht schon ein anderer eingerichteter
+      // Drucker: zwei Einträge auf ein Gerät hießen jeden Bon doppelt (wie
+      // 1.4.2 beim Anlegen, siehe PrinterRegistry.upsert). Nichts ändern.
+      final belegt = printers.any(
+        (p) =>
+            p.id != drucker.id &&
+            p.host.toLowerCase() == fund.host.toLowerCase() &&
+            p.port == fund.port,
+      );
+      if (belegt) {
+        doppelt = true;
         return config;
       }
       final umgezogen = aktuell.copyWith(host: fund.host);
@@ -475,6 +526,13 @@ class DruckerWiederfinder {
             ),
           );
     });
+    if (doppelt) {
+      _log?.warn(
+        'Drucker ${drucker.id}: unter ${fund.host}:${fund.port} ist schon ein '
+        'anderer Drucker eingerichtet – Adresse nicht übernommen.',
+      );
+      return null;
+    }
     final ergebnis = neu;
     if (ergebnis == null || ergebnis.host != fund.host) return ergebnis;
     _arp.vergiss(drucker.host);

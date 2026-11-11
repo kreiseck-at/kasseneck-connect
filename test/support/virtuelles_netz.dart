@@ -22,14 +22,35 @@ class VirtuellesNetz {
   /// Adresse → MAC für die ARP-Tabelle.
   final Map<String, String> macs = <String, String>{};
 
+  /// Adresse → MAC, die erst nach einem Kontakt (Verbindungsaufbau, Probe)
+  /// in der ARP-Tabelle steht – wie im echten Netz nach einem Scan.
+  final Map<String, String> macsNachKontakt = <String, String>{};
+
+  final Set<String> _kontaktiert = <String>{};
+
   /// Verbindungsversuche je Adresse (auch abgelehnte).
   final Map<String, int> versuche = <String, int>{};
 
-  /// Stellt einen Fake unter [host]:[port] auf.
-  void stelle(String host, int port, int fakePort, {String? mac}) {
+  /// Stellt einen Fake unter [host]:[port] auf; [macNachKontakt] steht erst
+  /// nach dem ersten Kontakt in der ARP-Tabelle.
+  void stelle(
+    String host,
+    int port,
+    int fakePort, {
+    String? mac,
+    String? macNachKontakt,
+  }) {
     _geraete.putIfAbsent(host, () => <int, int>{})[port] = fakePort;
     if (mac != null) macs[host] = mac;
+    if (macNachKontakt != null) macsNachKontakt[host] = macNachKontakt;
   }
+
+  /// Die ARP-Einträge jetzt: [macs] und die nach einem Kontakt.
+  Map<String, String> get _arp => <String, String>{
+    for (final host in _kontaktiert)
+      if (macsNachKontakt[host] case final mac?) host: mac,
+    ...macs,
+  };
 
   /// Nimmt [host] aus dem Netz (die MAC bleibt in der ARP-Tabelle stehen,
   /// wie ein veralteter Eintrag).
@@ -37,6 +58,7 @@ class VirtuellesNetz {
 
   Future<Socket> verbinden(String host, int port, {Duration? timeout}) {
     versuche[host] = (versuche[host] ?? 0) + 1;
+    _kontaktiert.add(host);
     final ziel = _geraete[host]?[port];
     if (ziel == null) {
       return Future<Socket>.error(
@@ -72,17 +94,19 @@ class VirtuellesNetz {
     return Socket.startConnect('127.0.0.1', ziel);
   }
 
-  Future<bool> tcp(String host, int port, Duration timeout) async =>
-      _geraete[host]?[port] != null;
+  Future<bool> tcp(String host, int port, Duration timeout) async {
+    _kontaktiert.add(host);
+    return _geraete[host]?[port] != null;
+  }
 
   /// `arp -an` im Format von macOS.
-  String arpTabelle() => macs.entries
+  String arpTabelle() => _arp.entries
       .map((e) => '? (${e.key}) at ${e.value} on en0 ifscope [ethernet]\n')
       .join();
 
   /// `arp -n <ip>` im Format von macOS.
   String arpEinzeln(String ip) {
-    final mac = macs[ip];
+    final mac = _arp[ip];
     return mac == null
         ? '$ip ($ip) -- no entry\n'
         : '? ($ip) at $mac on en0 ifscope [ethernet]\n';

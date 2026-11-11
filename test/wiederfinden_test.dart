@@ -24,6 +24,19 @@ PrinterConfig _drucker({String? serial = _serie, String? mac = _mac}) =>
     );
 
 void main() {
+  test(
+    'macHersteller: die ersten drei Bytes, nie bei lokal vergebener MAC',
+    () {
+      expect(macHersteller('00:26:AB:00:00:01'), '00:26:ab');
+      expect(macHersteller('0:26:ab:0:0:1'), '00:26:ab');
+      expect(macHersteller('02:26:ab:00:00:01'), isNull, reason: 'lokal');
+      expect(macHersteller('da:a1:19:00:00:01'), isNull, reason: 'lokal');
+      expect(macHersteller(null), isNull);
+      expect(macHersteller('kaputt'), isNull);
+      expect(macHersteller('ff:ff:ff:ff:ff:ff'), isNull);
+    },
+  );
+
   group('Kandidatenwahl (rein)', () {
     test('mit Seriennummer zählt nur dieselbe Seriennummer', () {
       final d = _drucker();
@@ -187,13 +200,18 @@ void main() {
       expect((await gespeichert()).host, _alt);
     });
 
-    test('ohne MAC: im Auftrag keine Suche (kein Warten), die gründliche '
-        'findet ihn per GS I', () async {
+    test('ohne gemerkte MAC: keine Suche, weder im Auftrag noch gründlich – '
+        'kein Byte an ein fremdes Gerät', () async {
       netz.macs.clear();
       final id = await a.drucker(9100, host: _alt, serial: _serie);
       expect(await a.wiederfinder.schnell(await gespeichert()), isNull);
       expect(netz.versuche[_neu], isNull, reason: 'kein Netzverkehr');
-      expect((await a.wiederfinder.gruendlich(id))?.host, _neu);
+      expect(await a.wiederfinder.gruendlich(id, erzwingen: true), isNull);
+      expect(netz.versuche[_neu], isNull, reason: 'kein Scan, keine Bytes');
+      expect(drucker.connections, 0);
+      final auskunft = await a.wiederfinder.gruendlichMitAuskunft(id);
+      expect(auskunft.gesucht, isFalse, reason: 'nicht „nirgends“');
+      expect((await gespeichert()).host, _alt);
     });
 
     test('schnelles Wiederfinden höchstens einmal je Minute', () async {
@@ -281,7 +299,7 @@ void main() {
           id: 'p_kueche',
           serial: _serie,
         );
-        await a.drucker(9100, host: _alt, serial: _serie);
+        await a.drucker(9100, host: _alt, serial: _serie, mac: _mac);
         // Unter _neu antwortet ebenfalls _serie – auch das zählt nicht.
         expect(
           await a.wiederfinder.gruendlich('p_ab12cd34', erzwingen: true),
@@ -325,13 +343,14 @@ void main() {
 
     group('gründlich', () {
       setUp(() {
-        // ARP kennt den neuen Ort erst nach dem Scan nicht – Netzscan nötig.
+        // ARP kennt den neuen Ort erst nach dem Scan – Netzscan nötig.
         netz.macs.remove(_neu);
+        netz.macsNachKontakt[_neu] = _mac;
       });
 
       test('Netzscan und GS I finden ihn; höchstens einmal in zwei Minuten, '
           'locate erzwingt', () async {
-        final id = await a.drucker(9100, host: _alt, serial: _serie);
+        final id = await a.drucker(9100, host: _alt, serial: _serie, mac: _mac);
         expect((await a.wiederfinder.gruendlich(id))?.host, _neu);
         expect((await gespeichert()).host, _neu);
 
@@ -356,8 +375,67 @@ void main() {
         expect((await a.wiederfinder.gruendlich(id))?.host, _neu);
       });
 
+      test('H3: Bytes nur an Geräte desselben Herstellers (OUI) – ein '
+          'Bürodrucker auf 9100 bekommt keins, ein Gerät ohne ARP-Eintrag '
+          'auch nicht', () async {
+        final laser = await FakeTcpPrinter.start(dleEot: _gesund);
+        final ohneArp = await FakeTcpPrinter.start(dleEot: _gesund);
+        addTearDown(laser.stop);
+        addTearDown(ohneArp.stop);
+        // Erfundene MAC eines anderen Herstellers.
+        netz
+          ..stelle(
+            '192.168.0.70',
+            9100,
+            laser.port,
+            macNachKontakt: '3c:2a:f4:12:34:56',
+          )
+          ..stelle('192.168.0.71', 9100, ohneArp.port);
+        final id = await a.drucker(9100, host: _alt, serial: _serie, mac: _mac);
+        expect((await a.wiederfinder.gruendlich(id))?.host, _neu);
+        expect(laser.connections, 0, reason: 'anderer Hersteller');
+        expect(laser.received, isEmpty);
+        expect(ohneArp.connections, 0, reason: 'ohne ARP kein Hersteller');
+      });
+
+      test(
+        'H7: der Fund steht unter der Adresse eines anderen eingerichteten '
+        'Druckers – nicht übernommen (nie zwei Einträge auf ein Gerät)',
+        () async {
+          final dort = await FakeTcpPrinter.start(
+            dleEot: _gesund,
+            gsI: const <int, String>{68: _serie},
+          );
+          addTearDown(dort.stop);
+          netz
+            ..entferne(_neu)
+            ..stelle('192.168.0.62', 9100, dort.port, macNachKontakt: _mac);
+          await a.drucker(
+            9100,
+            host: '192.168.0.62',
+            id: 'p_kasse2',
+            serial: 'X5ZT000777',
+          );
+          final id = await a.drucker(
+            9100,
+            host: _alt,
+            serial: _serie,
+            mac: _mac,
+          );
+          expect(await a.wiederfinder.gruendlich(id, erzwingen: true), isNull);
+          expect(dort.connections, 1, reason: 'gefragt über p_kasse2');
+          expect((await gespeichert(id)).host, _alt);
+          expect((await gespeichert('p_kasse2')).host, '192.168.0.62');
+          expect((await a.store.load()).relocations, isEmpty);
+          expect(
+            a.logZeilen.where((z) => z.contains('schon ein anderer Drucker')),
+            isNotEmpty,
+          );
+        },
+      );
+
       test('nie während einer Zahlung', () async {
-        final id = await a.drucker(9100, host: _alt, serial: _serie);
+        final id = await a.drucker(9100, host: _alt, serial: _serie, mac: _mac);
         a.zahlung = true;
         expect(await a.wiederfinder.gruendlich(id, erzwingen: true), isNull);
         expect(a.wiederfinder.suchen, 0);
@@ -366,7 +444,7 @@ void main() {
 
       test('gleichzeitige Auslöser: genau eine Suche, alle bekommen dasselbe '
           'Ergebnis, ein Adresswechsel', () async {
-        final id = await a.drucker(9100, host: _alt, serial: _serie);
+        final id = await a.drucker(9100, host: _alt, serial: _serie, mac: _mac);
         final ergebnisse = await Future.wait(<Future<PrinterConfig?>>[
           a.wiederfinder.gruendlich(id),
           a.wiederfinder.gruendlich(id, erzwingen: true),
@@ -380,7 +458,12 @@ void main() {
       test(
         'ein paralleles Koppeln geht beim Adresswechsel nicht verloren',
         () async {
-          final id = await a.drucker(9100, host: _alt, serial: _serie);
+          final id = await a.drucker(
+            9100,
+            host: _alt,
+            serial: _serie,
+            mac: _mac,
+          );
           await Future.wait(<Future<Object?>>[
             a.wiederfinder.gruendlich(id),
             for (var i = 0; i < 5; i++)
@@ -431,7 +514,7 @@ void main() {
       });
 
       test('Statustakt: nach zwei Fehlversuchen gründliche Suche', () async {
-        final id = await a.drucker(9100, host: _alt, serial: _serie);
+        final id = await a.drucker(9100, host: _alt, serial: _serie, mac: _mac);
         final dienst = DruckerStatusDienst(
           registry: a.registry,
           queue: a.queue,
@@ -443,6 +526,72 @@ void main() {
         await dienst.runde();
         await warteAufAdresse(a, id, _neu);
       });
+    });
+  });
+
+  group('S2: Freigabe nach der Abfrage der Suche', () {
+    test('im Auftrag gefunden, der Drucker gibt die Abfrage-Verbindung '
+        'langsam frei: der Bon an die neue Adresse wartet darauf', () async {
+      final netz = VirtuellesNetz();
+      final drucker =
+          await FakeTcpPrinter.start(
+              dleEot: _gesund,
+              gsI: const <int, String>{68: _serie},
+            )
+            ..eineVerbindung = true
+            ..freigabeVerzug = const Duration(milliseconds: 800);
+      addTearDown(drucker.stop);
+      netz
+        ..macs[_alt] = _mac
+        ..stelle(_neu, 9100, drucker.port, mac: _mac);
+      final a = DruckAufbau.erstellen(
+        netz: netz,
+        verbinden: (host, port, {timeout}) => host == _neu
+            ? drucker.verbinden(host, port, timeout: timeout)
+            : netz.verbinden(host, port, timeout: timeout),
+      );
+      addTearDown(a.aufraeumen);
+      final id = await a.drucker(9100, host: _alt, serial: _serie, mac: _mac);
+      final ergebnis = await a.drucke(id);
+      expect(ergebnis.ok, isTrue, reason: '${ergebnis.code}');
+      await drucker.warteAufDruck(0);
+      expect(drucker.druckVerbindungen.single, beispielBon);
+      expect(drucker.abgelehnt, greaterThanOrEqualTo(1));
+      expect(
+        (await a.store.load()).printers.single.host,
+        _neu,
+        reason: 'umgezogen',
+      );
+    });
+
+    test('die gründliche Suche fragt unter der Adresse eines anderen '
+        'Druckers: dessen nächster Bon wartet auf die Freigabe', () async {
+      final netz = VirtuellesNetz();
+      final kasse2 =
+          await FakeTcpPrinter.start(
+              dleEot: _gesund,
+              gsI: const <int, String>{68: 'X5ZT000777'},
+            )
+            ..eineVerbindung = true
+            ..freigabeVerzug = const Duration(milliseconds: 800);
+      addTearDown(kasse2.stop);
+      netz.stelle('192.168.0.62', 9100, kasse2.port, mac: _mac);
+      final a = DruckAufbau.erstellen(
+        netz: netz,
+        verbinden: (host, port, {timeout}) => host == '192.168.0.62'
+            ? kasse2.verbinden(host, port, timeout: timeout)
+            : netz.verbinden(host, port, timeout: timeout),
+      );
+      addTearDown(a.aufraeumen);
+      // Ein Drucker wie bis 1.4.2 (Modell nicht bewiesen).
+      await a.drucker(9100, host: '192.168.0.62', id: 'p_kasse2', model: null);
+      final id = await a.drucker(9100, host: _alt, serial: _serie, mac: _mac);
+      expect(await a.wiederfinder.gruendlich(id, erzwingen: true), isNull);
+      expect(kasse2.abfrageVerbindungen, hasLength(1));
+      final ergebnis = await a.drucke('p_kasse2');
+      expect(ergebnis.ok, isTrue, reason: '${ergebnis.code}');
+      await kasse2.warteAufDruck(0);
+      expect(kasse2.abgelehnt, greaterThanOrEqualTo(1));
     });
   });
 }

@@ -62,6 +62,17 @@ Set<String> adressenMitMac(Map<String, String> tabelle, String? mac) {
   };
 }
 
+/// Herstellerkennung (OUI, die ersten drei Bytes) von [mac], etwa
+/// `00:26:ab`; `null` ohne brauchbare MAC oder bei einer lokal vergebenen
+/// (Bit 1 des ersten Bytes): die nennt keinen Hersteller.
+String? macHersteller(String? mac) {
+  final normiert = normalizeMac(mac);
+  if (normiert == null) return null;
+  final erstes = int.parse(normiert.substring(0, 2), radix: 16);
+  if (erstes & 0x02 != 0) return null;
+  return normiert.substring(0, 8);
+}
+
 /// Ob [ip] im selben Netz wie eine eigene Schnittstelle liegt.
 ///
 /// Die MAC aus der ARP-Tabelle stimmt nur dort: liegt das Gerät hinter einem

@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:kasseneck_connect/kasseneck_connect.dart';
 import 'package:test/test.dart';
 
+import 'support/agent_klient.dart';
 import 'support/druck_aufbau.dart';
 import 'support/fake_printer.dart';
 import 'support/virtuelles_netz.dart';
@@ -29,11 +30,47 @@ void main() {
     await a.aufraeumen();
   });
 
-  /// Wie eine frühere Abfrage (Takt, voriger Bon): der Drucker schweigt
-  /// schon [schweigenMindestdauer] am Stück.
-  void schweigtSchon(String id) => a.registry.lagen
-      .von(id)
-      .schweigt(a.jetzt.subtract(schweigenMindestdauer));
+  /// Wie lückenlose Beobachtungen davor (Nachfragen alle 5 s): der Drucker
+  /// schweigt schon [schweigenMindestdauer] am Stück.
+  void schweigtSchon(String id) {
+    final lage = a.registry.lagen.von(id);
+    for (
+      var vorher = schweigenMindestdauer;
+      vorher > Duration.zero;
+      vorher -= schweigenNachfrageAbstand
+    ) {
+      lage.schweigt(a.jetzt.subtract(vorher));
+    }
+  }
+
+  /// Statusdienst wie im Agenten, mit der Uhr des Tests.
+  DruckerStatusDienst dienst({Duration? nachfrageAbstand}) =>
+      DruckerStatusDienst(
+        registry: a.registry,
+        queue: a.queue,
+        abfrage: EscPosAbfrage(aufbauGrenze: testAufbauGrenze),
+        kasseZuletzt: () => a.jetzt,
+        arp: a.arp,
+        schnittstellen: () async => a.schnittstellen,
+        clock: () => a.jetzt,
+        budget: testBudgetStatusfaehig,
+        abstand: const Duration(hours: 1),
+        nachfrageAbstand: nachfrageAbstand ?? schweigenNachfrageAbstand,
+        // Kürzeres Antwortfenster: der Fake antwortet sofort oder nie.
+        nachfrageFrist: const Duration(milliseconds: 150),
+      );
+
+  /// Nachfragen alle 5 s über [dauer] (Uhr des Tests), alle stumm.
+  Future<void> fragtNach(
+    DruckerStatusDienst d,
+    String id,
+    Duration dauer,
+  ) async {
+    for (var t = Duration.zero; t < dauer; t += schweigenNachfrageAbstand) {
+      a.jetzt = a.jetzt.add(schweigenNachfrageAbstand);
+      expect(await d.nachfrage(id), isTrue, reason: 'schweigt weiter');
+    }
+  }
 
   Future<PrintResult> drucke(String id, {String jobId = 'beleg-1'}) async {
     final vorher = drucker.druckVerbindungen.length;
@@ -156,8 +193,8 @@ void main() {
     });
 
     test('Schweigen ohne lange Vorgeschichte (etwa ein Bon eines anderen '
-        'Rechners): unbekannt, gedruckt wie 1.4.2; erst nach 30 s am Stück '
-        'nicht bereit', () async {
+        'Rechners): unbekannt, gedruckt wie 1.4.2; erst nach 30 s lückenlos '
+        'beobachtetem Schweigen nicht bereit', () async {
       final id = await a.drucker(
         drucker.port,
         statusCapableAt: seit,
@@ -167,11 +204,53 @@ void main() {
       drucker.dleEot.clear();
       expect((await drucke(id)).ok, isTrue, reason: 'erstes Schweigen');
       expect((await a.registry.summaries()).single['readiness'], 'unknown');
-      // 10 s später, nach dem Nachlauf des eigenen Bons: noch zu kurz.
-      a.jetzt = a.jetzt.add(const Duration(seconds: 10));
-      expect((await drucke(id, jobId: 'beleg-2')).ok, isTrue);
-      a.jetzt = a.jetzt.add(schweigenMindestdauer);
+      // Der Statusdienst fragt alle 5 s nach: 25 s später noch zu kurz.
+      final d = dienst();
+      await fragtNach(d, id, const Duration(seconds: 25));
+      expect((await a.registry.summaries()).single['readiness'], 'unknown');
+      a.jetzt = a.jetzt.add(schweigenNachfrageAbstand);
       expect((await drucke(id, jobId: 'beleg-3')).code, errorPrinterNotReady);
+    });
+
+    test('S1: zwei Stichproben 35 s auseinander, beide treffen einen Bon '
+        'eines anderen Rechners – dazwischen hat niemand hingesehen: '
+        'unbekannt, gedruckt wie 1.4.2', () async {
+      // TM-T20III, geteilt von drei Rechnern: der Takt dieses Rechners trifft
+      // einen Bon von B, 35 s später trifft der eigene Bon einen von C.
+      final id = await a.drucker(
+        drucker.port,
+        statusCapableAt: seit,
+        mac: _mac,
+      );
+      a.arpMac = _mac;
+      final d = dienst();
+      drucker.dleEot.clear();
+      await d.runde();
+      a.jetzt = a.jetzt.add(const Duration(seconds: 35));
+      final ergebnis = await drucke(id);
+      expect(ergebnis.ok, isTrue, reason: '${ergebnis.code}');
+      expect(drucker.druckVerbindungen.single, beispielBon);
+      expect((await a.registry.summaries()).single['readiness'], 'unknown');
+    });
+
+    test('S1: eine Lücke über 10 s in den Beobachtungen beginnt die Strecke '
+        'neu', () async {
+      final id = await a.drucker(
+        drucker.port,
+        statusCapableAt: seit,
+        mac: _mac,
+      );
+      a.arpMac = _mac;
+      final d = dienst();
+      drucker.dleEot.clear();
+      await d.runde();
+      await fragtNach(d, id, const Duration(seconds: 15));
+      // Eine Nachfrage blieb aus (etwa Kasse kurz zu): 11 s ohne Blick.
+      a.jetzt = a.jetzt.add(schweigenLuecke + const Duration(seconds: 1));
+      expect(await d.nachfrage(id), isTrue);
+      await fragtNach(d, id, const Duration(seconds: 15));
+      a.jetzt = a.jetzt.add(schweigenNachfrageAbstand);
+      expect((await drucke(id)).ok, isTrue, reason: 'erst 20 s am Stück');
     });
 
     test('eine gültige Antwort beendet das Schweigen', () async {
@@ -310,40 +389,110 @@ void main() {
   });
 
   group('Statustakt', () {
-    test('statusfähig und stumm: erst unbekannt, nach 30 s am Stück not_ready, '
-        'nie „stumm“ gemerkt', () async {
+    test('statusfähig und stumm: erst unbekannt, nach 30 s lückenlos '
+        'beobachtet not_ready, nie „stumm“ gemerkt', () async {
       final id = await a.drucker(
         drucker.port,
         statusCapableAt: seit,
         mac: _mac,
       );
       a.arpMac = _mac;
-      final dienst = DruckerStatusDienst(
+      final d = dienst();
+      drucker.dleEot.clear();
+      await d.runde();
+      var eintrag = (await a.registry.summaries()).single;
+      expect(eintrag['readiness'], 'unknown', reason: 'erst seit eben');
+      // Die nächste Runde 30 s später allein: nicht lückenlos, unbekannt.
+      a.jetzt = a.jetzt.add(schweigenMindestdauer);
+      await d.runde();
+      expect((await a.registry.summaries()).single['readiness'], 'unknown');
+      // Nachfragen alle 5 s, 30 s lang: nicht bereit.
+      await fragtNach(d, id, schweigenMindestdauer);
+      eintrag = (await a.registry.summaries()).single;
+      expect(eintrag['readiness'], 'not_ready');
+      expect(eintrag['state'], 'online');
+      expect(a.registry.lagen.von(id).stumm(a.jetzt), isFalse);
+
+      // Deckel zu: die nächste Nachfrage sieht es und endet.
+      drucker.dleEot.addAll(_gesund);
+      a.jetzt = a.jetzt.add(schweigenNachfrageAbstand);
+      expect(await d.nachfrage(id), isFalse);
+      eintrag = (await a.registry.summaries()).single;
+      expect(eintrag['readiness'], 'ready');
+    });
+
+    test('Nachfragen laufen von selbst, solange er schweigt (nur bei '
+        'laufendem Dienst), einzeln über die Warteschlange, und enden mit der '
+        'ersten Antwort', () async {
+      final id = await a.drucker(
+        drucker.port,
+        statusCapableAt: seit,
+        mac: _mac,
+      );
+      a.arpMac = _mac;
+      final d = dienst(nachfrageAbstand: const Duration(milliseconds: 30));
+      drucker.dleEot.clear();
+      // Ohne start(): keine Nachfrage.
+      await d.runde();
+      expect(d.verfolgt(id), isFalse);
+
+      d.start();
+      addTearDown(d.stop);
+      await d.runde();
+      expect(d.verfolgt(id), isTrue);
+      await warteBis(() async => d.nachfragen >= 2, grund: 'Nachfragen');
+      expect(drucker.hoechstAngenommen, 1, reason: 'nie zwei zugleich');
+      drucker.dleEot.addAll(_gesund);
+      await warteBis(
+        () async => !d.verfolgt(id),
+        grund: 'Ende nach der Antwort',
+      );
+      final danach = d.nachfragen;
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+      expect(d.nachfragen, danach, reason: 'keine weitere Nachfrage');
+      expect((await a.registry.summaries()).single['readiness'], 'ready');
+    });
+
+    test('keine Nachfrage: Kasse zu, status_poll oder printer_status aus, '
+        'nicht bewiesenes Modell, eigener Bon druckt noch', () async {
+      final id = await a.drucker(
+        drucker.port,
+        statusCapableAt: seit,
+        mac: _mac,
+      );
+      a.arpMac = _mac;
+      var kasse = a.jetzt;
+      final d = DruckerStatusDienst(
         registry: a.registry,
         queue: a.queue,
         abfrage: EscPosAbfrage(aufbauGrenze: testAufbauGrenze),
-        kasseZuletzt: () => a.jetzt,
+        kasseZuletzt: () => kasse,
         arp: a.arp,
         schnittstellen: () async => a.schnittstellen,
         clock: () => a.jetzt,
         budget: testBudgetStatusfaehig,
       );
       drucker.dleEot.clear();
-      await dienst.runde();
-      var eintrag = (await a.registry.summaries()).single;
-      expect(eintrag['readiness'], 'unknown', reason: 'erst seit eben');
-      // Die nächste Runde, länger als 30 s später: nicht bereit.
-      a.jetzt = a.jetzt.add(schweigenMindestdauer);
-      await dienst.runde();
-      eintrag = (await a.registry.summaries()).single;
-      expect(eintrag['readiness'], 'not_ready');
-      expect(eintrag['state'], 'online');
-      expect(a.registry.lagen.von(id).stumm(a.jetzt), isFalse);
+      await d.runde();
+      final verbindungen = drucker.connections;
 
-      drucker.dleEot.addAll(_gesund);
-      await dienst.runde();
-      eintrag = (await a.registry.summaries()).single;
-      expect(eintrag['readiness'], 'ready');
+      // Eigener Bon druckt: keine Abfrage, aber weiter verfolgen.
+      a.registry.lagen.von(id).druckGesendet(8000, a.jetzt);
+      expect(await d.nachfrage(id), isTrue);
+      expect(drucker.connections, verbindungen);
+      a.jetzt = a.jetzt.add(druckNachlauf(8000));
+
+      kasse = a.jetzt.subtract(const Duration(minutes: 3));
+      expect(await d.nachfrage(id), isFalse, reason: 'Kasse zu');
+      kasse = a.jetzt;
+      await a.abschalten(<Neuerung>[Neuerung.statusTakt]);
+      expect(await d.nachfrage(id), isFalse, reason: 'status_poll aus');
+      await a.abschalten(<Neuerung>[Neuerung.druckerStatus]);
+      expect(await d.nachfrage(id), isFalse, reason: 'printer_status aus');
+      await a.abschalten(const <Neuerung>[]);
+      await a.drucker(drucker.port, statusCapableAt: seit, model: 'TM-T88VI');
+      expect(await d.nachfrage(id), isFalse, reason: 'nicht bewiesen');
+      expect(drucker.connections, verbindungen);
     });
 
     test('nie geantwortet: die erste gültige Antwort im Takt macht '

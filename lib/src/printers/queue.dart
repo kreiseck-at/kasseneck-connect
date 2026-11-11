@@ -281,6 +281,10 @@ class PrintQueue {
   /// [freigabeFenster] um ist – ohne Suche, denn es ging nachweislich nichts
   /// hinaus. Ab da gilt er als „gibt langsam frei“ (keine Prüfung mehr vor
   /// seinen Bons).
+  ///
+  /// Dasselbe auf dem Weg wie bis 1.4.2, wenn eben eine EIGENE
+  /// Abfrage-Verbindung stand (Erkennung nach dem Anlegen oder einer Suche,
+  /// Statusabfrage, Takt): ohne sie wäre der Bon gegangen.
   Future<PrintResult> _run(
     String printerId,
     String jobId,
@@ -316,7 +320,11 @@ class PrintQueue {
       }
       final nichtsGesendet =
           fehler.code == errorPrinterOffline && !fehler.mayHavePrinted;
-      if (nichtsGesendet && abfrage == AbfrageVerlauf.ebenErreichbar) {
+      if (nichtsGesendet &&
+          (freigabe != null ||
+              abfrage == AbfrageVerlauf.ebenErreichbar ||
+              (registry.lagen.vorhanden(printerId)?.ebenAbgefragt() ??
+                  false))) {
         if (freigabe == null) {
           freigabe = Stopwatch()..start();
           _langsam(printerId, jobId);

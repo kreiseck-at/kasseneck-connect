@@ -92,6 +92,7 @@ class PrinterConfig {
     this.identifiedAt,
     this.identitySource,
     this.statusCapableAt,
+    this.idQueryUnansweredAt,
     Map<String, Object?>? extras,
   }) : port = port ?? kind.defaultPort,
        extras = Map<String, Object?>.unmodifiable(
@@ -140,6 +141,12 @@ class PrinterConfig {
   /// der nie geantwortet hat, heißt Schweigen nur „unbekannt“.
   final DateTime? statusCapableAt;
 
+  /// Wann das Gerät gültig auf `DLE EOT`, aber nicht auf `GS I 67`
+  /// geantwortet hat. Danach bekommt es `GS I` nur noch bei einer
+  /// ausdrücklichen Einrichtung (`PUT`, setzt das Feld zurück): ein Nachbau,
+  /// der `GS I` nicht kennt, könnte die Zeichen sonst auf einen Bon drucken.
+  final DateTime? idQueryUnansweredAt;
+
   /// Felder, die diese Fassung nicht kennt (aus einer neueren Fassung); sie
   /// überleben das Schreiben unverändert.
   final Map<String, Object?> extras;
@@ -161,6 +168,7 @@ class PrinterConfig {
     DateTime? identifiedAt,
     KennungsQuelle? identitySource,
     DateTime? statusCapableAt,
+    DateTime? idQueryUnansweredAt,
   }) {
     return PrinterConfig(
       id: id ?? this.id,
@@ -176,6 +184,7 @@ class PrinterConfig {
       identifiedAt: identifiedAt ?? this.identifiedAt,
       identitySource: identitySource ?? this.identitySource,
       statusCapableAt: statusCapableAt ?? this.statusCapableAt,
+      idQueryUnansweredAt: idQueryUnansweredAt ?? this.idQueryUnansweredAt,
       extras: extras,
     );
   }
@@ -203,6 +212,8 @@ class PrinterConfig {
     if (identitySource != null) 'identitySource': identitySource!.wireName,
     if (statusCapableAt != null)
       'statusCapableAt': statusCapableAt!.toUtc().toIso8601String(),
+    if (idQueryUnansweredAt != null)
+      'idQueryUnansweredAt': idQueryUnansweredAt!.toUtc().toIso8601String(),
   };
 
   static const Set<String> _bekannteFelder = <String>{
@@ -219,6 +230,7 @@ class PrinterConfig {
     'identifiedAt',
     'identitySource',
     'statusCapableAt',
+    'idQueryUnansweredAt',
   };
 
   static PrinterConfig fromJson(Map<String, Object?> json) {
@@ -237,6 +249,7 @@ class PrinterConfig {
       identifiedAt: readDateTime(json['identifiedAt'])?.toUtc(),
       identitySource: KennungsQuelle.fromWireName(json['identitySource']),
       statusCapableAt: readDateTime(json['statusCapableAt'])?.toUtc(),
+      idQueryUnansweredAt: readDateTime(json['idQueryUnansweredAt'])?.toUtc(),
       extras: _unbekannte(json, _bekannteFelder),
     );
   }

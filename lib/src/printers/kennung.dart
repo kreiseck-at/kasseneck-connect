@@ -107,6 +107,8 @@ class ErkannteKennung {
     this.serialQuelle,
     this.mac,
     this.statusfaehigAm,
+    this.gsIOhneAntwortAm,
+    this.verbunden = false,
   });
 
   static const ErkannteKennung keine = ErkannteKennung();
@@ -120,8 +122,20 @@ class ErkannteKennung {
   /// Wann das Gerät gültig auf `DLE EOT` geantwortet hat (`null`: nicht).
   final DateTime? statusfaehigAm;
 
+  /// Wann `GS I 67` ohne gültigen Rahmen blieb (`null`: nicht gefragt oder
+  /// beantwortet); siehe `PrinterConfig.idQueryUnansweredAt`.
+  final DateTime? gsIOhneAntwortAm;
+
+  /// Ob die Abfrage-Verbindung der Erkennung stand (für die Freigabe der
+  /// Verbindung danach; kein Teil der Kennung).
+  final bool verbunden;
+
   bool get leer =>
-      model == null && serial == null && mac == null && statusfaehigAm == null;
+      model == null &&
+      serial == null &&
+      mac == null &&
+      statusfaehigAm == null &&
+      gsIOhneAntwortAm == null;
 }
 
 /// Trägt [erkannt] in [drucker] ein – nur, was dort noch fehlt.
@@ -150,11 +164,16 @@ PrinterConfig? ergaenzeKennung(
   final mac = drucker.mac ?? normalizeMac(erkannt.mac);
   final statusfaehig =
       drucker.statusCapableAt ?? erkannt.statusfaehigAm?.toUtc();
+  // Ohne `GS I`-Antwort gemerkt, solange kein Modell über `GS I 67` da ist.
+  final ohneGsI = modelSource == KennungsQuelle.escpos
+      ? drucker.idQueryUnansweredAt
+      : drucker.idQueryUnansweredAt ?? erkannt.gsIOhneAntwortAm?.toUtc();
   if (model == drucker.model &&
       modelSource == drucker.modelSource &&
       serial == drucker.serial &&
       mac == drucker.mac &&
-      statusfaehig == drucker.statusCapableAt) {
+      statusfaehig == drucker.statusCapableAt &&
+      ohneGsI == drucker.idQueryUnansweredAt) {
     return null;
   }
   final kennungNeu =
@@ -172,6 +191,7 @@ PrinterConfig? ergaenzeKennung(
     identifiedAt: kennungNeu ? jetzt : drucker.identifiedAt,
     identitySource: quelle,
     statusCapableAt: statusfaehig,
+    idQueryUnansweredAt: ohneGsI,
   );
 }
 

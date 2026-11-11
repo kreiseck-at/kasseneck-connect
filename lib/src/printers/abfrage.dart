@@ -58,6 +58,7 @@ class EscPosAntworten {
     this.rollensensor,
     this.modell,
     this.seriennummer,
+    this.gsIOhneAntwort = false,
   });
 
   /// Keine Verbindung zustande gekommen.
@@ -68,7 +69,8 @@ class EscPosAntworten {
       offlineGrund = null,
       rollensensor = null,
       modell = null,
-      seriennummer = null;
+      seriennummer = null,
+      gsIOhneAntwort = false;
 
   /// Ob die Verbindung stand.
   final bool verbunden;
@@ -87,6 +89,12 @@ class EscPosAntworten {
 
   /// Gültiger `GS I 68`-Rahmen; sonst `null`.
   final String? seriennummer;
+
+  /// Ein `GS I` ging hinaus, aber es kam kein gültiger Rahmen zurück. Ein
+  /// Gerät, das `DLE EOT` versteht, `GS I` aber nicht, könnte die Zeichen
+  /// als Text puffern; danach geht auf dieser Verbindung kein weiteres
+  /// `GS I` hinaus.
+  final bool gsIOhneAntwort;
 
   /// Das Gerät hat auf `DLE EOT 2` nachweislich geschwiegen: der Befehl ging
   /// hinaus, das volle Antwortfenster verstrich bei offener Verbindung, und
@@ -110,7 +118,8 @@ class EscPosAntworten {
 /// Immer zuerst `DLE EOT 2`. `GS I` geht nur an ein Gerät, das darauf gültig
 /// geantwortet hat: ein Bürodrucker auf 9100 (PCL, PostScript) druckte die
 /// Zeichen `ID` sonst als Seite aus. `DLE EOT` selbst besteht nur aus
-/// Steuerzeichen.
+/// Steuerzeichen. Bleibt ein `GS I` ohne gültigen Rahmen, folgt keines mehr
+/// (siehe [EscPosAntworten.gsIOhneAntwort]).
 class EscPosAbfrage {
   EscPosAbfrage({
     SocketConnector? verbinden,
@@ -186,18 +195,29 @@ class EscPosAbfrage {
               rest(),
             )).byte
           : null;
-      final modell = fragen.contains(EscPosFrage.modell)
-          ? await leser.rahmen(socket, gsI(gsIModell), rest())
-          : null;
-      final serie = fragen.contains(EscPosFrage.seriennummer)
-          ? await leser.rahmen(socket, gsI(gsISeriennummer), rest())
-          : null;
+      // Je `GS I` nur, wenn das vorige einen gültigen Rahmen brachte.
+      var gsIOhneAntwort = false;
+      Future<String?> gsIFrage(EscPosFrage frage, int n) async {
+        final frist = rest();
+        if (!fragen.contains(frage) ||
+            gsIOhneAntwort ||
+            frist <= Duration.zero) {
+          return null;
+        }
+        final text = await leser.rahmen(socket, gsI(n), frist);
+        if (text == null) gsIOhneAntwort = true;
+        return text;
+      }
+
+      final modell = await gsIFrage(EscPosFrage.modell, gsIModell);
+      final serie = await gsIFrage(EscPosFrage.seriennummer, gsISeriennummer);
       return EscPosAntworten(
         verbunden: true,
         offlineGrund: byte,
         rollensensor: rolle,
         modell: modell,
         seriennummer: serie,
+        gsIOhneAntwort: gsIOhneAntwort,
       );
     } on SocketException {
       // Abgerissen mitten in den Fragen: was fehlt, ist unbekannt. Gedruckt

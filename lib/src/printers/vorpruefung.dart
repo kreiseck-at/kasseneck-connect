@@ -135,6 +135,12 @@ class DruckVorpruefung {
   /// Übernahme der Kennung nach einem dauerhaften Konflikt (`null`: keine).
   DauerhafterKonflikt? beiDauerhaftemKonflikt;
 
+  /// Wird mit der Drucker-ID gerufen, wenn ein statusfähiger Drucker vor
+  /// einem Bon nachweislich schweigt (der Statusdienst fragt dann in kurzen
+  /// Abständen nach, siehe [schweigenNachfrageAbstand]). Darf nicht warten
+  /// lassen und nicht werfen.
+  void Function(String printerId)? beiSchweigen;
+
   /// Zeitbudget der Prüfungen (ohne Wiederfinden).
   final Duration budget;
 
@@ -207,8 +213,14 @@ class DruckVorpruefung {
           if (statusAn) EscPosFrage.rollensensor,
           if (fragSerie) EscPosFrage.seriennummer,
         };
+        // Der eigene vorige Bon druckt noch: der Drucker war eben da, und
+        // eine Abfrage bewiese nichts (er antwortet währenddessen erst
+        // verzögert) – sie kostete nur Zeit. Wie der Statustakt: keine.
+        final eigenerBonDruckt = lage.druckt(jetzt);
         EscPosAntworten? antworten;
-        if (statusfaehig) {
+        if (eigenerBonDruckt) {
+          antworten = null;
+        } else if (statusfaehig) {
           // Ein Drucker, der schon gültig geantwortet hat, wird immer
           // gefragt: schweigt er, ist er womöglich nicht bereit (Gerätetest
           // TM-T20III).
@@ -227,7 +239,7 @@ class DruckVorpruefung {
           );
         }
         if (antworten != null) {
-          if (antworten.verbunden) lage.verbunden();
+          if (antworten.verbunden) lage.abgefragt();
           // Abgelehnt, obwohl eben noch eine eigene Verbindung stand (Bon,
           // Takt): der Drucker gibt sie nur langsam frei – er ist da.
           final ebenDa =
@@ -320,8 +332,12 @@ class DruckVorpruefung {
         return null;
       }
       // Schweigen während eines eigenen Bons beweist nichts; sonst beginnt
-      // (oder läuft) die Strecke, nach der es „nicht bereit“ heißt.
-      if (!lage.druckt(jetzt)) lage.schweigt(jetzt);
+      // (oder läuft) die Strecke, nach der es „nicht bereit“ heißt – und der
+      // Statusdienst beobachtet sie lückenlos weiter.
+      if (!lage.druckt(jetzt)) {
+        lage.schweigt(jetzt);
+        beiSchweigen?.call(drucker.id);
+      }
       return schweigenHeisstNichtBereit(mac: mac, lage: lage, jetzt: jetzt)
           ? DruckerZustand.nichtBereit
           : DruckerZustand.unbekannt;

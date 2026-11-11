@@ -49,24 +49,34 @@ class DruckerErkennung {
   /// Zeitbudget der Abfrage-Verbindung.
   final Duration budget;
 
-  Future<ErkannteKennung> erkenne(PrinterConfig drucker) async {
+  /// Erkennt [drucker]. Ohne [mitGsI] geht nur `DLE EOT 2` hinaus (kein
+  /// `GS I`, siehe `PrinterConfig.idQueryUnansweredAt`).
+  Future<ErkannteKennung> erkenne(
+    PrinterConfig drucker, {
+    bool mitGsI = true,
+  }) async {
     final fund = _funde?.unter(drucker.host, drucker.port);
     var model = fund?.model;
     var modelQuelle = model == null ? null : KennungsQuelle.mdns;
     var serial = fund?.serial;
     var serialQuelle = serial == null ? null : KennungsQuelle.mdns;
     DateTime? statusfaehigAm;
+    DateTime? gsIOhneAntwortAm;
+    var verbunden = false;
 
     if (drucker.kind == PrinterKind.tcp9100) {
       final antworten = await _abfrage.frage(
         drucker.host,
         drucker.port,
-        fragen: const <EscPosFrage>{
-          EscPosFrage.modell,
-          EscPosFrage.seriennummer,
-        },
+        fragen: mitGsI
+            ? const <EscPosFrage>{EscPosFrage.modell, EscPosFrage.seriennummer}
+            : const <EscPosFrage>{},
         budget: budget,
       );
+      verbunden = antworten.verbunden;
+      if (antworten.gsIOhneAntwort && antworten.modell == null) {
+        gsIOhneAntwortAm = _clock();
+      }
       if (antworten.modell != null) {
         model = antworten.modell;
         modelQuelle = KennungsQuelle.escpos;
@@ -92,6 +102,8 @@ class DruckerErkennung {
       serialQuelle: serialQuelle,
       mac: mac,
       statusfaehigAm: statusfaehigAm,
+      gsIOhneAntwortAm: gsIOhneAntwortAm,
+      verbunden: verbunden,
     );
   }
 }
@@ -119,6 +131,10 @@ Future<String?> macImSelbenNetz(
 /// auf Zuruf (`POST /v1/printers/{id}/status`) – nie wegen eines Bons. Ein
 /// Drucker, dessen Modell nicht bewiesen ist, sieht vor seinen Bons so nie
 /// eine fremde Verbindung.
+///
+/// `GS I` geht nach der Suche und auf Zuruf nur an ein Gerät, das es nicht
+/// schon einmal unbeantwortet ließ (`PrinterConfig.idQueryUnansweredAt`);
+/// beim Anlegen immer – dann folgt ohnehin ein Testdruck.
 ///
 /// Läuft immer über die Warteschlange des Druckers – die Abfrage-Verbindung
 /// steht nie neben einem Auftrag. Abgeschaltet über `printer_identity`.
@@ -203,7 +219,7 @@ class Kennungspflege {
       }
       final erkannt = await queue.exclusive(
         drucker.id,
-        () => erkennung.erkenne(drucker),
+        () => _erkenneUndMerke(drucker),
       );
       final serie = erkannt.serial;
       if (serie == null ||
@@ -305,9 +321,16 @@ class Kennungspflege {
         }
       }
       lage.letzteErkennung = _clock();
+      // `GS I` nur, wo es nicht schon einmal unbeantwortet blieb – außer
+      // beim Anlegen (Testdruck folgt) und bei gelesenem Modell (das Gerät
+      // kennt `GS I`).
+      final mitGsI =
+          sofort ||
+          drucker.idQueryUnansweredAt == null ||
+          drucker.modelSource == KennungsQuelle.escpos;
       final erkannt = await queue.exclusive(
         id,
-        () => erkennung.erkenne(drucker),
+        () => _erkenneUndMerke(drucker, mitGsI: mitGsI),
       );
       if (erkannt.leer) return;
       await _speichere(drucker, erkannt);
@@ -316,6 +339,19 @@ class Kennungspflege {
       // versucht es wieder.
       _log?.warn('Kennung von $id ließ sich nicht ermitteln: $e');
     }
+  }
+
+  /// Erkennt [drucker] in seiner Warteschlange und merkt sich dort eine
+  /// stehende Abfrage-Verbindung – bevor der nächste Auftrag beginnt: gibt
+  /// der Drucker sie langsam frei, wartet ein Bon direkt danach auf sie
+  /// (`DruckerLage.ebenAbgefragt`), statt zu scheitern.
+  Future<ErkannteKennung> _erkenneUndMerke(
+    PrinterConfig drucker, {
+    bool mitGsI = true,
+  }) async {
+    final erkannt = await erkennung.erkenne(drucker, mitGsI: mitGsI);
+    if (erkannt.verbunden) lagen.von(drucker.id).abgefragt();
+    return erkannt;
   }
 
   Future<void> _speichere(PrinterConfig vorher, ErkannteKennung erkannt) async {

@@ -26,9 +26,9 @@ Duration druckNachlauf(int bytes) =>
     Duration(milliseconds: bytes * 1000 ~/ druckRateBytesJeSekunde);
 
 /// So lange muss ein statusfähiger Drucker ohne Unterbrechung geschwiegen
-/// haben, bevor Schweigen „nicht bereit“ heißt: die erste Beobachtung
-/// (Statustakt oder ein früherer Bon) liegt mindestens so lange zurück, und
-/// seitdem kam keine gültige Antwort.
+/// haben, bevor Schweigen „nicht bereit“ heißt – lückenlos beobachtet: keine
+/// zwei stummen Beobachtungen liegen weiter als [schweigenLuecke]
+/// auseinander, und dazwischen kam keine gültige Antwort.
 ///
 /// Warum nicht zwei Versuche im selben Bon: ein Drucker, der gerade den Bon
 /// eines anderen Rechners druckt, schweigt ebenso – und ein Tagesabschluss
@@ -38,6 +38,17 @@ Duration druckNachlauf(int bytes) =>
 /// ein offener Deckel oder eine fehlende Rolle schon. Bis dahin wird gedruckt
 /// wie bis 1.4.2 (ein Epson-Drucker hält die Daten, bis er wieder bereit ist).
 const Duration schweigenMindestdauer = Duration(seconds: 30);
+
+/// Liegen zwei stumme Beobachtungen weiter auseinander, beginnt die Strecke
+/// neu: was dazwischen war, hat niemand gesehen. Zwei Stichproben im Abstand
+/// des Takts (60 s), die beide zufällig einen Bon eines anderen Rechners
+/// treffen, ergeben so nie „nicht bereit“.
+const Duration schweigenLuecke = Duration(seconds: 10);
+
+/// Abstand der Nachfragen, solange ein statusfähiger Drucker schweigt (über
+/// die Warteschlange, nie neben einem eigenen Bon). Halb so lang wie
+/// [schweigenLuecke]: eine verspätete Nachfrage reißt die Strecke nicht.
+const Duration schweigenNachfrageAbstand = Duration(seconds: 5);
 
 /// So lange nach einer eigenen Verbindung gilt eine abgelehnte neue als
 /// „gibt noch nicht frei“ statt „aus“; ebenso lange wiederholt die
@@ -104,9 +115,12 @@ class DruckerLage {
   /// druckt ([druckNachlauf]); bis dahin ist Schweigen unbekannt.
   DateTime? drucktBis;
 
-  /// Seit wann der (statusfähige) Drucker ohne Unterbrechung schweigt;
+  /// Seit wann der (statusfähige) Drucker lückenlos beobachtet schweigt;
   /// `null`, solange er antwortet.
   DateTime? schweigtSeit;
+
+  /// Wann er zuletzt nachweislich geschwiegen hat.
+  DateTime? zuletztGeschwiegen;
 
   /// Der Drucker gab eine Verbindung nach dem Schließen erst verzögert frei
   /// (die Druckverbindung direkt nach der Abfrage wurde abgelehnt). Dann
@@ -127,12 +141,32 @@ class DruckerLage {
   /// Geräts.
   Stopwatch? _seitVerbindung;
 
+  /// Seit wann die letzte eigene Abfrage-Verbindung zu ist (Vorprüfung,
+  /// Takt, Erkennung, Suche) – ohne Bons.
+  Stopwatch? _seitAbfrage;
+
   /// Eine eigene Verbindung zum Drucker stand eben.
   void verbunden() => _seitVerbindung = Stopwatch()..start();
+
+  /// Eine eigene Abfrage-Verbindung zum Drucker stand eben (zählt auch als
+  /// [verbunden]).
+  void abgefragt() {
+    verbunden();
+    _seitAbfrage = Stopwatch()..start();
+  }
 
   /// Ob die letzte eigene Verbindung höchstens [freigabeFenster] her ist.
   bool ebenVerbunden() {
     final uhr = _seitVerbindung;
+    return uhr != null && uhr.elapsed < freigabeFenster;
+  }
+
+  /// Ob die letzte eigene Abfrage-Verbindung höchstens [freigabeFenster] her
+  /// ist. Lehnt der Drucker dann eine Verbindung ab, gibt er nur die der
+  /// Abfrage noch nicht frei – auch auf dem Weg wie bis 1.4.2, denn ohne
+  /// die Abfrage wäre der Bon gegangen.
+  bool ebenAbgefragt() {
+    final uhr = _seitAbfrage;
     return uhr != null && uhr.elapsed < freigabeFenster;
   }
 
@@ -161,17 +195,38 @@ class DruckerLage {
     return bis != null && jetzt.isBefore(bis);
   }
 
-  /// Eine Abfrage blieb ohne gültige Antwort (nachgewiesenes Schweigen).
-  void schweigt(DateTime jetzt) => schweigtSeit ??= jetzt;
+  /// Eine Abfrage blieb um [jetzt] ohne gültige Antwort (nachgewiesenes
+  /// Schweigen). Liegt die vorige stumme Beobachtung mehr als
+  /// [schweigenLuecke] zurück (oder ist sie jünger als [jetzt] – Uhr
+  /// verstellt), beginnt die Strecke neu.
+  void schweigt(DateTime jetzt) {
+    final zuletzt = zuletztGeschwiegen;
+    final abstand = zuletzt == null ? null : jetzt.difference(zuletzt);
+    if (schweigtSeit == null ||
+        abstand == null ||
+        abstand.isNegative ||
+        abstand > schweigenLuecke) {
+      schweigtSeit = jetzt;
+    }
+    zuletztGeschwiegen = jetzt;
+  }
 
   /// Eine gültige Antwort beendet das Schweigen.
-  void antwortet() => schweigtSeit = null;
+  void antwortet() {
+    schweigtSeit = null;
+    zuletztGeschwiegen = null;
+  }
 
-  /// Ob der Drucker bis [jetzt] schon [schweigenMindestdauer] am Stück
-  /// schweigt.
+  /// Ob der Drucker bis [jetzt] schon [schweigenMindestdauer] lückenlos
+  /// beobachtet schweigt: die letzte stumme Beobachtung ist höchstens
+  /// [schweigenLuecke] alt, und die Strecke bis zu ihr ist lang genug.
   bool schweigtLangeGenug(DateTime jetzt) {
     final seit = schweigtSeit;
-    return seit != null && jetzt.difference(seit) >= schweigenMindestdauer;
+    final zuletzt = zuletztGeschwiegen;
+    if (seit == null || zuletzt == null) return false;
+    final alter = jetzt.difference(zuletzt);
+    if (alter.isNegative || alter > schweigenLuecke) return false;
+    return zuletzt.difference(seit) >= schweigenMindestdauer;
   }
 
   /// Merkt sich ab [jetzt] für [stummDauer]: das Gerät schweigt.

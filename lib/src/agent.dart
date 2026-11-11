@@ -253,6 +253,15 @@ class Agent {
   /// Ereignisbus des laufenden Agenten (erst nach [start] gültig).
   EventBus get events => context.events;
 
+  /// Statusdienst der Drucker (erst nach [start] gültig).
+  DruckerStatusDienst get druckerStatus {
+    final status = _status;
+    if (status == null) {
+      throw StateError('Der Agent läuft nicht — zuerst start() aufrufen.');
+    }
+    return status;
+  }
+
   /// Port, auf dem der Agent tatsächlich lauscht (erst nach [start] gültig).
   int get port => _server?.port ?? 0;
 
@@ -379,15 +388,20 @@ class Agent {
     queue
       ..vorgaenge = vorgaenge
       ..wiederfinder = wiederfinder
-      ..vorpruefung = (DruckVorpruefung(
-        registry: registry,
-        abfrage: abfrage,
-        arp: arp,
-        schnittstellen: _schnittstellen,
-        log: log,
-        clock: _clock,
-        schnellesWiederfinden: wiederfinder.schnell,
-      )..beiDauerhaftemKonflikt = kennung.ersetzen);
+      ..vorpruefung =
+          (DruckVorpruefung(
+              registry: registry,
+              abfrage: abfrage,
+              arp: arp,
+              schnittstellen: _schnittstellen,
+              log: log,
+              clock: _clock,
+              schnellesWiederfinden: wiederfinder.schnell,
+            )
+            ..beiDauerhaftemKonflikt = kennung.ersetzen
+            // Schweigt ein statusfähiger Drucker vor einem Bon, beobachtet der
+            // Statusdienst das Schweigen lückenlos weiter (Nachfragen).
+            ..beiSchweigen = status.schweigenVerfolgen);
 
     // Die Brücke steht ab hier, Bluetooth selbst startet erst mit dem ersten
     // Gerätezugriff bzw. der ersten Suche: der Start des Agenten (Anmeldung,

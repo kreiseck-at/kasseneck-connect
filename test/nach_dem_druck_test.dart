@@ -48,7 +48,7 @@ void main() {
     }
 
     test('der Drucker schweigt, solange er druckt: der nächste Bon geht wie '
-        'bis 1.4.2, nicht printer_not_ready', () async {
+        'bis 1.4.2, nicht printer_not_ready – ohne Abfrage davor', () async {
       // Die Uhr der Vorprüfung steht: der lange Bon „druckt“ für sie noch.
       drucker.druckDauer = const Duration(seconds: 5);
       final id = await a.drucker(
@@ -60,11 +60,36 @@ void main() {
       final zweiter = await drucke(id);
       expect(zweiter.ok, isTrue, reason: '${zweiter.code}');
       expect(drucker.druckVerbindungen, hasLength(2));
-      expect((await a.registry.summaries()).single['readiness'], 'unknown');
+      expect(drucker.abfrageVerbindungen, hasLength(1), reason: 'nur Bon 1');
+      expect(
+        (await a.registry.summaries()).single['readiness'],
+        isNot('not_ready'),
+      );
+    });
+
+    test('S3: drei Bons direkt hintereinander – nur der erste fragt, die '
+        'anderen ohne Zuschlag', () async {
+      // Gerätetest TM-T20III: während er druckt, antwortet er erst nach
+      // rund 1 s. Ohne die Regel kostete jeder Folgebon zwei stumme Versuche.
+      drucker.druckDauer = const Duration(seconds: 3);
+      final id = await a.drucker(
+        drucker.port,
+        statusCapableAt: seit,
+        mac: _mac,
+      );
+      expect((await drucke(id)).ok, isTrue);
+      final uhr = Stopwatch()..start();
+      expect((await drucke(id)).ok, isTrue);
+      expect((await drucke(id)).ok, isTrue);
+      uhr.stop();
+      expect(drucker.druckVerbindungen, hasLength(3));
+      expect(drucker.abfrageVerbindungen, hasLength(1));
+      // Ohne die Regel: je Folgebon zwei stumme Versuche zu je 500 ms.
+      expect(uhr.elapsed, lessThan(const Duration(milliseconds: 1000)));
     });
 
     test('nach dem Nachlauf zählt Schweigen wieder – „nicht bereit“ erst nach '
-        '30 s am Stück', () async {
+        '30 s lückenlos beobachtet', () async {
       final id = await a.drucker(
         drucker.port,
         statusCapableAt: seit,
@@ -74,9 +99,32 @@ void main() {
       drucker.dleEot.clear(); // Deckel auf
       a.jetzt = a.jetzt.add(druckNachlauf(_langerBon.length));
       expect((await drucke(id)).ok, isTrue, reason: 'erstes Schweigen');
+      // Nur ein späterer Blick, ohne Nachfragen dazwischen: unbekannt.
       a.jetzt = a.jetzt
           .add(druckNachlauf(beispielBon.length))
           .add(schweigenMindestdauer);
+      expect((await drucke(id)).ok, isTrue, reason: 'Lücke: neu begonnen');
+      // Lückenlos: alle 5 s eine Nachfrage, 30 s lang.
+      final dienst = DruckerStatusDienst(
+        registry: a.registry,
+        queue: a.queue,
+        abfrage: EscPosAbfrage(
+          verbinden: drucker.verbinden,
+          aufbauGrenze: testAufbauGrenze,
+        ),
+        kasseZuletzt: () => a.jetzt,
+        arp: a.arp,
+        schnittstellen: () async => a.schnittstellen,
+        clock: () => a.jetzt,
+        budget: testBudgetStatusfaehig,
+        nachfrageFrist: const Duration(milliseconds: 150),
+      );
+      a.jetzt = a.jetzt.add(druckNachlauf(beispielBon.length));
+      for (var t = Duration.zero; t < schweigenMindestdauer;) {
+        expect(await dienst.nachfrage(id), isTrue);
+        a.jetzt = a.jetzt.add(schweigenNachfrageAbstand);
+        t += schweigenNachfrageAbstand;
+      }
       expect((await a.drucke(id)).code, errorPrinterNotReady);
     });
 
@@ -238,6 +286,70 @@ void main() {
       await Future<void>.delayed(drucker.freigabeVerzug * 1.5);
       await dienst.runde();
       expect(drucker.connections, verbindungen);
+    });
+
+    test('S2: Erkennung nach dem Anlegen, gleich danach der Testdruck (nicht '
+        'bewiesenes Modell): gedruckt wie ohne Erkennung', () async {
+      drucker.gsI.addAll(const <int, String>{67: 'TM-T88VI', 68: _serie});
+      final id = await a.drucker(drucker.port, model: null);
+      final pflege = Kennungspflege(
+        store: a.store,
+        queue: a.queue,
+        lagen: a.registry.lagen,
+        log: a.log,
+        clock: () => a.jetzt,
+        erkennung: DruckerErkennung(
+          abfrage: EscPosAbfrage(verbinden: drucker.verbinden),
+          arp: a.arp,
+          schnittstellen: () async => a.schnittstellen,
+          clock: () => a.jetzt,
+        ),
+      );
+      await pflege.nachAnlegen(id);
+      expect(drucker.abfrageVerbindungen, hasLength(1), reason: 'Erkennung');
+      final ergebnis = await a.drucke(id);
+      expect(ergebnis.ok, isTrue, reason: '${ergebnis.code}');
+      await drucker.warteAufDruck(0);
+      expect(drucker.druckVerbindungen.single, beispielBon);
+      expect(drucker.abgelehnt, greaterThanOrEqualTo(1));
+      expect(drucker.hoechstAngenommen, 1);
+      expect(a.wiederfinder.suchen, 0);
+    });
+
+    test('S2: ohne Erkennung geht derselbe Testdruck auch (1.4.2)', () async {
+      final id = await a.drucker(drucker.port, model: null);
+      expect((await a.drucke(id)).ok, isTrue);
+      expect(drucker.abgelehnt, 0);
+    });
+
+    test('S2: Statusabfrage auf Zuruf mit Erkennung davor: online, nicht '
+        'offline', () async {
+      drucker.gsI.addAll(const <int, String>{67: 'TM-T88VI', 68: _serie});
+      final id = await a.drucker(drucker.port, model: null);
+      final pflege = Kennungspflege(
+        store: a.store,
+        queue: a.queue,
+        lagen: a.registry.lagen,
+        log: a.log,
+        clock: () => a.jetzt,
+        erkennung: DruckerErkennung(
+          abfrage: EscPosAbfrage(verbinden: drucker.verbinden),
+          arp: a.arp,
+          schnittstellen: () async => a.schnittstellen,
+          clock: () => a.jetzt,
+        ),
+      );
+      final dienst = DruckerStatusDienst(
+        registry: a.registry,
+        queue: a.queue,
+        abfrage: EscPosAbfrage(verbinden: drucker.verbinden),
+        kasseZuletzt: () => a.jetzt,
+        clock: () => a.jetzt,
+      )..erkennen = pflege.aufZuruf;
+      final eintrag = await dienst.jetzt(id);
+      expect(drucker.abfrageVerbindungen, hasLength(1), reason: 'Erkennung');
+      expect(eintrag!['state'], 'online');
+      expect(drucker.abgelehnt, greaterThanOrEqualTo(1));
     });
 
     test('der Fake hält immer nur eine Verbindung', () async {

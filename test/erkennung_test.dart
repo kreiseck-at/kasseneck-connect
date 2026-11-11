@@ -170,6 +170,31 @@ void main() {
     expect(agent.printers.lagen.von(id).kennung, isNot(KennungsLage.konflikt));
   });
 
+  test('Verdrahtung S1: schweigt ein statusfähiger Drucker vor dem Bon, '
+      'verfolgt der Statusdienst das Schweigen', () async {
+    final id = await anlegen();
+    await warteBis(() async {
+      final d = await gespeichert(id);
+      return d.statusCapableAt != null &&
+          d.modelSource == KennungsQuelle.escpos;
+    }, grund: 'statusfähig und Modell gelesen');
+    expect(agent.druckerStatus.verfolgt(id), isFalse);
+    drucker.dleEot.clear(); // Deckel auf
+    final druck = await anAgent(
+      agent.port,
+      'POST',
+      '/v1/print',
+      token: token,
+      rumpf: <String, Object?>{
+        'printerId': id,
+        'jobId': 'beleg-1',
+        'bytes': base64Encode(beispielBon),
+      },
+    );
+    expect(druck.ok, isTrue, reason: 'erstes Schweigen: wie 1.4.2');
+    expect(agent.druckerStatus.verfolgt(id), isTrue);
+  });
+
   test('PUT mit neuer Adresse verliert die Kennung', () async {
     final id = await anlegen();
     await warteAufKennung(id);

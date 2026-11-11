@@ -52,6 +52,8 @@ class DruckerStatusDienst {
     DateTime Function()? clock,
     this.abstand = statusTaktAbstand,
     this.budget = statusAbrufBudget,
+    this.nachfrageAbstand = schweigenNachfrageAbstand,
+    this.nachfrageFrist = bereitFrist,
   }) : _abfrage = abfrage,
        _arp = arp,
        _schnittstellen = schnittstellen,
@@ -82,22 +84,135 @@ class DruckerStatusDienst {
   final Duration abstand;
   final Duration budget;
 
+  /// Abstand der Nachfragen, solange ein statusfähiger Drucker schweigt
+  /// ([schweigenNachfrageAbstand]; Tests geben weniger vor).
+  final Duration nachfrageAbstand;
+
+  /// Antwortfenster einer Nachfrage ([bereitFrist]; Tests geben weniger vor).
+  final Duration nachfrageFrist;
+
   Timer? _timer;
   Future<void>? _runde;
+
+  /// Ob der Dienst läuft (zwischen [start] und [stop]): nur dann plant er
+  /// Nachfragen von selbst.
+  bool _laeuft = false;
+
+  /// Drucker, deren Schweigen gerade verfolgt wird, mit der nächsten
+  /// geplanten Nachfrage (`null`, während eine läuft).
+  final Map<String, Timer?> _verfolgt = <String, Timer?>{};
+
+  /// Laufende Nachfragen ([stop] wartet auf sie).
+  final Set<Future<void>> _nachfragen = <Future<void>>{};
 
   /// Wie viele Runden der Takt gedreht hat (Tests).
   int runden = 0;
 
+  /// Wie viele Nachfragen wirklich gefragt haben (Tests).
+  int nachfragen = 0;
+
   /// Startet den Takt (einmal je Agent).
   void start() {
+    _laeuft = true;
     _timer ??= Timer.periodic(abstand, (_) => unawaited(runde()));
   }
 
-  /// Hält den Takt an und wartet eine laufende Runde ab.
+  /// Hält den Takt und die Nachfragen an und wartet laufende ab.
   Future<void> stop() async {
+    _laeuft = false;
     _timer?.cancel();
     _timer = null;
+    for (final timer in _verfolgt.values) {
+      timer?.cancel();
+    }
+    _verfolgt.clear();
     await _runde;
+    while (_nachfragen.isNotEmpty) {
+      await Future.wait(_nachfragen.toList());
+    }
+  }
+
+  /// Ob das Schweigen von [id] gerade verfolgt wird.
+  bool verfolgt(String id) => _verfolgt.containsKey(id);
+
+  /// Ein statusfähiger Drucker schweigt: ab jetzt alle [nachfrageAbstand]
+  /// eine Nachfrage über seine Warteschlange, bis er antwortet, nicht mehr
+  /// erreichbar ist, die Kasse zu ist oder der Dienst anhält. Erst so ist
+  /// Schweigen lückenlos beobachtet (siehe [schweigenLuecke]); zwei
+  /// Stichproben im Abstand des Takts heißen nie „nicht bereit“.
+  ///
+  /// Nur bei laufendem Dienst; ein zweiter Anstoß für denselben Drucker
+  /// ändert nichts.
+  void schweigenVerfolgen(String id) {
+    if (!_laeuft || _verfolgt.containsKey(id)) return;
+    _planeNachfrage(id);
+  }
+
+  void _planeNachfrage(String id) {
+    _verfolgt[id] = Timer(nachfrageAbstand, () {
+      _verfolgt[id] = null;
+      late final Future<void> lauf;
+      lauf = nachfrage(id)
+          .then((weiter) {
+            if (weiter && _laeuft && _verfolgt.containsKey(id)) {
+              _planeNachfrage(id);
+            } else {
+              _verfolgt.remove(id);
+            }
+          })
+          .catchError((Object e) {
+            _verfolgt.remove(id);
+            _log?.warn('Nachfrage bei $id: $e');
+          })
+          .whenComplete(() {
+            // Block statt Pfeil: `remove` liefert einen Wahrheitswert.
+            _nachfragen.remove(lauf);
+          });
+      _nachfragen.add(lauf);
+    });
+  }
+
+  /// Eine Nachfrage bei [id], solange er schweigt; `true`, wenn er weiter
+  /// schweigt (oder der eigene Bon noch druckt) und die nächste folgen soll.
+  ///
+  /// Nur ein bewiesenes, statusfähiges Modell, nur bei offener Kasse und
+  /// eingeschalteten `printer_status` und `status_poll`; nie neben einem
+  /// eigenen Bon (Warteschlange) und nicht, solange er druckt. Ein Versuch
+  /// mit `bereitFrist` – die Nachfragen kommen ohnehin dicht. Wirft nie.
+  Future<bool> nachfrage(String id) async {
+    try {
+      final config = await registry.store.load();
+      if (!config.aktiv(Neuerung.druckerStatus) ||
+          !config.aktiv(Neuerung.statusTakt) ||
+          !kasseOffen) {
+        return false;
+      }
+      PrinterConfig? drucker;
+      for (final eintrag in config.printers) {
+        if (eintrag.id == id) drucker = eintrag;
+      }
+      final lage = registry.lagen.vorhanden(id);
+      if (drucker == null ||
+          drucker.kind != PrinterKind.tcp9100 ||
+          drucker.statusCapableAt == null ||
+          !registry.pruefbar(drucker) ||
+          lage == null ||
+          lage.schweigtSeit == null) {
+        return false;
+      }
+      final gefunden = drucker;
+      return await queue.exclusive(id, () async {
+        // Ein eigener Bon kam dazwischen: er druckt noch, Schweigen bewiese
+        // nichts. Weiter verfolgen – die Strecke beginnt danach neu.
+        if (lage.druckt(_clock())) return true;
+        nachfragen++;
+        final ergebnis = await _abfragen(gefunden, config, einVersuch: true);
+        return ergebnis.schweigt;
+      });
+    } on Object catch (e) {
+      _log?.warn('Nachfrage bei $id: $e');
+      return false;
+    }
   }
 
   /// Ob gerade eine Kasse offen ist.
@@ -129,11 +244,11 @@ class DruckerStatusDienst {
             _zaehle(drucker.id, true);
             return;
           }
-          final erreichbar = await queue.exclusive(
+          final ergebnis = await queue.exclusive(
             drucker.id,
             () => _abfragen(drucker, config),
           );
-          _zaehle(drucker.id, erreichbar);
+          _zaehle(drucker.id, ergebnis.erreichbar);
         }),
       );
     } on Object catch (e) {
@@ -172,36 +287,55 @@ class DruckerStatusDienst {
     }
     final config = await registry.store.load();
     final gefunden = drucker;
-    await queue.exclusive(
-      id,
-      () => registry.pruefbar(gefunden)
-          ? _abfragen(gefunden, config)
-          : _nurErreichbar(gefunden),
-    );
+    await queue.exclusive<void>(id, () async {
+      if (registry.pruefbar(gefunden)) {
+        await _abfragen(gefunden, config);
+      } else {
+        await _nurErreichbar(gefunden);
+      }
+    });
     return registry.zusammenfassung(gefunden);
   }
 
-  /// Eine Abfrage; `true`, wenn das Gerät erreichbar war. Wirft nie.
-  Future<bool> _abfragen(PrinterConfig drucker, AgentConfig config) async {
+  /// Eine Abfrage: ob das Gerät erreichbar war und ob es nachweislich
+  /// geschwiegen hat (statusfähig, kein eigener Bon druckt). Mit
+  /// [einVersuch] nur ein Versuch mit `bereitFrist` (Nachfrage). Wirft nie.
+  Future<({bool erreichbar, bool schweigt})> _abfragen(
+    PrinterConfig drucker,
+    AgentConfig config, {
+    bool einVersuch = false,
+  }) async {
     final jetzt = _clock();
     final lage = registry.lagen.von(drucker.id);
-    if (!config.aktiv(Neuerung.druckerStatus)) return _nurErreichbar(drucker);
+    if (!config.aktiv(Neuerung.druckerStatus)) {
+      return (erreichbar: await _nurErreichbar(drucker), schweigt: false);
+    }
 
     switch (drucker.kind) {
       case PrinterKind.tcp9100:
         final statusfaehig = drucker.statusCapableAt != null;
         // Ein stummes Gerät, das nie geantwortet hat, bekommt keine Abfrage,
         // nur den Verbindungstest wie bis 1.4.2.
-        if (!statusfaehig && lage.stumm(jetzt)) return _nurErreichbar(drucker);
+        if (!statusfaehig && lage.stumm(jetzt)) {
+          return (erreichbar: await _nurErreichbar(drucker), schweigt: false);
+        }
         const fragen = <EscPosFrage>{EscPosFrage.rollensensor};
-        final antworten = statusfaehig
-            ? await _abfrage.frageBereit(
+        final antworten = !statusfaehig
+            ? await _abfrage.frage(
                 drucker.host,
                 drucker.port,
                 fragen: fragen,
                 budget: budget,
               )
-            : await _abfrage.frage(
+            : einVersuch
+            ? await _abfrage.frage(
+                drucker.host,
+                drucker.port,
+                fragen: fragen,
+                budget: budget,
+                handshake: nachfrageFrist,
+              )
+            : await _abfrage.frageBereit(
                 drucker.host,
                 drucker.port,
                 fragen: fragen,
@@ -216,20 +350,24 @@ class DruckerStatusDienst {
               'Drucker ${drucker.id} gibt seine Verbindung erst verzögert '
               'frei – keine Abfrage mehr im Takt und vor dem Bon.',
             );
-            return true;
+            return (erreichbar: true, schweigt: false);
           }
           registry.noteState(drucker.id, PrinterState.offline);
-          return false;
+          return (erreichbar: false, schweigt: false);
         }
-        lage.verbunden();
+        lage.abgefragt();
         registry.noteState(drucker.id, PrinterState.online);
         final mac = await _macVergleich(drucker);
         if (antworten.stumm) {
           if (!statusfaehig) {
             if (!lage.druckt(jetzt)) _alsStumm(drucker, lage, jetzt);
-            return true;
+            return (erreichbar: true, schweigt: false);
           }
-          if (!lage.druckt(jetzt)) lage.schweigt(jetzt);
+          final gezaehlt = !lage.druckt(jetzt);
+          if (gezaehlt) {
+            lage.schweigt(jetzt);
+            schweigenVerfolgen(drucker.id);
+          }
           registry.noteZustand(
             drucker.id,
             schweigenHeisstNichtBereit(mac: mac, lage: lage, jetzt: jetzt)
@@ -237,7 +375,7 @@ class DruckerStatusDienst {
                 : DruckerZustand.unbekannt,
             jetzt,
           );
-          return true;
+          return (erreichbar: true, schweigt: gezaehlt);
         }
         if (antworten.offlineGrund != null) lage.antwortet();
         if (antworten.offlineGrund != null && mac != MacVergleich.anders) {
@@ -251,10 +389,10 @@ class DruckerStatusDienst {
           ),
           jetzt,
         );
-        return true;
+        return (erreichbar: true, schweigt: false);
       case PrinterKind.epos:
         // Kein ePOS-Modell ist bewiesen (das Modell kommt nie über GS I 67).
-        return _nurErreichbar(drucker);
+        return (erreichbar: await _nurErreichbar(drucker), schweigt: false);
     }
   }
 
@@ -270,20 +408,34 @@ class DruckerStatusDienst {
   }
 
   /// Nur der Verbindungstest wie bis 1.4.2 (`PrinterDriver.status`).
+  ///
+  /// Stand eben eine eigene Abfrage-Verbindung (etwa die Erkennung auf
+  /// Zuruf) und lehnt der Drucker jetzt ab, gibt er nur sie noch nicht frei:
+  /// dieselbe Adresse noch einmal, alle [freigabeSchritt], bis
+  /// [freigabeFenster] seit der Abfrage um ist. Ohne die Abfrage hätte
+  /// 1.4.2 ihn erreicht.
   Future<bool> _nurErreichbar(PrinterConfig drucker) async {
-    final PrinterState zustand;
-    try {
-      zustand = await registry
-          .driverFor(drucker)
-          .status(timeout: budget)
-          .timeout(budget, onTimeout: () => PrinterState.offline);
-    } on Object catch (e) {
-      _log?.warn('Zustand von ${drucker.id} nicht ermittelbar: $e');
-      registry.noteState(drucker.id, PrinterState.offline);
-      return false;
+    final lage = registry.lagen.von(drucker.id);
+    while (true) {
+      final PrinterState zustand;
+      try {
+        zustand = await registry
+            .driverFor(drucker)
+            .status(timeout: budget)
+            .timeout(budget, onTimeout: () => PrinterState.offline);
+      } on Object catch (e) {
+        _log?.warn('Zustand von ${drucker.id} nicht ermittelbar: $e');
+        registry.noteState(drucker.id, PrinterState.offline);
+        return false;
+      }
+      if (zustand != PrinterState.online && lage.ebenAbgefragt()) {
+        await Future<void>.delayed(freigabeSchritt);
+        continue;
+      }
+      if (zustand == PrinterState.online) lage.abgefragt();
+      registry.noteState(drucker.id, zustand);
+      return zustand == PrinterState.online;
     }
-    registry.noteState(drucker.id, zustand);
-    return zustand == PrinterState.online;
   }
 
   void _alsStumm(PrinterConfig drucker, DruckerLage lage, DateTime jetzt) {

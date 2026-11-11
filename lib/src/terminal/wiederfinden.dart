@@ -212,6 +212,10 @@ class TerminalWiederfinder {
 
   Future<TerminalFund?> _suchen(String tid) async {
     try {
+      // Welche TID gemerkt war, als die Suche begann: steht beim Übernehmen
+      // eine andere da, hat inzwischen jemand ein anderes Terminal
+      // eingerichtet (siehe _uebernimm).
+      final vorherTid = (await store.load()).terminal?.tid;
       final ergebnis = await _suche();
       final bestaetigt = <({String host, int port, String? serie})>{};
       for (final treffer in ergebnis.found) {
@@ -257,7 +261,7 @@ class TerminalWiederfinder {
       }
       final fund = bestaetigt.single;
       if (_beendet) return null;
-      return _uebernimm(tid, fund.host, fund.port, fund.serie);
+      return _uebernimm(tid, fund.host, fund.port, fund.serie, vorherTid);
     } on Object catch (e) {
       // Ohne Fund bleibt es beim Verhalten von 1.4.2.
       _log?.warn('Terminal-Suche nach $tid gescheitert: $e');
@@ -265,16 +269,28 @@ class TerminalWiederfinder {
     }
   }
 
-  Future<TerminalFund> _uebernimm(
+  /// Übernimmt [host]:[port] für [tid] – nicht, wenn seit Beginn der Suche
+  /// ([vorherTid]) ein Terminal mit einer anderen TID gemerkt wurde: das
+  /// ist neuer als dieser Fund (`null`).
+  Future<TerminalFund?> _uebernimm(
     String tid,
     String host,
     int port,
     String? serie,
+    String? vorherTid,
   ) async {
     final jetzt = _clock().toUtc();
     String? vorher;
+    var verdraengt = false;
     await store.mutate((config) {
       final alt = config.terminal;
+      final jetztTid = alt?.tid;
+      if (jetztTid != null &&
+          !gleicheTid(jetztTid, tid) &&
+          (vorherTid == null || !gleicheTid(jetztTid, vorherTid))) {
+        verdraengt = true;
+        return config;
+      }
       vorher = alt == null ? null : '${alt.host}:${alt.port}';
       final neu = TerminalConfig(
         kind: alt?.kind ?? 'hobex',
@@ -298,6 +314,13 @@ class TerminalWiederfinder {
         ),
       );
     });
+    if (verdraengt) {
+      _log?.info(
+        'Terminal $tid: inzwischen ist ein anderes Terminal gemerkt – '
+        '$host:$port nicht übernommen.',
+      );
+      return null;
+    }
     final fund = TerminalFund(tid: tid, host: host, port: port, vorher: vorher);
     _warmhalter?.merken(host, port, tid: tid, bestaetigt: true, serie: serie);
     if (fund.umgezogen) {

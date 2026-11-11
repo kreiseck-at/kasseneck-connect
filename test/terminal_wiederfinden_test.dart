@@ -88,6 +88,65 @@ void main() {
       },
     );
 
+    test('H10: ein früherer Speichervorgang, der noch die MAC liest, '
+        'überschreibt keinen späteren', () async {
+      final mac = Completer<String?>();
+      final w = TerminalWarmhalter(
+        store: store,
+        log: log,
+        intervall: const Duration(hours: 1),
+        clock: () => jetzt,
+        macLesen: (_) => mac.future,
+      );
+      addTearDown(w.stop);
+      w.merken('192.168.0.60', 8080, tid: _tid, bestaetigt: true);
+      jetzt = jetzt.add(const Duration(seconds: 1));
+      // Danach testet die Kasse ein Terminal unter einer anderen Adresse.
+      w.merken('192.168.0.61', 8080);
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      mac.complete('00:26:ab:00:00:02');
+      await w.erledigt;
+      // Auch ein Speichervorgang, der nicht in der Reihe stünde, wäre jetzt
+      // durch.
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+      final t = (await store.load()).terminal!;
+      expect(t.host, '192.168.0.61', reason: 'der spätere Aufruf zählt');
+      expect(t.tid, isNull);
+    });
+
+    test('H10: ein Speichervorgang überschreibt keine andere Adresse, die '
+        'nach seinem Aufruf bestätigt wurde (etwa von der Suche)', () async {
+      final mac = Completer<String?>();
+      final w = TerminalWarmhalter(
+        store: store,
+        log: log,
+        intervall: const Duration(hours: 1),
+        clock: () => jetzt,
+        macLesen: (_) => mac.future,
+      );
+      addTearDown(w.stop);
+      w.merken('192.168.0.60', 8080, tid: _tid, bestaetigt: true);
+      jetzt = jetzt.add(const Duration(seconds: 1));
+      w.merken('192.168.0.62', 8080);
+      // Inzwischen bestätigt die Suche das Terminal unter .63.
+      jetzt = jetzt.add(const Duration(seconds: 1));
+      await store.mutate(
+        (c) => c.copyWith(
+          terminal: TerminalConfig(
+            host: '192.168.0.63',
+            tid: _tid,
+            confirmedAt: jetzt.toUtc(),
+          ),
+        ),
+      );
+      mac.complete(null);
+      await w.erledigt;
+      final t = (await store.load()).terminal!;
+      expect(t.host, '192.168.0.63');
+      expect(t.tid, _tid);
+      expect(t.confirmedAt, jetzt.toUtc());
+    });
+
     test('dreimal nicht erreichbar: Suche anstoßen (danach bei jeder weiteren '
         'Fehlberührung, gedrosselt von der Suche); während einer Zahlung '
         'keine Berührung', () async {
@@ -213,6 +272,53 @@ void main() {
         expect(fremd.an('/api/terminals/$_tid/diagnosis'), hasLength(1));
       },
     );
+
+    test('H10: während der Suche richtet die Kasse ein anderes Terminal ein '
+        '– der Fund wird nicht übernommen', () async {
+      final weiter = Completer<void>();
+      final langsam = TerminalWiederfinder(
+        store: store,
+        bridge: HpsBridge(log: log),
+        belegung: belegung,
+        events: events,
+        log: log,
+        clock: () => jetzt,
+        suche: () async {
+          await weiter.future;
+          return TerminalDiscoveryResult(found: funde, scanned: const []);
+        },
+      );
+      addTearDown(langsam.beenden);
+      final suche = langsam.suche(_tid);
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+      await store.mutate(
+        (c) => c.copyWith(
+          terminal: TerminalConfig(
+            host: '192.168.0.70',
+            tid: '87654321',
+            confirmedAt: jetzt.toUtc(),
+          ),
+        ),
+      );
+      weiter.complete();
+      expect(await suche, isNull);
+      final t = (await store.load()).terminal!;
+      expect(t.host, '192.168.0.70');
+      expect(t.tid, '87654321');
+      expect((await store.load()).relocations, isEmpty);
+    });
+
+    test('locate für eine andere TID als die gemerkte (vor der Suche schon '
+        'so): übernommen wie bisher', () async {
+      await store.mutate(
+        (c) => c.copyWith(
+          terminal: TerminalConfig(host: '192.168.0.70', tid: '99999999'),
+        ),
+      );
+      final fund = await finder.suche(_tid);
+      expect(fund?.port, richtig.port);
+      expect((await store.load()).terminal?.tid, _tid);
+    });
 
     test('zwei bestätigen dieselbe TID: keiner übernommen', () async {
       fremd.tid = _tid;

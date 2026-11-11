@@ -347,7 +347,36 @@ class _Terminal {
 /// Ziffernfolge, `0` bleibt `0`); gemerkt und verglichen wird ebenfalls diese
 /// Form. Das Paket der Kasse normiert genauso – hier doppelt, damit auch eine
 /// ältere Kasse zahlt.
-String _tidAus(Object? roh) => tidNormal(readString(roh)?.trim() ?? '');
+String _tidAus(Object? roh) => tidNormal(_tidRoh(roh));
+
+/// Die TID, wie die Kasse sie schickte (nur ohne Leerraum am Rand).
+String _tidRoh(Object? roh) => readString(roh)?.trim() ?? '';
+
+/// Ruft [aufruf] mit der normierten TID [tid]. Lehnt das Terminal sie mit
+/// „Invalid TID“ ab – nachweislich nichts belastet – und schickte die Kasse
+/// eine andere Form ([roh], mit führender Null), geht derselbe Aufruf genau
+/// einmal mit dieser hinaus, wie bis 1.4.2: kennt ein Terminal die TID nur
+/// mit Null, zahlt es so weiter (die Normierung beruht auf einem Gerätetest
+/// mit HPS 1.14.4).
+Future<Object?> _mitRohTid(
+  _Terminal t,
+  String tid,
+  String roh,
+  Future<Object?> Function(String tid) aufruf,
+) async {
+  final antwort = await aufruf(tid);
+  if (roh == tid || roh.isEmpty || !_tidAbgelehnt(antwort)) return antwort;
+  t.ctx.log.info(
+    'Terminal: TID $tid abgelehnt (Invalid TID) – derselbe Aufruf einmal '
+    'in der Form der Kasse.',
+  );
+  return aufruf(roh);
+}
+
+/// Ob [antwort] „Invalid TID“ meldet ([ungueltigeTidCodes]).
+bool _tidAbgelehnt(Object? antwort) =>
+    antwort is Map &&
+    ungueltigeTidCodes.contains('${antwort['responseCode']}'.trim());
 
 /// Host und Port aus dem Rumpf; `null` + fertige Fehlerantwort bei Unsinn.
 (String, int)? _ziel(Map<String, Object?> body) {
@@ -377,6 +406,7 @@ Future<Response> _handleTest(_Terminal t, Request request) async {
   final ziel = _ziel(body.data!);
   if (ziel == null) return _zielFehler();
   final tid = _tidAus(body.data!['tid']);
+  final roh = _tidRoh(body.data!['tid']);
   return t.kurz(
     request,
     ziel,
@@ -384,7 +414,12 @@ Future<Response> _handleTest(_Terminal t, Request request) async {
     aufruf: (host, port) async {
       final antwort = tid.isEmpty
           ? await t.hps.probe(host: host, port: port)
-          : await t.hps.diagnosis(host: host, port: port, tid: tid);
+          : await _mitRohTid(
+              t,
+              tid,
+              roh,
+              (x) => t.hps.diagnosis(host: host, port: port, tid: x),
+            );
       if (!siehtNachHpsAus(antwort)) {
         throw HpsWegFehler(
           errorTerminalError,
@@ -403,6 +438,7 @@ Future<Response> _handleDiagnosis(_Terminal t, Request request) async {
   final ziel = _ziel(body.data!);
   if (ziel == null) return _zielFehler();
   final tid = _tidAus(body.data!['tid']);
+  final roh = _tidRoh(body.data!['tid']);
   if (!_tid.hasMatch(tid)) {
     return failJson(errorBadRequest, 'Es fehlt die Terminal-ID (tid).');
   }
@@ -410,7 +446,12 @@ Future<Response> _handleDiagnosis(_Terminal t, Request request) async {
     request,
     ziel,
     tid: tid,
-    aufruf: (host, port) => t.hps.diagnosis(host: host, port: port, tid: tid),
+    aufruf: (host, port) => _mitRohTid(
+      t,
+      tid,
+      roh,
+      (x) => t.hps.diagnosis(host: host, port: port, tid: x),
+    ),
   );
 }
 
@@ -435,6 +476,7 @@ Future<Response> _handlePayment(_Terminal t, Request request) async {
   if (ziel == null) return _zielFehler();
 
   final tid = _tidAus(daten['tid']);
+  final roh = _tidRoh(daten['tid']);
   final transactionId = readString(daten['transactionId'])?.trim() ?? '';
   final amountCents = daten['amountCents'];
   final tipCents = daten['tipCents'];
@@ -468,16 +510,21 @@ Future<Response> _handlePayment(_Terminal t, Request request) async {
     tid: tid,
     art: LangerAufruf.zahlung,
     merken: true,
-    aufruf: (host, port) => t.hps.payment(
-      host: host,
-      port: port,
-      tid: tid,
-      amountCents: amountCents,
-      transactionId: transactionId,
-      tipCents: tipCents as int?,
-      reference: readString(daten['reference'])?.trim(),
-      currency: currency ?? 'EUR',
-      language: language,
+    aufruf: (host, port) => _mitRohTid(
+      t,
+      tid,
+      roh,
+      (x) => t.hps.payment(
+        host: host,
+        port: port,
+        tid: x,
+        amountCents: amountCents,
+        transactionId: transactionId,
+        tipCents: tipCents as int?,
+        reference: readString(daten['reference'])?.trim(),
+        currency: currency ?? 'EUR',
+        language: language,
+      ),
     ),
   );
 }
@@ -499,6 +546,7 @@ Future<Response> _handleRefund(_Terminal t, Request request) async {
   if (ziel == null) return _zielFehler();
 
   final tid = _tidAus(daten['tid']);
+  final roh = _tidRoh(daten['tid']);
   final transactionId = readString(daten['transactionId'])?.trim() ?? '';
   final originalTransactionId =
       readString(daten['originalTransactionId'])?.trim() ?? '';
@@ -537,16 +585,21 @@ Future<Response> _handleRefund(_Terminal t, Request request) async {
     tid: tid,
     art: LangerAufruf.gutschrift,
     merken: true,
-    aufruf: (host, port) => t.hps.refund(
-      host: host,
-      port: port,
-      tid: tid,
-      amountCents: amountCents,
-      transactionId: transactionId,
-      originalTransactionId: originalTransactionId,
-      reference: readString(daten['reference'])?.trim(),
-      currency: currency ?? 'EUR',
-      language: language,
+    aufruf: (host, port) => _mitRohTid(
+      t,
+      tid,
+      roh,
+      (x) => t.hps.refund(
+        host: host,
+        port: port,
+        tid: x,
+        amountCents: amountCents,
+        transactionId: transactionId,
+        originalTransactionId: originalTransactionId,
+        reference: readString(daten['reference'])?.trim(),
+        currency: currency ?? 'EUR',
+        language: language,
+      ),
     ),
   );
 }
@@ -587,6 +640,7 @@ Future<Response> _handleCancel(_Terminal t, Request request) async {
   if (ziel == null) return _zielFehler();
 
   final tid = _tidAus(daten['tid']);
+  final roh = _tidRoh(daten['tid']);
   final transactionId = readString(daten['transactionId'])?.trim() ?? '';
   final amountCents = daten['amountCents'];
   final currency = readString(daten['currency'])?.trim();
@@ -612,14 +666,19 @@ Future<Response> _handleCancel(_Terminal t, Request request) async {
     ziel,
     tid: tid,
     art: LangerAufruf.aufhebung,
-    aufruf: (host, port) => t.hps.cancel(
-      host: host,
-      port: port,
-      tid: tid,
-      transactionId: transactionId,
-      amountCents: amountCents,
-      currency: currency ?? 'EUR',
-      language: language,
+    aufruf: (host, port) => _mitRohTid(
+      t,
+      tid,
+      roh,
+      (x) => t.hps.cancel(
+        host: host,
+        port: port,
+        tid: x,
+        transactionId: transactionId,
+        amountCents: amountCents,
+        currency: currency ?? 'EUR',
+        language: language,
+      ),
     ),
   );
 }
@@ -635,6 +694,7 @@ Future<Response> _mitTransaktion(
   final ziel = _ziel(body.data!);
   if (ziel == null) return _zielFehler();
   final tid = _tidAus(body.data!['tid']);
+  final roh = _tidRoh(body.data!['tid']);
   final txId = readString(body.data!['transactionId'])?.trim() ?? '';
   if (!_tid.hasMatch(tid)) {
     return failJson(errorBadRequest, 'Es fehlt die Terminal-ID (tid).');
@@ -646,7 +706,8 @@ Future<Response> _mitTransaktion(
     request,
     ziel,
     tid: tid,
-    aufruf: (host, port) => aufruf(host, port, tid, txId),
+    aufruf: (host, port) =>
+        _mitRohTid(t, tid, roh, (x) => aufruf(host, port, x, txId)),
   );
 }
 

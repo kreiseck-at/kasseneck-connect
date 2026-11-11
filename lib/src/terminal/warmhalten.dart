@@ -138,14 +138,24 @@ class TerminalWarmhalter {
       _bestaetigtAm = null;
     }
     // Fire-and-forget: das Wachhalten haengt nicht am Plattenschreiben.
-    erledigt = _speichern(
-      host,
-      port,
-      tid: auffrischen ? tid : null,
-      serie: auffrischen ? serie : null,
-      am: jetzt,
+    // Die Speichervorgänge laufen nacheinander in der Reihenfolge der
+    // Aufrufe: ein früherer, der noch die MAC liest, überschreibt nie einen
+    // späteren (_speichern wirft nie, die Kette reißt nicht).
+    final tidFuerSpeicher = auffrischen ? tid : null;
+    final serieFuerSpeicher = auffrischen ? serie : null;
+    erledigt = _kette = _kette.then(
+      (_) => _speichern(
+        host,
+        port,
+        tid: tidFuerSpeicher,
+        serie: serieFuerSpeicher,
+        am: jetzt,
+      ),
     );
   }
+
+  /// Letzter angestoßener Speichervorgang (siehe [merken]).
+  Future<void> _kette = Future<void>.value();
 
   Future<void> _speichern(
     String host,
@@ -160,6 +170,14 @@ class TerminalWarmhalter {
         final alt = c.terminal;
         final gleicheAdresse =
             alt != null && alt.host == host && alt.port == port;
+        // Eine andere Adresse, die NACH diesem Aufruf bestätigt wurde (etwa
+        // von der Terminal-Suche), ist neuer: nicht überschreiben.
+        final neuerBestaetigt = alt?.confirmedAt;
+        if (!gleicheAdresse &&
+            neuerBestaetigt != null &&
+            neuerBestaetigt.toUtc().isAfter(am.toUtc())) {
+          return c;
+        }
         return c.copyWith(
           terminal: TerminalConfig(
             kind: alt?.kind ?? 'hobex',

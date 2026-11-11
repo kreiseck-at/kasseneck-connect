@@ -266,6 +266,56 @@ void main() {
       expect((rumpf['transaction']! as Map<String, Object?>)['tid'], _tid);
     });
 
+    test('H1: kennt das Terminal die TID nur mit führender Null, geht '
+        'derselbe Aufruf nach „Invalid TID“ genau einmal in der Form der '
+        'Kasse (wie 1.4.2)', () async {
+      hps.tid = '0$_tid';
+      final diagnose = await anAgent(
+        server.port,
+        'POST',
+        '/v1/terminal/diagnosis',
+        token: token,
+        rumpf: <String, Object?>{
+          'host': '127.0.0.1',
+          'port': hps.port,
+          'tid': '0$_tid',
+        },
+      );
+      expect(diagnose.ok, isTrue, reason: diagnose.text);
+      expect(
+        (diagnose.json['hps']! as Map<String, Object?>)['responseCode'],
+        '0',
+      );
+      expect(hps.aufrufe.map((a) => a.pfad), <String>[
+        '/api/terminals/$_tid/diagnosis',
+        '/api/terminals/0$_tid/diagnosis',
+      ]);
+
+      final zahlung = await zahle(hps.port, tid: '0$_tid');
+      expect(zahlung.ok, isTrue);
+      expect(
+        (zahlung.json['hps']! as Map<String, Object?>)['responseCode'],
+        '0',
+      );
+      String tidIm(HpsAufruf aufruf) =>
+          ((jsonDecode(aufruf.rumpf) as Map<String, Object?>)['transaction']!
+                  as Map<String, Object?>)['tid']!
+              as String;
+      expect(hps.an('/api/transaction/payment').map(tidIm), <String>[
+        _tid,
+        '0$_tid',
+      ]);
+
+      // Schickt die Kasse die TID ohne Null, gibt es keine andere Form:
+      // „Invalid TID“ geht unverändert an die Kasse, ein Aufruf.
+      final ohneNull = await zahle(hps.port);
+      expect(
+        (ohneNull.json['hps']! as Map<String, Object?>)['responseCode'],
+        '100108',
+      );
+      expect(hps.an('/api/transaction/payment'), hasLength(3));
+    });
+
     test('Zahlung an tote Adresse: genau einmal an die bestätigte Adresse '
         'derselben TID; endpoint nennt sie', () async {
       await merke();
@@ -415,26 +465,78 @@ void main() {
       expect(hps.aufrufe, isEmpty);
     });
 
-    test(
-      'nach abgerissener Verbindung (terminal_offline) keine Wiederholung',
-      () async {
-        await merke();
-        // Nimmt an und wirft die Verbindung sofort weg: der Ausgang ist offen.
-        final wirftWeg = await ServerSocket.bind(
-          InternetAddress.loopbackIPv4,
-          0,
-        );
-        addTearDown(wirftWeg.close);
-        wirftWeg.listen((s) => s.destroy());
-        final antwort = await zahle(wirftWeg.port);
-        expect(antwort.code, isNot(errorTerminalUnreachable));
-        expect(hps.aufrufe, isEmpty, reason: 'nie zweimal zahlen');
-        expect(
-          (antwort.json['endpoint']! as Map<String, Object?>)['relocated'],
-          isFalse,
-        );
-      },
-    );
+    test('Verbindung angenommen und sofort weggeworfen (Ausgang offen): keine '
+        'Wiederholung', () async {
+      await merke();
+      // Nimmt an und wirft die Verbindung sofort weg: der Ausgang ist offen.
+      final wirftWeg = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+      addTearDown(wirftWeg.close);
+      wirftWeg.listen((s) => s.destroy());
+      final antwort = await zahle(wirftWeg.port);
+      expect(antwort.code, isNot(errorTerminalUnreachable));
+      expect(hps.aufrufe, isEmpty, reason: 'nie zweimal zahlen');
+      expect(
+        (antwort.json['endpoint']! as Map<String, Object?>)['relocated'],
+        isFalse,
+      );
+    });
+
+    test('Anfrage angekommen, dann Verbindung zurückgesetzt (RST): Dart '
+        'meldet das als HttpException – terminal_error, keine '
+        'Umleitung', () async {
+      await merke();
+      // Nimmt an, liest nicht und schließt, sobald die Anfrage im
+      // Empfangspuffer liegt: Schließen mit ungelesenen Daten schickt ein
+      // RST.
+      final rst = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+      addTearDown(rst.close);
+      rst.listen((s) {
+        Timer(const Duration(milliseconds: 300), s.destroy);
+      });
+      final antwort = await zahle(rst.port);
+      expect(antwort.code, errorTerminalError, reason: antwort.text);
+      expect(hps.aufrufe, isEmpty, reason: 'nie zweimal zahlen');
+    });
+
+    test('S4: terminal_offline (Verbindung stand, Ausgang offen): keine '
+        'Umleitung, genau ein Zahlungsaufruf', () async {
+      await merke();
+      // terminal_offline entsteht, wenn das Schreiben auf der stehenden
+      // Verbindung scheitert (SocketException in _call); die Brücke liefert
+      // es hier unmittelbar.
+      final bruecke = _ReisstBeiZahlung(log: ctx.log);
+      final eigener = await shelf_io.serve(
+        buildHandler(
+          ctx,
+          extraRoutes: <RouteRegistrar>[
+            terminalRoutes(belegung: TerminalBelegung(), bridge: bruecke),
+          ],
+        ),
+        InternetAddress.loopbackIPv4,
+        0,
+      );
+      addTearDown(() => eigener.close(force: true));
+      final antwort = await anAgent(
+        eigener.port,
+        'POST',
+        '/v1/terminal/payment',
+        token: token,
+        rumpf: <String, Object?>{
+          'host': toteAdresse,
+          'port': 8080,
+          'tid': _tid,
+          'amountCents': 100,
+          'transactionId': '42',
+        },
+      );
+      expect(antwort.code, errorTerminalOffline);
+      expect(bruecke.zahlungen, <String>['$toteAdresse:8080']);
+      expect(hps.aufrufe, isEmpty);
+      expect(
+        (antwort.json['endpoint']! as Map<String, Object?>)['relocated'],
+        isFalse,
+      );
+    });
 
     test('nach Zeitablauf (timeout) keine Wiederholung', () async {
       await merke();
@@ -602,4 +704,31 @@ void main() {
       );
     });
   });
+}
+
+/// Brücke, deren Zahlung mit `terminal_offline` scheitert (die Verbindung
+/// stand, ob die Anfrage ankam, ist offen); merkt sich jedes Ziel.
+class _ReisstBeiZahlung extends HpsBridge {
+  _ReisstBeiZahlung({required super.log});
+
+  final List<String> zahlungen = <String>[];
+
+  @override
+  Future<Object?> payment({
+    required String host,
+    required int port,
+    required String tid,
+    required int amountCents,
+    required String transactionId,
+    int? tipCents,
+    String? reference,
+    String currency = 'EUR',
+    String? language,
+  }) async {
+    zahlungen.add('$host:$port');
+    throw HpsWegFehler(
+      errorTerminalOffline,
+      'Die Verbindung zum Terminal ist abgerissen.',
+    );
+  }
 }

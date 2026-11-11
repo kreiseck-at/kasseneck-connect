@@ -73,7 +73,7 @@ class FakeHpsServer {
       // Beendet, bevor die Antwort hinausgeht: der Absender schickt seinen
       // nächsten Aufruf erst danach, und dessen Beginn soll nie vor diesem
       // Ende liegen.
-      final antwort = jsonEncode(_antwort(aufruf.pfad));
+      final antwort = jsonEncode(_antwort(aufruf.pfad, aufruf.rumpf));
       beenden();
       anfrage.response
         ..statusCode = 200
@@ -85,7 +85,21 @@ class FakeHpsServer {
     }
   }
 
-  Map<String, Object?> _antwort(String pfad) {
+  Map<String, Object?> _antwort(String pfad, String rumpf) {
+    // Zahlung, Gutschrift, Aufhebung: eine andere TID im Rumpf meldet das
+    // Terminal als „Invalid TID“ (nichts belastet).
+    if (pfad.startsWith('/api/transaction/') && rumpf.isNotEmpty) {
+      final daten = jsonDecode(rumpf);
+      final transaktion = daten is Map ? daten['transaction'] : null;
+      final genannt = transaktion is Map ? transaktion['tid'] : null;
+      if (genannt is String && genannt != tid) {
+        return <String, Object?>{
+          'responseCode': '100108',
+          'responseText': 'Invalid TID',
+          'tid': genannt,
+        };
+      }
+    }
     final diagnose = RegExp(
       r'^/api/terminals/(\d+)/diagnosis$',
     ).firstMatch(pfad);

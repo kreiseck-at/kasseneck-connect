@@ -130,6 +130,7 @@ class Tcp9100Printer implements PrinterDriver {
           betriebssystem: betriebssystem,
         ),
         detail: socketGrund(e),
+        abgelehnt: verbindungAbgelehnt(e),
       );
     }
   }

@@ -178,7 +178,10 @@ class DruckerStatusDienst {
   /// Nur ein bewiesenes, statusfähiges Modell, nur bei offener Kasse und
   /// eingeschalteten `printer_status` und `status_poll`; nie neben einem
   /// eigenen Bon (Warteschlange) und nicht, solange er druckt. Ein Versuch
-  /// mit `bereitFrist` – die Nachfragen kommen ohnehin dicht. Wirft nie.
+  /// mit `bereitFrist` – die Nachfragen kommen ohnehin dicht. Nie an ein
+  /// Gerät mit nachweislich anderer MAC. Eine abgelehnte Nachfrage (etwa
+  /// weil ein anderer Rechner gerade druckt oder fragt) beendet sie, ohne den
+  /// Drucker als nicht erreichbar zu melden. Wirft nie.
   Future<bool> nachfrage(String id) async {
     try {
       final config = await registry.store.load();
@@ -201,6 +204,9 @@ class DruckerStatusDienst {
         return false;
       }
       final gefunden = drucker;
+      // Steht unter der Adresse nachweislich ein anderes Gerät (andere MAC),
+      // bekommt es keine Bytes – die Nachfrage endet.
+      if (await _macVergleich(gefunden) == MacVergleich.anders) return false;
       return await queue.exclusive(id, () async {
         // Ein eigener Bon kam dazwischen: er druckt noch, Schweigen bewiese
         // nichts. Weiter verfolgen – die Strecke beginnt danach neu.
@@ -341,6 +347,11 @@ class DruckerStatusDienst {
                 fragen: fragen,
                 budget: budget,
               );
+        if (!antworten.verbunden && einVersuch) {
+          // Nachfrage ohne Verbindung: nichts beobachtet. Der Takt und der
+          // nächste Bon entscheiden über Erreichbarkeit und Freigabe.
+          return (erreichbar: true, schweigt: false);
+        }
         if (!antworten.verbunden) {
           // Abgelehnt direkt nach einer eigenen Verbindung: der Drucker gibt
           // langsam frei, er ist nicht weg – ab jetzt kein Takt mehr für ihn.
@@ -364,10 +375,10 @@ class DruckerStatusDienst {
             return (erreichbar: true, schweigt: false);
           }
           final gezaehlt = !lage.druckt(jetzt);
-          if (gezaehlt) {
-            lage.schweigt(jetzt);
-            schweigenVerfolgen(drucker.id);
-          }
+          // Nachgefragt wird nie bei einem nachweislich anderen Gerät.
+          final verfolgen = gezaehlt && mac != MacVergleich.anders;
+          if (gezaehlt) lage.schweigt(jetzt);
+          if (verfolgen) schweigenVerfolgen(drucker.id);
           registry.noteZustand(
             drucker.id,
             schweigenHeisstNichtBereit(mac: mac, lage: lage, jetzt: jetzt)
@@ -375,7 +386,7 @@ class DruckerStatusDienst {
                 : DruckerZustand.unbekannt,
             jetzt,
           );
-          return (erreichbar: true, schweigt: gezaehlt);
+          return (erreichbar: true, schweigt: verfolgen);
         }
         if (antworten.offlineGrund != null) lage.antwortet();
         if (antworten.offlineGrund != null && mac != MacVergleich.anders) {

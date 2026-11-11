@@ -54,3 +54,16 @@ String socketGrund(SocketException fehler) {
       ? betriebssystem
       : '${fehler.message} ($betriebssystem)';
 }
+
+/// Ob [fehler] eine abgelehnte Verbindung ist (das Gerät ist da, nimmt aber
+/// gerade nicht an) – im Unterschied zu Zeitablauf oder fehlender Route.
+bool verbindungAbgelehnt(Object? fehler) {
+  if (fehler is! SocketException) return false;
+  final code = fehler.osError?.errorCode;
+  // ECONNREFUSED: macOS 61, Linux 111, Windows 10061.
+  return code == 61 ||
+      code == 111 ||
+      code == 10061 ||
+      fehler.message.toLowerCase().contains('refused') ||
+      (fehler.osError?.message.toLowerCase().contains('refused') ?? false);
+}

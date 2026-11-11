@@ -80,6 +80,40 @@ void main() {
   }
 
   group('Deutung', () {
+    test('Strecke: lückenlos, eine Lücke beginnt neu, eine Antwort beendet, '
+        'eine zurückgestellte Uhr beginnt neu', () {
+      final t0 = DateTime(2026, 11, 11, 9);
+      final lage = DruckerLage();
+      for (var s = 0; s <= 30; s += 5) {
+        lage.schweigt(t0.add(Duration(seconds: s)));
+      }
+      final t30 = t0.add(const Duration(seconds: 30));
+      expect(lage.schweigtLangeGenug(t30), isTrue);
+      // Die letzte Beobachtung ist älter als die Lücke: nicht mehr belegt.
+      expect(
+        lage.schweigtLangeGenug(t30.add(const Duration(seconds: 11))),
+        isFalse,
+      );
+      // Uhr zurückgestellt: die Strecke beginnt neu.
+      final zurueck = t0.subtract(const Duration(hours: 1));
+      lage.schweigt(zurueck);
+      expect(lage.schweigtSeit, zurueck);
+      expect(lage.schweigtLangeGenug(zurueck), isFalse);
+      // Eine Abfrage vor der letzten Beobachtung (Uhr zurück) belegt nichts.
+      expect(
+        lage.schweigtLangeGenug(zurueck.subtract(const Duration(seconds: 1))),
+        isFalse,
+      );
+      // Lücke über 10 s: neu.
+      final nach = zurueck.add(schweigenLuecke + const Duration(seconds: 1));
+      lage.schweigt(nach);
+      expect(lage.schweigtSeit, nach);
+      // Antwort beendet.
+      lage.antwortet();
+      expect(lage.schweigtSeit, isNull);
+      expect(lage.zuletztGeschwiegen, isNull);
+    });
+
     test('Bereitschaft: Vertragsnamen und Sperre', () {
       expect(Bereitschaft.values.map((b) => b.wireName), <String>[
         'ready',
@@ -452,6 +486,63 @@ void main() {
       expect(d.nachfragen, danach, reason: 'keine weitere Nachfrage');
       expect((await a.registry.summaries()).single['readiness'], 'ready');
     });
+
+    test('Sollte 2: unter der Adresse eine andere MAC – keine Nachfrage, '
+        'weder aus dem Takt noch vor dem Bon', () async {
+      final id = await a.drucker(
+        drucker.port,
+        statusCapableAt: seit,
+        mac: _mac,
+      );
+      a.arpMac = '00:26:ab:00:00:09'; // ein anderes Gerät
+      final d = dienst(nachfrageAbstand: const Duration(milliseconds: 30));
+      d.start();
+      addTearDown(d.stop);
+      drucker.dleEot.clear();
+      await d.runde();
+      expect(d.verfolgt(id), isFalse, reason: 'Takt');
+      final verbindungen = drucker.connections;
+      expect(await d.nachfrage(id), isFalse);
+      expect(drucker.connections, verbindungen, reason: 'kein Byte');
+
+      final angestossen = <String>[];
+      a.vorpruefung.beiSchweigen = angestossen.add;
+      a.jetzt = a.jetzt.add(const Duration(minutes: 1));
+      expect((await drucke(id)).ok, isTrue);
+      expect(angestossen, isEmpty, reason: 'vor dem Bon');
+
+      // Gegenprobe: dieselbe MAC – vor dem Bon angestoßen.
+      a.arpMac = _mac;
+      a.jetzt = a.jetzt.add(const Duration(minutes: 1));
+      expect((await drucke(id, jobId: 'beleg-2')).ok, isTrue);
+      expect(angestossen, <String>[id]);
+    });
+
+    test(
+      'nach stop() keine Nachfrage mehr – auch keine schon geplante',
+      () async {
+        final id = await a.drucker(
+          drucker.port,
+          statusCapableAt: seit,
+          mac: _mac,
+        );
+        a.arpMac = _mac;
+        final d = dienst(nachfrageAbstand: const Duration(milliseconds: 150));
+        d.start();
+        drucker.dleEot.clear();
+        await d.runde();
+        expect(d.verfolgt(id), isTrue, reason: 'Nachfrage geplant');
+        final verbindungen = drucker.connections;
+        await d.stop();
+        expect(d.verfolgt(id), isFalse);
+        await Future<void>.delayed(const Duration(milliseconds: 400));
+        expect(d.nachfragen, 0);
+        expect(drucker.connections, verbindungen);
+        // Auch ein neuer Anstoß plant nach dem Anhalten nichts.
+        d.schweigenVerfolgen(id);
+        expect(d.verfolgt(id), isFalse);
+      },
+    );
 
     test('keine Nachfrage: Kasse zu, status_poll oder printer_status aus, '
         'nicht bewiesenes Modell, eigener Bon druckt noch', () async {

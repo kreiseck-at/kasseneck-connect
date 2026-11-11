@@ -4,6 +4,7 @@ import '../config/model.dart';
 import '../config/neuerungen.dart';
 import '../config/store.dart';
 import '../log/logger.dart';
+import '../lokales_netz.dart' show verbindungAbgelehnt;
 import '../net/arp.dart';
 import 'abfrage.dart';
 import 'discovery.dart' show InterfaceProbe;
@@ -63,6 +64,13 @@ enum AbfrageVerlauf {
   /// druckt. Lehnt er die Druckverbindung ab, gibt er nur die vorige noch
   /// nicht frei – umgezogen ist er nicht.
   ebenErreichbar,
+
+  /// Ein statusfähiger Drucker lehnte sie ab, obwohl dieser Rechner in den
+  /// letzten [kontaktFenster] mit ihm verbunden war: er ist da und gerade
+  /// belegt, etwa von der Nachfrage eines anderen Rechners. Die Warteschlange
+  /// wiederholt die Druckverbindung wie bei [ebenErreichbar], merkt ihn aber
+  /// nicht als „gibt langsam frei“.
+  kurzBelegt,
 
   /// Sie kam nicht zustande. Das zählt als erster Druckversuch – sonst
   /// dauerte ein ausgeschalteter Drucker länger als bis 1.4.2.
@@ -247,8 +255,18 @@ class DruckVorpruefung {
               antworten.verbindungsFehler != null &&
               (lage.druckt(jetzt) || lage.ebenVerbunden());
           if (ebenDa) _langsameFreigabe(drucker, lage);
+          // Abgelehnt kurz nach eigenem Kontakt: belegt, nicht aus (mehrere
+          // Kassen, ein Drucker – die Nachfrage eines anderen Rechners).
+          final belegt =
+              !antworten.verbunden &&
+              !ebenDa &&
+              statusfaehig &&
+              verbindungAbgelehnt(antworten.verbindungsFehler) &&
+              lage.kuerzlichVerbunden();
           abfrage = antworten.verbunden || ebenDa
               ? AbfrageVerlauf.ebenErreichbar
+              : belegt
+              ? AbfrageVerlauf.kurzBelegt
               : antworten.verbindungsFehler != null
               ? AbfrageVerlauf.ohneVerbindung
               : AbfrageVerlauf.keine;
@@ -336,7 +354,9 @@ class DruckVorpruefung {
       // Statusdienst beobachtet sie lückenlos weiter.
       if (!lage.druckt(jetzt)) {
         lage.schweigt(jetzt);
-        beiSchweigen?.call(drucker.id);
+        // Nachgefragt wird nur bei einem Gerät, das nicht nachweislich ein
+        // anderes ist: ein fremdes Gerät bekommt keine Bytes.
+        if (mac != MacVergleich.anders) beiSchweigen?.call(drucker.id);
       }
       return schweigenHeisstNichtBereit(mac: mac, lage: lage, jetzt: jetzt)
           ? DruckerZustand.nichtBereit

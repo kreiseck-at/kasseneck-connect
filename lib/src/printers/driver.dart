@@ -83,6 +83,7 @@ class PrinterFailure implements Exception {
     this.message, {
     this.detail,
     this.mayHavePrinted = false,
+    this.abgelehnt = false,
   });
 
   /// Einer der Codes [errorPrinterOffline], [errorPrintTimeout],
@@ -100,6 +101,11 @@ class PrinterFailure implements Exception {
   /// Der Treiber setzt das, sobald er Bytes abgeschickt hat: ab da weiß
   /// niemand mehr, ob der Bon aus dem Gerät gelaufen ist.
   final bool mayHavePrinted;
+
+  /// Ob das Gerät die Verbindung abgelehnt hat: es ist da, nimmt gerade aber
+  /// nicht an (etwa weil ein anderer Rechner es eben abfragt) – im
+  /// Unterschied zu Zeitablauf oder fehlender Route.
+  final bool abgelehnt;
 
   /// Ob ein zweiter Versuch Sinn ergibt.
   ///

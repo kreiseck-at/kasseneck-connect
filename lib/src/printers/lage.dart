@@ -59,6 +59,18 @@ const Duration freigabeFenster = Duration(seconds: 3);
 /// Abstand der Wiederholungen innerhalb von [freigabeFenster].
 const Duration freigabeSchritt = Duration(milliseconds: 250);
 
+/// So lange nach einem eigenen Kontakt (Bon, Abfrage) gilt eine abgelehnte
+/// Verbindung zu einem statusfähigen Drucker als „gerade belegt“ – etwa von
+/// der Nachfrage eines anderen Rechners – statt als „aus“: die Warteschlange
+/// wiederholt dann wie bei [freigabeFenster], ohne den Drucker als „gibt
+/// langsam frei“ zu merken.
+const Duration kontaktFenster = Duration(seconds: 10);
+
+/// Pause vor dem zweiten Druckversuch, wenn der erste schnell abgelehnt
+/// wurde und ein anderer Rechner den Drucker gerade abfragen kann (eine
+/// Nachfrage hält die Verbindung höchstens rund 0,5 s).
+const Duration zweiterVersuchPause = Duration(milliseconds: 600);
+
 /// Ob das Schweigen eines statusfähigen Druckers „nicht bereit“ heißen darf.
 ///
 /// Nur, wenn feststeht, dass unter der Adresse derselbe Drucker hängt – gleiche
@@ -159,6 +171,12 @@ class DruckerLage {
   bool ebenVerbunden() {
     final uhr = _seitVerbindung;
     return uhr != null && uhr.elapsed < freigabeFenster;
+  }
+
+  /// Ob die letzte eigene Verbindung höchstens [kontaktFenster] her ist.
+  bool kuerzlichVerbunden() {
+    final uhr = _seitVerbindung;
+    return uhr != null && uhr.elapsed < kontaktFenster;
   }
 
   /// Ob die letzte eigene Abfrage-Verbindung höchstens [freigabeFenster] her

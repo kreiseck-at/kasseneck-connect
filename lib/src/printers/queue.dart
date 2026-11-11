@@ -6,7 +6,7 @@ import '../config/model.dart';
 import '../events/bus.dart';
 import '../log/logger.dart';
 import 'driver.dart';
-import 'lage.dart' show freigabeFenster, freigabeSchritt;
+import 'lage.dart' show freigabeFenster, freigabeSchritt, zweiterVersuchPause;
 import 'registry.dart';
 import 'vorpruefung.dart';
 import 'wiederfinden.dart';
@@ -273,7 +273,16 @@ class PrintQueue {
   /// Kam schon die Abfrage-Verbindung der Vorprüfung nicht zustande
   /// ([AbfrageVerlauf.ohneVerbindung]), war sie der erste Versuch: es folgt
   /// gleich die Suche und ein Druckversuch – ein ausgeschalteter Drucker kostet
-  /// so nicht länger als bis 1.4.2.
+  /// so nicht länger als bis 1.4.2. Wird dieser Druckversuch abgelehnt (das
+  /// Gerät ist da, nur belegt – etwa von der Abfrage eines anderen Rechners),
+  /// folgt nach [zweiterVersuchPause] ein zweiter: nie weniger Druckversuche
+  /// als bis 1.4.2.
+  ///
+  /// Bei einem bewiesenen Modell wartet auch sonst der zweite Versuch nach
+  /// einer Ablehnung [zweiterVersuchPause]: andere Rechner fragen
+  /// es im Takt und bei Schweigen alle 5 s ab, und ein sofortiger zweiter
+  /// Versuch träfe dieselbe Abfrage. Jeder andere Drucker wiederholt sofort
+  /// wie bis 1.4.2.
   ///
   /// War der Drucker eben erreichbar ([AbfrageVerlauf.ebenErreichbar]) und
   /// lehnt er die Druckverbindung trotzdem ab, gibt er nur die vorige noch
@@ -284,7 +293,8 @@ class PrintQueue {
   ///
   /// Dasselbe auf dem Weg wie bis 1.4.2, wenn eben eine EIGENE
   /// Abfrage-Verbindung stand (Erkennung nach dem Anlegen oder einer Suche,
-  /// Statusabfrage, Takt): ohne sie wäre der Bon gegangen.
+  /// Statusabfrage, Takt): ohne sie wäre der Bon gegangen – und bei
+  /// [AbfrageVerlauf.kurzBelegt], dann ohne „gibt langsam frei“.
   Future<PrintResult> _run(
     String printerId,
     String jobId,
@@ -294,6 +304,9 @@ class PrintQueue {
     AbfrageVerlauf abfrage = AbfrageVerlauf.keine,
   }) async {
     var versuch = 1;
+    var druckVersuche = 0;
+    // Ein bewiesenes Modell fragen womöglich andere Rechner gerade ab.
+    final geteilt = ziel != null && registry.pruefbar(ziel);
     if (abfrage == AbfrageVerlauf.ohneVerbindung) {
       _log?.warn(
         'Auftrag $jobId an $printerId: schon die Abfrage fand keinen Drucker '
@@ -309,6 +322,7 @@ class PrintQueue {
     Stopwatch? freigabe;
     while (true) {
       final fehler = await _versuche(printerId, driver, bytes);
+      druckVersuche++;
       if (fehler == null) {
         nachErfolg?.call(printerId);
         _events.publish(eventPrintDone, <String, Object?>{
@@ -320,14 +334,17 @@ class PrintQueue {
       }
       final nichtsGesendet =
           fehler.code == errorPrinterOffline && !fehler.mayHavePrinted;
+      final belegt = abfrage == AbfrageVerlauf.kurzBelegt;
       if (nichtsGesendet &&
           (freigabe != null ||
+              belegt ||
               abfrage == AbfrageVerlauf.ebenErreichbar ||
               (registry.lagen.vorhanden(printerId)?.ebenAbgefragt() ??
                   false))) {
         if (freigabe == null) {
           freigabe = Stopwatch()..start();
-          _langsam(printerId, jobId);
+          // Belegt von einem anderen Rechner: kein Verhalten des Geräts.
+          if (!belegt) _langsam(printerId, jobId);
         }
         if (freigabe.elapsed < freigabeFenster) {
           await driver.abort();
@@ -337,12 +354,17 @@ class PrintQueue {
         }
         return _fail(printerId, jobId, fehler, versuch);
       }
-      if (fehler.retryable && versuch == 1) {
+      // Abgelehnt: das Gerät ist da, nur gerade belegt.
+      final schnell = nichtsGesendet && fehler.abgelehnt;
+      if (fehler.retryable && druckVersuche == 1 && (versuch == 1 || schnell)) {
+        final pause = schnell && (geteilt || versuch > 1);
         _log?.warn(
-          'Auftrag $jobId an $printerId: ${fehler.code} — zweiter Versuch.',
+          'Auftrag $jobId an $printerId: ${fehler.code} — zweiter Versuch'
+          '${pause ? ' nach ${zweiterVersuchPause.inMilliseconds} ms' : ''}.',
         );
         // Erst die alte Verbindung wegwerfen, dann neu ansetzen.
         await driver.abort();
+        if (pause) await Future<void>.delayed(zweiterVersuchPause);
         versuch++;
         continue;
       }

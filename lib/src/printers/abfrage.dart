@@ -32,6 +32,11 @@ const Duration langsamerAufbau = Duration(milliseconds: 200);
 /// Antwortfenster.
 const Duration zweiterVersuchReserve = Duration(milliseconds: 700);
 
+/// Ein `GS I` ohne gültige Antwort zählt für die Kennung nur, wenn es
+/// mindestens so lange Zeit hatte (`EscPosAntworten.gsIOhneAntwortVoll`).
+/// `GS I` ist kein Echtzeitbefehl; zu knapp gefragt, sagt Schweigen nichts.
+const Duration gsIVolleFrist = Duration(seconds: 1);
+
 /// Was eine Abfrage-Verbindung wissen will.
 enum EscPosFrage {
   /// `DLE EOT 2`: Deckel, Stopp wegen Papierende.
@@ -59,6 +64,7 @@ class EscPosAntworten {
     this.modell,
     this.seriennummer,
     this.gsIOhneAntwort = false,
+    this.gsIOhneAntwortVoll = false,
   });
 
   /// Keine Verbindung zustande gekommen.
@@ -70,7 +76,8 @@ class EscPosAntworten {
       rollensensor = null,
       modell = null,
       seriennummer = null,
-      gsIOhneAntwort = false;
+      gsIOhneAntwort = false,
+      gsIOhneAntwortVoll = false;
 
   /// Ob die Verbindung stand.
   final bool verbunden;
@@ -95,6 +102,9 @@ class EscPosAntworten {
   /// als Text puffern; danach geht auf dieser Verbindung kein weiteres
   /// `GS I` hinaus.
   final bool gsIOhneAntwort;
+
+  /// Wie [gsIOhneAntwort], und das `GS I` hatte mindestens [gsIVolleFrist].
+  final bool gsIOhneAntwortVoll;
 
   /// Das Gerät hat auf `DLE EOT 2` nachweislich geschwiegen: der Befehl ging
   /// hinaus, das volle Antwortfenster verstrich bei offener Verbindung, und
@@ -197,6 +207,7 @@ class EscPosAbfrage {
           : null;
       // Je `GS I` nur, wenn das vorige einen gültigen Rahmen brachte.
       var gsIOhneAntwort = false;
+      var gsIOhneAntwortVoll = false;
       Future<String?> gsIFrage(EscPosFrage frage, int n) async {
         final frist = rest();
         if (!fragen.contains(frage) ||
@@ -205,7 +216,10 @@ class EscPosAbfrage {
           return null;
         }
         final text = await leser.rahmen(socket, gsI(n), frist);
-        if (text == null) gsIOhneAntwort = true;
+        if (text == null) {
+          gsIOhneAntwort = true;
+          gsIOhneAntwortVoll = frist >= gsIVolleFrist;
+        }
         return text;
       }
 
@@ -218,6 +232,7 @@ class EscPosAbfrage {
         modell: modell,
         seriennummer: serie,
         gsIOhneAntwort: gsIOhneAntwort,
+        gsIOhneAntwortVoll: gsIOhneAntwortVoll,
       );
     } on SocketException {
       // Abgerissen mitten in den Fragen: was fehlt, ist unbekannt. Gedruckt

@@ -208,6 +208,9 @@ class PrinterRegistry {
       mac: kennung ? alt.mac : null,
       identifiedAt: kennung ? alt.identifiedAt : null,
       identitySource: kennung ? alt.identitySource : null,
+      // Ob das Gerät `GS I` beantwortet, ändert eine Umbenennung nicht.
+      idQueryUnansweredAt: kennung ? alt.idQueryUnansweredAt : null,
+      idQueryMissedAt: kennung ? alt.idQueryMissedAt : null,
       extras: alt.extras,
     );
   }

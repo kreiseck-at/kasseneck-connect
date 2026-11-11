@@ -74,7 +74,8 @@ class DruckerErkennung {
         budget: budget,
       );
       verbunden = antworten.verbunden;
-      if (antworten.gsIOhneAntwort && antworten.modell == null) {
+      // Nur mit voller Frist: knapp gefragt sagt Schweigen nichts.
+      if (antworten.gsIOhneAntwortVoll && antworten.modell == null) {
         gsIOhneAntwortAm = _clock();
       }
       if (antworten.modell != null) {
@@ -132,9 +133,12 @@ Future<String?> macImSelbenNetz(
 /// Drucker, dessen Modell nicht bewiesen ist, sieht vor seinen Bons so nie
 /// eine fremde Verbindung.
 ///
-/// `GS I` geht nach der Suche und auf Zuruf nur an ein Gerät, das es nicht
-/// schon einmal unbeantwortet ließ (`PrinterConfig.idQueryUnansweredAt`);
-/// beim Anlegen immer – dann folgt ohnehin ein Testdruck.
+/// `GS I` geht nur an ein Gerät, das es nicht zweimal unbeantwortet ließ
+/// und nicht binnen 6 h nach dem ersten Mal ([gsIErlaubt]) – auch beim
+/// Anlegen, denn danach folgt nicht immer ein Testdruck (die Kasse legt
+/// Funde einer Suche ohne an). Unbeantwortet zählt `GS I` nur mit voller
+/// Frist und nicht, solange ein eigener Bon noch druckt (es wartete hinter
+/// dessen Daten).
 ///
 /// Läuft immer über die Warteschlange des Druckers – die Abfrage-Verbindung
 /// steht nie neben einem Auftrag. Abgeschaltet über `printer_identity`.
@@ -321,13 +325,7 @@ class Kennungspflege {
         }
       }
       lage.letzteErkennung = _clock();
-      // `GS I` nur, wo es nicht schon einmal unbeantwortet blieb – außer
-      // beim Anlegen (Testdruck folgt) und bei gelesenem Modell (das Gerät
-      // kennt `GS I`).
-      final mitGsI =
-          sofort ||
-          drucker.idQueryUnansweredAt == null ||
-          drucker.modelSource == KennungsQuelle.escpos;
+      final mitGsI = gsIErlaubt(drucker, _clock());
       final erkannt = await queue.exclusive(
         id,
         () => _erkenneUndMerke(drucker, mitGsI: mitGsI),
@@ -349,9 +347,13 @@ class Kennungspflege {
     PrinterConfig drucker, {
     bool mitGsI = true,
   }) async {
+    final lage = lagen.von(drucker.id);
+    // Druckt der eigene Bon noch, wartet `GS I` hinter seinen Daten: ein
+    // Schweigen darauf zählt dann nicht gegen das Gerät.
+    final druckt = lage.druckt(_clock());
     final erkannt = await erkennung.erkenne(drucker, mitGsI: mitGsI);
-    if (erkannt.verbunden) lagen.von(drucker.id).abgefragt();
-    return erkannt;
+    if (erkannt.verbunden) lage.abgefragt();
+    return druckt ? erkannt.ohneGsIVermerk() : erkannt;
   }
 
   Future<void> _speichere(PrinterConfig vorher, ErkannteKennung erkannt) async {

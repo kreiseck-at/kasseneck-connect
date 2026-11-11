@@ -93,6 +93,7 @@ class PrinterConfig {
     this.identitySource,
     this.statusCapableAt,
     this.idQueryUnansweredAt,
+    this.idQueryMissedAt,
     Map<String, Object?>? extras,
   }) : port = port ?? kind.defaultPort,
        extras = Map<String, Object?>.unmodifiable(
@@ -141,11 +142,19 @@ class PrinterConfig {
   /// der nie geantwortet hat, heißt Schweigen nur „unbekannt“.
   final DateTime? statusCapableAt;
 
-  /// Wann das Gerät gültig auf `DLE EOT`, aber nicht auf `GS I 67`
-  /// geantwortet hat. Danach bekommt es `GS I` nur noch bei einer
-  /// ausdrücklichen Einrichtung (`PUT`, setzt das Feld zurück): ein Nachbau,
-  /// der `GS I` nicht kennt, könnte die Zeichen sonst auf einen Bon drucken.
+  /// Wann das Gerät zum zweiten Mal (frühestens
+  /// `gsIZweiterVersuchFruehestens` nach dem ersten, [idQueryMissedAt])
+  /// gültig auf `DLE EOT`, aber nicht auf `GS I 67` geantwortet hat, jedes
+  /// Mal mit voller Frist. Danach bekommt es kein `GS I` mehr, bis es unter
+  /// einer anderen Adresse oder Art eingerichtet wird: ein Nachbau, der
+  /// `GS I` nicht kennt, könnte die Zeichen sonst auf einen Bon drucken.
   final DateTime? idQueryUnansweredAt;
+
+  /// Wann `GS I 67` zum ersten Mal mit voller Frist unbeantwortet blieb.
+  /// Bis `gsIZweiterVersuchFruehestens` danach kein weiteres `GS I`; ein
+  /// echter Drucker, der nur einmal zu spät antwortete, bekommt so eine
+  /// zweite Gelegenheit.
+  final DateTime? idQueryMissedAt;
 
   /// Felder, die diese Fassung nicht kennt (aus einer neueren Fassung); sie
   /// überleben das Schreiben unverändert.
@@ -169,6 +178,7 @@ class PrinterConfig {
     KennungsQuelle? identitySource,
     DateTime? statusCapableAt,
     DateTime? idQueryUnansweredAt,
+    DateTime? idQueryMissedAt,
   }) {
     return PrinterConfig(
       id: id ?? this.id,
@@ -185,6 +195,7 @@ class PrinterConfig {
       identitySource: identitySource ?? this.identitySource,
       statusCapableAt: statusCapableAt ?? this.statusCapableAt,
       idQueryUnansweredAt: idQueryUnansweredAt ?? this.idQueryUnansweredAt,
+      idQueryMissedAt: idQueryMissedAt ?? this.idQueryMissedAt,
       extras: extras,
     );
   }
@@ -214,6 +225,8 @@ class PrinterConfig {
       'statusCapableAt': statusCapableAt!.toUtc().toIso8601String(),
     if (idQueryUnansweredAt != null)
       'idQueryUnansweredAt': idQueryUnansweredAt!.toUtc().toIso8601String(),
+    if (idQueryMissedAt != null)
+      'idQueryMissedAt': idQueryMissedAt!.toUtc().toIso8601String(),
   };
 
   static const Set<String> _bekannteFelder = <String>{
@@ -231,6 +244,7 @@ class PrinterConfig {
     'identitySource',
     'statusCapableAt',
     'idQueryUnansweredAt',
+    'idQueryMissedAt',
   };
 
   static PrinterConfig fromJson(Map<String, Object?> json) {
@@ -250,6 +264,7 @@ class PrinterConfig {
       identitySource: KennungsQuelle.fromWireName(json['identitySource']),
       statusCapableAt: readDateTime(json['statusCapableAt'])?.toUtc(),
       idQueryUnansweredAt: readDateTime(json['idQueryUnansweredAt'])?.toUtc(),
+      idQueryMissedAt: readDateTime(json['idQueryMissedAt'])?.toUtc(),
       extras: _unbekannte(json, _bekannteFelder),
     );
   }

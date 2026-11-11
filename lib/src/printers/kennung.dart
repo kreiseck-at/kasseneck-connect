@@ -122,13 +122,25 @@ class ErkannteKennung {
   /// Wann das Gerät gültig auf `DLE EOT` geantwortet hat (`null`: nicht).
   final DateTime? statusfaehigAm;
 
-  /// Wann `GS I 67` ohne gültigen Rahmen blieb (`null`: nicht gefragt oder
-  /// beantwortet); siehe `PrinterConfig.idQueryUnansweredAt`.
+  /// Wann `GS I 67` mit voller Frist ohne gültigen Rahmen blieb (`null`:
+  /// nicht gefragt, beantwortet oder zu wenig Zeit); siehe
+  /// `PrinterConfig.idQueryUnansweredAt`.
   final DateTime? gsIOhneAntwortAm;
 
   /// Ob die Abfrage-Verbindung der Erkennung stand (für die Freigabe der
   /// Verbindung danach; kein Teil der Kennung).
   final bool verbunden;
+
+  /// Dieselbe Kennung ohne [gsIOhneAntwortAm] (das Schweigen zählt nicht).
+  ErkannteKennung ohneGsIVermerk() => ErkannteKennung(
+    model: model,
+    modelQuelle: modelQuelle,
+    serial: serial,
+    serialQuelle: serialQuelle,
+    mac: mac,
+    statusfaehigAm: statusfaehigAm,
+    verbunden: verbunden,
+  );
 
   bool get leer =>
       model == null &&
@@ -164,16 +176,28 @@ PrinterConfig? ergaenzeKennung(
   final mac = drucker.mac ?? normalizeMac(erkannt.mac);
   final statusfaehig =
       drucker.statusCapableAt ?? erkannt.statusfaehigAm?.toUtc();
-  // Ohne `GS I`-Antwort gemerkt, solange kein Modell über `GS I 67` da ist.
-  final ohneGsI = modelSource == KennungsQuelle.escpos
-      ? drucker.idQueryUnansweredAt
-      : drucker.idQueryUnansweredAt ?? erkannt.gsIOhneAntwortAm?.toUtc();
+  // `GS I 67` ohne Antwort: beim ersten Mal nur vorgemerkt, erst ein
+  // zweites Mal frühestens [gsIZweiterVersuchFruehestens] später gilt
+  // dauerhaft – solange kein Modell über `GS I 67` da ist.
+  var verpasst = drucker.idQueryMissedAt;
+  var ohneGsI = drucker.idQueryUnansweredAt;
+  final jetztOhne = erkannt.gsIOhneAntwortAm?.toUtc();
+  if (modelSource != KennungsQuelle.escpos &&
+      jetztOhne != null &&
+      ohneGsI == null) {
+    if (verpasst == null) {
+      verpasst = jetztOhne;
+    } else if (jetztOhne.difference(verpasst) >= gsIZweiterVersuchFruehestens) {
+      ohneGsI = jetztOhne;
+    }
+  }
   if (model == drucker.model &&
       modelSource == drucker.modelSource &&
       serial == drucker.serial &&
       mac == drucker.mac &&
       statusfaehig == drucker.statusCapableAt &&
-      ohneGsI == drucker.idQueryUnansweredAt) {
+      ohneGsI == drucker.idQueryUnansweredAt &&
+      verpasst == drucker.idQueryMissedAt) {
     return null;
   }
   final kennungNeu =
@@ -192,7 +216,25 @@ PrinterConfig? ergaenzeKennung(
     identitySource: quelle,
     statusCapableAt: statusfaehig,
     idQueryUnansweredAt: ohneGsI,
+    idQueryMissedAt: verpasst,
   );
+}
+
+/// Frühestens so lange nach dem ersten unbeantworteten `GS I 67` bekommt ein
+/// Gerät ein zweites (siehe `PrinterConfig.idQueryMissedAt`).
+const Duration gsIZweiterVersuchFruehestens = Duration(hours: 6);
+
+/// Ob [drucker] um [jetzt] `GS I` bekommen darf: ein über `GS I 67`
+/// gelesenes Modell immer (das Gerät kennt den Befehl); sonst nicht nach
+/// zwei unbeantworteten und nicht binnen [gsIZweiterVersuchFruehestens]
+/// nach dem ersten.
+bool gsIErlaubt(PrinterConfig drucker, DateTime jetzt) {
+  if (drucker.modelSource == KennungsQuelle.escpos) return true;
+  if (drucker.idQueryUnansweredAt != null) return false;
+  final verpasst = drucker.idQueryMissedAt;
+  if (verpasst == null) return true;
+  final alter = jetzt.toUtc().difference(verpasst.toUtc());
+  return alter.isNegative || alter >= gsIZweiterVersuchFruehestens;
 }
 
 /// Eine Kennung aus den TXT-Einträgen eines mDNS-Dienstes (`schluessel=wert`,

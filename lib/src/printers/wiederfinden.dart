@@ -449,9 +449,12 @@ class DruckerWiederfinder {
     String host,
     PrinterConfig drucker,
   ) async {
+    // Ohne Groß-/Kleinschreibung wie beim Umzug (_uebernimm): sonst ginge
+    // die Abfrage an `Drucker.local` neben dessen Warteschlange vorbei.
+    final gesucht = host.toLowerCase();
     for (final eintrag in await registry.list()) {
       if (eintrag.id != drucker.id &&
-          eintrag.host == host &&
+          eintrag.host.toLowerCase() == gesucht &&
           eintrag.port == drucker.port) {
         return eintrag;
       }

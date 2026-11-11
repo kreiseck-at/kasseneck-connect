@@ -97,14 +97,21 @@ class BetriebsLock implements BetriebsBeobachter {
   }
 
   void _reihe(Future<void> Function() schritt) {
-    _kette = _kette.then((_) async {
-      try {
-        await schritt();
-      } on FileSystemException catch (e) {
-        // Ohne Datei wartet der Installer nicht – wie bis 1.4.2.
-        _log?.warn('$betriebLockName: ${e.message}');
-      }
-    });
+    _kette = _kette
+        .then((_) async {
+          try {
+            await schritt();
+          } on Object catch (e) {
+            // Ohne Datei wartet der Installer nicht – wie bis 1.4.2. Jeder
+            // Fehler (Dateisystem, eine unlesbare config.json) bleibt bei
+            // diesem Schritt: die Kette führt der nächste weiter.
+            _log?.warn(
+              '$betriebLockName: ${e is FileSystemException ? e.message : e}',
+            );
+          }
+        })
+        // Selbst ein Fehler im Log reißt die Kette nicht.
+        .catchError((Object _) {});
   }
 }
 

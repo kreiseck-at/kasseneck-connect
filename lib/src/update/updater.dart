@@ -138,6 +138,11 @@ class ConnectUpdater {
   /// Wartet, bis nichts mehr läuft; `false` nach [updateWarteHoechstens].
   final Future<bool> Function(Duration hoechstens)? _warteBisFrei;
 
+  /// Ob ein Druck oder eine Zahlung das Update gerade aufhält – dieselbe
+  /// Prüfung wie vor dem Laden und vor dem Installer.
+  Future<bool> geraetBeschaeftigt() async =>
+      await _beschaeftigt?.call() ?? false;
+
   final UpdateFeed _feed;
   final Downloader _download;
   final ProcessRunner _run;
@@ -204,7 +209,7 @@ class ConnectUpdater {
         'Die Aktualisierung läuft bereits.',
       );
     }
-    if (await _beschaeftigt?.call() ?? false) {
+    if (await geraetBeschaeftigt()) {
       throw const UpdateFailure(
         errorUpdateDeviceBusy,
         'Gerade läuft ein Druck oder eine Zahlung – danach aktualisieren.',
@@ -282,7 +287,7 @@ class ConnectUpdater {
 
       // Kam während des Ladens ein Druck oder eine Zahlung dazu, öffnet der
       // Installer erst danach: sein postinstall startet Connect neu.
-      if (await _beschaeftigt?.call() ?? false) {
+      if (await geraetBeschaeftigt()) {
         _melde(entry, 'waiting', 100);
         await _warteBisFrei?.call(updateWarteHoechstens);
       }

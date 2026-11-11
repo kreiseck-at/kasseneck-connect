@@ -389,6 +389,40 @@ void main() {
       expect(neustarts, 0);
     });
 
+    test('S5: Kasse A zahlt, Kasse B will aktualisieren: der Agent meldet '
+        'das Gerät beschäftigt (update_device_busy), danach nicht mehr; '
+        'busy_lock aus: nie', () async {
+      await starten();
+      final updater = agent.context.updater;
+      expect(updater, isNotNull, reason: 'Plattform mit Update');
+      expect(await updater!.geraetBeschaeftigt(), isFalse);
+      hps.verzoegerung['/api/transaction/payment'] = const Duration(seconds: 2);
+      final zahlung = zahleAusA();
+      await wartetAmTerminal();
+      expect(await updater.geraetBeschaeftigt(), isTrue);
+      if (updater.oneClick) {
+        // Am Mac: der Start lehnt ab, bevor etwas geladen wird.
+        await expectLater(
+          updater.start(),
+          throwsA(
+            isA<UpdateFailure>().having(
+              (f) => f.code,
+              'code',
+              errorUpdateDeviceBusy,
+            ),
+          ),
+        );
+      }
+      await store.mutate(
+        (c) => c.copyWith(disabledFeatures: <String>['busy_lock']),
+      );
+      expect(await updater.geraetBeschaeftigt(), isFalse, reason: 'Not-Aus');
+      await store.mutate((c) => c.copyWith(disabledFeatures: <String>[]));
+      expect(await updater.geraetBeschaeftigt(), isTrue);
+      expect((await zahlung).ok, isTrue);
+      expect(await updater.geraetBeschaeftigt(), isFalse);
+    });
+
     test('Status antwortet, während ein Bon an einem hängenden Drucker '
         'steht', () async {
       await starten();

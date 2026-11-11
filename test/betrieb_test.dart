@@ -160,6 +160,29 @@ void main() {
       v.stop();
     });
 
+    test('H9: ein Fehler beim Schreiben (auch kein Dateisystemfehler) reißt '
+        'die Kette nicht – der nächste Vorgang schreibt wieder', () async {
+      final kaputt = _WirftBeimLaden(temp)..werfen = 1;
+      final log = AgentLog(Directory(p.join(temp.path, 'logs')));
+      final lock = BetriebsLock(store: kaputt, log: log);
+      lock.belegt();
+      await lock.erledigt;
+      expect(lock.datei.existsSync(), isFalse, reason: 'Schritt scheiterte');
+      expect(
+        log.file.readAsLinesSync().where(
+          (z) => z.contains('betrieb.lock') && z.contains('nicht lesbar'),
+        ),
+        hasLength(1),
+        reason: 'Logzeile',
+      );
+      lock.weiterhin();
+      await lock.erledigt;
+      expect(lock.datei.existsSync(), isTrue, reason: 'Kette läuft weiter');
+      lock.frei();
+      await lock.erledigt;
+      expect(lock.datei.existsSync(), isFalse);
+    });
+
     test('busy_lock aus: keine Datei', () async {
       await store.mutate(
         (c) => c.copyWith(disabledFeatures: <String>['busy_lock']),
@@ -476,4 +499,21 @@ void main() {
       expect(aufrufe, greaterThan(0));
     });
   });
+}
+
+/// Ein Store, dessen `load` die ersten [werfen] Male mit einem Fehler
+/// scheitert, der kein Dateisystemfehler ist (etwa eine unlesbare Datei).
+class _WirftBeimLaden extends ConfigStore {
+  _WirftBeimLaden(Directory verzeichnis) : super(ConfigPaths(verzeichnis));
+
+  int werfen = 0;
+
+  @override
+  Future<AgentConfig> load() async {
+    if (werfen > 0) {
+      werfen--;
+      throw StateError('config.json nicht lesbar');
+    }
+    return super.load();
+  }
 }

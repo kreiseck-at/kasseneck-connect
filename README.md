@@ -411,7 +411,7 @@ schnelle Benachrichtigung obendrauf.
 | `print_in_progress` | derselbe Auftrag läuft gerade noch |
 | `paper_out` | ab 1.5.0: Papierende vor dem Druck gemeldet – **kein Byte gesendet**, derselbe Auftrag geht nach dem Einlegen |
 | `cover_open` | ab 1.5.0: Deckel offen vor dem Druck – kein Byte gesendet |
-| `printer_not_ready` | ab 1.5.0: ein Drucker, der sonst auf `DLE EOT` antwortet, schweigt nachweislich (Deckel offen, Papier heraus) – kein Byte gesendet |
+| `printer_not_ready` | ab 1.5.0: der Drucker meldet selbst (Antwort auf `DLE EOT`), dass er nicht bereit ist – kein Byte gesendet. Schweigen ergibt ihn nie (siehe `readinessHint`) |
 | `device_not_found` | ab 1.5.0: `locate` ohne eindeutigen Treffer |
 | `update_device_busy` | ab 1.5.0: ein Druck oder eine Zahlung läuft – danach aktualisieren (HTTP 409) |
 | `restart_busy` | ab 1.5.0: ein Druck oder eine Zahlung läuft (HTTP 409) – auch mit abgeschaltetem `busy_lock` |
@@ -598,7 +598,7 @@ der Versionsnummer:
 | Fähigkeit | Inhalt |
 |---|---|
 | `identity` | Kennung je Drucker (`identity: {model, serial, mac, state}`), `installationId` (auch ohne Token) |
-| `printer_status` | `paper` (`ok`, `near_end`, `out`, `unknown`), `cover` (`closed`, `open`, `unknown`), `readiness` (`ready`, `not_ready`, `unknown`), `statusAt` je Drucker, `POST /v1/printers/{id}/status`, `paper_out`, `cover_open`, `printer_not_ready` – nur für bewiesene Modelle (siehe unten) |
+| `printer_status` | `paper` (`ok`, `near_end`, `out`, `unknown`), `cover` (`closed`, `open`, `unknown`), `readiness` (`ready`, `not_ready`, `unknown`), `readinessHint` (`no_status_answer`, nur bei `readiness: unknown`), `statusAt` je Drucker, `POST /v1/printers/{id}/status`, `paper_out`, `cover_open`, `printer_not_ready` – nur für bewiesene Modelle (siehe unten) |
 | `relocate` | Wiederfinden, `endpoint` in Terminal-Antworten, `locate` für Drucker und Terminal |
 | `busy_lock` | Update-, Neustart- und Schlafsperre, `betrieb.lock`, `terminal_busy` |
 | `diagnosis` | `GET /v1/diagnosis` |
@@ -609,8 +609,9 @@ bekannt ist, sieht in `GET /v1/printers` aus wie in 1.4.2.
 
 **Nur bewiesene Modelle.** Regel des Inhabers: „es darf nicht kaputt gehen“
 geht vor Abdeckung. Alles, was vor einem Bon mit dem Drucker spricht – Papier
-und Deckel, `printer_not_ready`, die Kennungsprüfung – und der Statustakt
-laufen nur für Drucker, deren über `GS I 67` gelesenes Modell im Gerätetest
+und Deckel, `printer_not_ready`, die Kennungsprüfung –, das Warten auf das
+Ende der Druckverbindung (Reihenfolge) und der Statustakt laufen nur für
+Drucker, deren über `GS I 67` gelesenes Modell im Gerätetest
 bewiesen ist. Die Liste steht fest im Code (`bewieseneModelle` in
 `lib/src/printers/bewiesen.dart`, je Eintrag Gerät, Datum und was gemessen
 wurde); ein Modell kommt erst hinein, wenn es am Gerät alles bestanden hat:
@@ -620,7 +621,10 @@ Bewiesen ist bisher das **Epson TM-T20III** (Gerätetest 10. und 11.11.2026,
 Firmware 20.05, Netzwerk): `DLE EOT 2/4` antworten sofort; Deckel offen oder
 Rolle heraus: Verbindung angenommen, keine Antwort am Stück; nach dem
 Schließen antwortet er nach rund 3 s wieder; nach einem Bon von 8 KB schweigt
-er rund 0,5 s und antwortet nach 1,0 s, auch während er noch druckt. Die Liste
+er rund 0,5 s und antwortet nach 1,0 s, auch während er noch druckt. Er
+bedient nur eine Verbindung zugleich: weitere nimmt er an, beantwortet sie
+aber nicht, solange er die eine bedient (Gerätetest 12.11.2026, zwei Connect
+an einem Drucker). Die Liste
 wächst nur mit einer neuen Version. Jeder andere Drucker – auch jeder ePOS-Drucker –
 druckt exakt wie bis 1.4.2: keine Abfrage-Verbindung und kein ARP vor dem Bon,
 kein Takt, zwei Druckversuche. Die Not-Aus-Schalter (unten) gelten zusätzlich.
@@ -659,42 +663,61 @@ eine gemerkte MAC, siehe Wiederfinden),
 nichts tun. Richtet sie den Drucker unter derselben Adresse neu ein (`PUT`),
 verwirft Connect die alte Kennung sofort. Was sich nicht entscheiden lässt,
 ist unbekannt: gedruckt wird wie bisher. Die Druckverbindung trägt immer genau
-die Bytes der Kasse. Die Prüfungen kosten einen Bon höchstens 500 ms, bei
-einem Drucker, der schon einmal gültig auf `DLE EOT` geantwortet hat,
-höchstens 1,5 s (beides nur, wenn das Gerät schweigt). Ein Gerät, das nie
+die Bytes der Kasse. Die Prüfungen kosten einen Bon eine Abfrage-Verbindung
+mit einem Antwortfenster von 250 ms (nur, wenn das Gerät schweigt); mehr nur
+bei langsamem Verbindungsaufbau, höchstens 500 ms bzw. 1,5 s bei einem
+Drucker, der schon einmal gültig auf `DLE EOT` geantwortet hat. Ein Gerät, das nie
 gültig antwortet, wird danach 10 min nicht mehr gefragt. `printer_mismatch`
 gibt 1.5.0 nicht aus – ein Konflikt blockiert den Druck nie.
 
 **Papier und Deckel** (nur bewiesene Modelle). Vor jedem Bon `DLE EOT 2` und
 `DLE EOT 4`. Gezählt wird nur eine Antwort mit den festen Bits; blockiert wird
-nur bei Papierende (Rollensensor leer und Stopp wegen Papierende) oder offenem
-Deckel (`paper_out`, `cover_open`, kein Byte gesendet), „fast leer“ druckt.
-Ein Epson TM-T20III meldet beides nicht als Bits, sondern schweigt
-(Gerätetest). Hat ein Drucker schon einmal gültig auf `DLE EOT` geantwortet
-(`statusCapableAt` in der `config.json`), heißt Schweigen „nicht bereit“ –
-`printer_not_ready`, kein Byte gesendet – aber nur, wenn es nachgewiesen ist
-und schon **30 s lückenlos beobachtet** dauert: keine zwei stummen
-Beobachtungen liegen mehr als 10 s auseinander, und dazwischen kam keine
-gültige Antwort. Sobald ein solcher Drucker schweigt, fragt Connect alle 5 s
-nach (nur bewiesene Modelle, nur bei offener Kasse, nie an ein Gerät mit
-nachweislich anderer MAC, über die Warteschlange, nie neben einem eigenen
-Bon, ein Versuch mit 500 ms) – bis er antwortet, eine Nachfrage keine
-Verbindung bekommt oder die Kasse zu ist. Zwei Stichproben im Abstand
-des Takts, die zufällig beide einen Bon eines anderen Rechners treffen,
-ergeben so nie „nicht bereit“. Ein Drucker, der gerade den Bon eines anderen
-Rechners druckt, schweigt ebenfalls, aber nie so lange; bis dahin wird
-gedruckt wie bis 1.4.2.
-Nachgewiesen heißt: `DLE EOT` ging hinaus, das volle Antwortfenster (500 ms)
-verstrich bei offener Verbindung, die Verbindung stand schnell (höchstens
-200 ms), dort hängt derselbe Drucker (gleiche MAC oder Kennung in den letzten
-10 min bestätigt), und kein Bon aus diesem Connect druckt mehr (mindestens 3 s
-nach dem letzten Byte, länger bei großen Bons). Eine Neueinrichtung (`PUT`)
-setzt `statusCapableAt` zurück. Solange eine Kasse offen ist (gültiger Token in
-den letzten 2 min), fragt Connect die bewiesenen Drucker alle 60 s ab – ein
-Takt für alle Kassen, über die Warteschlange, nie neben einem Bon und nicht,
-solange ein Bon noch druckt. Ebenso fragt die Prüfung vor einem Bon nicht,
-solange der eigene vorige Bon noch druckt: Bons direkt hintereinander kosten
-keinen Zuschlag.
+nur bei gemeldetem Papierende (Rollensensor leer und Stopp wegen Papierende)
+oder offenem Deckel (`paper_out`, `cover_open`, kein Byte gesendet,
+`readiness: not_ready`), „fast leer“ druckt.
+
+**Schweigen ist nur ein Hinweis.** Ein Epson TM-T20III meldet Deckel und
+Papier nicht als Bits, sondern schweigt – genauso schweigt er aber, solange er
+einen anderen Rechner bedient (Gerätetest 12.11.2026). Schweigen hält deshalb
+nie einen Bon auf: der Bon geht wie bis 1.4.2 hinaus, und der Drucker druckt
+ihn, sobald der Deckel zu ist. `printer_not_ready` gibt es nur, wenn der
+Drucker selbst antwortet, dass er nicht bereit ist. Hat ein Drucker schon
+einmal gültig auf `DLE EOT` geantwortet (`statusCapableAt` in der
+`config.json`) und bleiben **zwei Abfragen in Folge** ohne gültige Antwort,
+heißt es `readiness: unknown` mit `readinessHint: "no_status_answer"` – die
+Kasse kann darauf hinweisen („Deckel und Papier prüfen“). Eine einzelne
+Abfrage ohne Antwort ändert nichts (kein Flackern), jede gültige Antwort
+beendet den Hinweis. Steht unter der Adresse nachweislich ein anderes Gerät
+(andere MAC), heißt es `unknown` ohne Hinweis. Abfragen, solange ein eigener
+Bon noch druckt (mindestens 3 s nach dem letzten Byte, länger bei großen
+Bons), zählen nicht. Eine Neueinrichtung (`PUT`) setzt `statusCapableAt`
+zurück.
+
+**Abfragen sind kurz und selten.** Jede Abfrage ist eine Verbindung mit einem
+Antwortfenster von 250 ms: der TM-T20III antwortet in Millisekunden, und
+solange eine Abfrage wartet, hält sie einen Drucker, der nur eine Verbindung
+zugleich bedient, für andere Rechner besetzt. Nach Schweigen fragt Connect
+nicht eigens nach. Solange eine Kasse offen ist (gültiger Token in den letzten
+2 min), fragt Connect die bewiesenen Drucker im Takt ab – alle 60 s plus ein
+zufälliger Zuschlag bis 15 s, damit zwei gleichzeitig gestartete Connect nicht
+dauerhaft im selben Augenblick fragen; ein Takt für alle Kassen, über die
+Warteschlange, nie neben einem Bon und nicht, solange ein eigener Bon noch
+druckt. Ebenso fragt die Prüfung vor einem Bon nicht, solange der eigene
+vorige Bon noch druckt: Bons direkt hintereinander kosten keinen Zuschlag.
+Auf Zuruf: `POST /v1/printers/{id}/status`.
+
+**Reihenfolge.** Bons eines Connect erreichen einen Drucker in der Reihenfolge,
+in der die Kasse sie schickt. `ok` heißt wie bis 1.4.2: Bytes hinausgeschrieben,
+Verbindung geschlossen – der Drucker hat sie damit noch nicht unbedingt
+gelesen. Hält ihn gerade ein anderer Rechner, liegt der Bon noch in der
+Leitung, und welche wartende Verbindung das Gerät danach zuerst bedient,
+sichert niemand zu (Gerätetest 12.11.2026: A2 vor A1). Bei einem bewiesenen
+Modell wartet die Warteschlange deshalb nach dem Bon, bis der Drucker die
+Verbindung seinerseits beendet hat, höchstens 3 s; erst dann geht der nächste
+Bon oder eine Abfrage an ihn. Die Kasse bekommt ihr `ok` trotzdem sofort.
+Beendet ein Drucker die Verbindung nie selbst (zweimal kein Ende, nie eines
+gesehen), wartet Connect bei ihm nicht mehr (bis zum Neustart). Jeder andere
+Drucker druckt wie bis 1.4.2.
 
 **Langsame Freigabe.** Manche Drucker nehmen nur eine Verbindung zugleich an
 und geben sie erst nach dem Schließen frei. Lehnt ein bewiesenes Modell die
@@ -709,7 +732,7 @@ Ab da gilt der Drucker als „gibt langsam frei“: keine Abfrage mehr vor seine
 Bons und kein Takt (bis zum Neustart von Connect).
 
 **Mehrere Kassen an einem Drucker.** Ein anderer Rechner kann ein bewiesenes
-Modell gerade abfragen (Takt, Nachfrage), und ein Drucker, der nur eine
+Modell gerade abfragen (Takt, Prüfung vor dem Bon), und ein Drucker, der nur eine
 Verbindung zugleich annimmt, lehnt dann ab. Lehnt ein statusfähiger Drucker
 die Abfrage vor dem Bon ab, obwohl dieser Rechner in den letzten 10 s mit ihm
 verbunden war, gilt er als belegt: dieselbe Wiederholung wie bei der langsamen
@@ -781,6 +804,7 @@ zeigen, was abgeschaltet ist.
 | `printer_relocate` | Wiederfinden der Drucker |
 | `terminal_relocate` | Umleiten und Wiederfinden des Terminals, `endpoint` |
 | `status_poll` | den 60-s-Takt bei offener Kasse |
+| `print_order` | das Warten auf das Ende der Druckverbindung (Reihenfolge) |
 | `sleep_lock` | die Schlafsperre |
 | `busy_lock` | Update- und Neustart-Sperre, `betrieb.lock`, `terminal_busy` |
 

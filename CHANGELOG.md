@@ -22,6 +22,14 @@ Felder, Routen und Codes sind additiv; die Kasse entscheidet an `features`.
   am Stück; nach dem Schließen antwortet er nach rund 3 s wieder; nach einem
   Bon von 8 KB schweigt er rund 0,5 s und antwortet nach 1,0 s, auch während
   er noch druckt.
+- **Gerätetest Hobex-Testterminal** (12.11.2026, HPS 1.14.4, Testsystem):
+  Terminal unter neuer Adresse über die TID gefunden; ein Aufruf an die alte
+  Adresse ging nach 10 s ohne Verbindung genau einmal an die bestätigte neue
+  (`endpoint.relocated: true`), auch mit führender Null in der TID; während
+  einer Zahlung `terminal_busy` für jeden zweiten Aufruf, Status frei;
+  `betrieb-abwarten` wartet und `caffeinate -w` hält den Mac nur während der
+  Zahlung wach; Abbruch vor dem Karteneinlesen und Aufhebung einer Zahlung
+  über Connect wie beschrieben.
 - **Installationskennung:** `installationId` (UUID v4) in `GET /v1/status`,
   auch ohne Token; zusätzlich in `installation-id`, damit ein Zurückstufen sie
   nicht verliert. Der Start scheitert nie an ihr.

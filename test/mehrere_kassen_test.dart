@@ -11,19 +11,18 @@ const String _mac = '00:26:ab:00:00:01';
 const String _serie = 'X5ZT000123';
 
 /// Zwei Rechner (A und B) an einem Drucker, der nur eine Verbindung zugleich
-/// annimmt. A fragt nach, weil der Drucker schweigt (er druckt gerade einen
+/// annimmt. A fragt den Drucker ab (Takt), der schweigt (er druckt gerade einen
 /// fremden Bon); genau dann druckt B. 1.4.2 hätte den Bon von B gedruckt –
-/// die Nachfrage von A darf ihn nicht verhindern.
+/// die Abfrage von A darf ihn nicht verhindern.
 void main() {
   late FakeTcpPrinter drucker;
   late DruckAufbau a;
   late DruckAufbau b;
-  late DruckerStatusDienst dienstA;
   final seit = DateTime.utc(2026, 11, 1);
 
   setUp(() async {
-    // Schweigt auf DLE EOT (druckt fremd): eine Nachfrage hält die
-    // Verbindung das volle Antwortfenster.
+    // Schweigt auf DLE EOT (druckt fremd): eine Abfrage hält die Verbindung
+    // das volle Antwortfenster.
     drucker = await FakeTcpPrinter.start()
       ..eineVerbindung = true;
     a = DruckAufbau.erstellen(verbinden: drucker.verbinden);
@@ -37,15 +36,6 @@ void main() {
         serial: _serie,
       );
     }
-    dienstA = DruckerStatusDienst(
-      registry: a.registry,
-      queue: a.queue,
-      abfrage: EscPosAbfrage(verbinden: drucker.verbinden),
-      kasseZuletzt: () => a.jetzt,
-      arp: a.arp,
-      schnittstellen: () async => a.schnittstellen,
-      clock: () => a.jetzt,
-    );
   });
 
   tearDown(() async {
@@ -54,12 +44,16 @@ void main() {
     await drucker.stop();
   });
 
-  /// A fragt nach (500 ms Antwortfenster, der Drucker schweigt) – liefert,
-  /// sobald die Verbindung von A steht.
-  Future<Future<bool>> nachfrageVonA(String id) async {
-    a.registry.lagen.von(id).ohneAntwort();
+  /// A fragt ab (eine Verbindung, Antwortfenster [handshakeFrist], der
+  /// Drucker schweigt) – liefert, sobald die Verbindung von A steht.
+  Future<Future<EscPosAntworten>> abfrageVonA(String id) async {
     final vorher = drucker.connections;
-    final lauf = dienstA.nachfrage(id);
+    final lauf = EscPosAbfrage(verbinden: drucker.verbinden).frage(
+      '127.0.0.1',
+      drucker.port,
+      fragen: const <EscPosFrage>{EscPosFrage.rollensensor},
+      budget: statusAbrufBudget,
+    );
     await warteBis(
       () async => drucker.connections > vorher,
       grund: 'Verbindung von A',
@@ -70,7 +64,7 @@ void main() {
   test('Sollte 1b: B ohne Kontakt, Abfrage abgelehnt (ohneVerbindung): der '
       'zweite Druckversuch nach der Pause druckt', () async {
     const id = 'p_ab12cd34';
-    final a1 = await nachfrageVonA(id);
+    final a1 = await abfrageVonA(id);
     final ergebnis = await b.drucke(id);
     expect(ergebnis.ok, isTrue, reason: '${ergebnis.code}');
     await a1;
@@ -91,7 +85,7 @@ void main() {
     );
     expect(b.registry.lagen.von(id).ebenVerbunden(), isFalse);
     expect(b.registry.lagen.von(id).kuerzlichVerbunden(), isTrue);
-    final a1 = await nachfrageVonA(id);
+    final a1 = await abfrageVonA(id);
     final ergebnis = await b.drucke(id);
     expect(ergebnis.ok, isTrue, reason: '${ergebnis.code}');
     await a1;
@@ -107,7 +101,7 @@ void main() {
     const id = 'p_ab12cd34';
     // Der vorige Bon von B druckt nach seiner Uhr noch: keine Abfrage.
     b.registry.lagen.von(id).druckGesendet(8000, b.jetzt);
-    final a1 = await nachfrageVonA(id);
+    final a1 = await abfrageVonA(id);
     final ergebnis = await b.drucke(id);
     expect(ergebnis.ok, isTrue, reason: '${ergebnis.code}');
     await a1;
@@ -118,11 +112,11 @@ void main() {
   test('ein nicht bewiesenes Modell wiederholt sofort wie bis 1.4.2', () async {
     await b.drucker(drucker.port, model: null);
     const id = 'p_ab12cd34';
-    final a1 = await nachfrageVonA(id);
+    final a1 = await abfrageVonA(id);
     final uhr = Stopwatch()..start();
     final ergebnis = await b.drucke(id);
     uhr.stop();
-    // A fragt nur bewiesene Modelle ab; hier hält die Verbindung der Test.
+    // Hier hält die Verbindung von A der Test.
     expect(ergebnis.code, errorPrinterOffline);
     expect(uhr.elapsed, lessThan(zweiterVersuchPause));
     await a1;

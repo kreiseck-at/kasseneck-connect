@@ -135,7 +135,6 @@ void main() {
       drucker.port,
       fragen: const <EscPosFrage>{EscPosFrage.rollensensor},
       budget: const Duration(seconds: 1),
-      handshake: bereitFrist,
       reserve: const Duration(milliseconds: 800),
     );
     expect(antworten.verbunden, isTrue);
@@ -223,80 +222,42 @@ void main() {
     expect(antworten.stumm, isFalse);
   });
 
-  test(
-    'die Reserve für den zweiten Versuch ist ein Aufbau plus ein Fenster',
-    () {
-      expect(zweiterVersuchReserve, bereitFrist + langsamerAufbau);
-    },
-  );
-
-  group('frageBereit', () {
-    test('beide Versuche schweigen: stumm, zwei Verbindungen', () async {
-      drucker = await FakeTcpPrinter.start();
-      final antworten = await geduldig.frageBereit(
-        '127.0.0.1',
-        drucker.port,
-        fragen: const <EscPosFrage>{EscPosFrage.rollensensor},
-        budget: const Duration(seconds: 5),
-      );
-      expect(antworten.stumm, isTrue);
-      await drucker.ruhigNachVerbindung();
-      expect(drucker.verbindungen, hasLength(2));
-    });
-
-    test(
-      'zweiter Versuch ohne volles Fenster: unbekannt statt stumm',
-      () async {
-        drucker = await FakeTcpPrinter.start();
-        var n = 0;
-        final abfrageZweiterLangsam = EscPosAbfrage(
-          verbinden: (host, port, {timeout}) async {
-            if (n++ > 0) {
-              await Future<void>.delayed(
-                langsamerAufbau + const Duration(milliseconds: 50),
-              );
-            }
-            return Socket.connect(host, port);
-          },
-        );
-        final antworten = await abfrageZweiterLangsam.frageBereit(
-          '127.0.0.1',
-          drucker.port,
-          fragen: const <EscPosFrage>{EscPosFrage.rollensensor},
-          budget: vorpruefungBudgetStatusfaehig,
-        );
-        expect(antworten.verbunden, isTrue);
-        expect(antworten.stumm, isFalse);
-      },
+  test('ein Gerät, das schweigt: eine Verbindung, nach dem Antwortfenster '
+      'zu – sie hält den Drucker nicht länger', () async {
+    drucker = await FakeTcpPrinter.start();
+    final uhr = Stopwatch()..start();
+    final antworten = await abfrage.frage(
+      '127.0.0.1',
+      drucker.port,
+      fragen: const <EscPosFrage>{EscPosFrage.rollensensor},
+      budget: const Duration(seconds: 2),
     );
+    expect(antworten.stumm, isTrue);
+    expect(uhr.elapsed, lessThan(handshakeFrist * 2));
+    await drucker.ruhigNachVerbindung();
+    final v = drucker.verbindungen.single;
+    expect(v.ende!.difference(v.beginn), lessThan(handshakeFrist * 2));
+  });
 
-    test('der erste Versuch lässt dem zweiten seine Zeit', () async {
-      drucker = await FakeTcpPrinter.start();
-      // Ein Budget, in das zwei volle Fenster nicht passen: der erste Versuch
-      // kürzt sein Fenster für die Reserve, sein Schweigen beweist nichts,
-      // und ein zweiter Versuch ist nicht mehr nötig.
-      final antworten = await abfrage.frageBereit(
-        '127.0.0.1',
-        drucker.port,
-        fragen: const <EscPosFrage>{EscPosFrage.rollensensor},
-        budget: zweiterVersuchReserve + bereitFrist ~/ 2,
-      );
-      expect(antworten.stumm, isFalse);
-      await drucker.ruhigNachVerbindung();
-      expect(drucker.verbindungen, hasLength(1));
-    });
-
-    test('antwortet der Drucker, bleibt es bei einer Verbindung', () async {
-      drucker = await FakeTcpPrinter.start(dleEot: gesund);
-      final antworten = await abfrage.frageBereit(
-        '127.0.0.1',
-        drucker.port,
-        fragen: const <EscPosFrage>{EscPosFrage.rollensensor},
-        budget: vorpruefungBudgetStatusfaehig,
-      );
-      expect(antworten.offlineGrund, 0x12);
-      expect(antworten.rollensensor, 0x12);
-      expect(drucker.verbindungen, hasLength(1));
-    });
+  test('die Verbindung ist nach dem Budget zu, auch mitten in einer '
+      'Antwort', () async {
+    // GS I antwortet nie vollständig: die Abfrage wartet bis zum Budget.
+    drucker = await FakeTcpPrinter.start(dleEot: gesund)
+      ..gsIRoh[68] = <int>[0x5F, 0x41];
+    const budget = Duration(milliseconds: 400);
+    final uhr = Stopwatch()..start();
+    await abfrage.frage(
+      '127.0.0.1',
+      drucker.port,
+      fragen: const <EscPosFrage>{EscPosFrage.seriennummer},
+      budget: budget,
+    );
+    expect(uhr.elapsed, lessThan(budget + const Duration(milliseconds: 150)));
+    await drucker.ruhigNachVerbindung();
+    final v = drucker.verbindungen.single;
+    expect(
+      v.ende!.difference(v.beginn),
+      lessThan(budget + const Duration(milliseconds: 150)),
+    );
   });
 }

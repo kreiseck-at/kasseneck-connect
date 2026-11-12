@@ -365,10 +365,13 @@ class PrintQueue {
   /// als bis 1.4.2.
   ///
   /// Bei einem bewiesenen Modell wartet auch sonst der zweite Versuch nach
-  /// einer Ablehnung [zweiterVersuchPause]: andere Rechner fragen
-  /// es im Takt und bei Schweigen alle 5 s ab, und ein sofortiger zweiter
-  /// Versuch träfe dieselbe Abfrage. Jeder andere Drucker wiederholt sofort
-  /// wie bis 1.4.2.
+  /// einer Ablehnung [zweiterVersuchPause]: andere Rechner fragen es im Takt
+  /// und vor ihren Bons ab, und ein sofortiger zweiter Versuch träfe dieselbe
+  /// Abfrage. Jeder andere Drucker wiederholt sofort wie bis 1.4.2.
+  ///
+  /// Gelingt der Druck an ein bewiesenes Modell, hält [lauf] das Ende der
+  /// Druckverbindung beim Gerät fest (`print_order`); die Kette wartet darauf,
+  /// die Kasse nicht.
   ///
   /// War der Drucker eben erreichbar ([AbfrageVerlauf.ebenErreichbar]) und
   /// lehnt er die Druckverbindung trotzdem ab, gibt er nur die vorige noch

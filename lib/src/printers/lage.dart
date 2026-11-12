@@ -36,10 +36,6 @@ Duration druckNachlauf(int bytes) =>
 /// ohnehin keinen Bon auf; der Hinweis soll nur zeigen, was anhält.
 const int ohneAntwortFuerHinweis = 2;
 
-/// Abstand der Nachfragen, solange ein statusfähiger Drucker nicht antwortet
-/// (über die Warteschlange, nie neben einem eigenen Bon).
-const Duration schweigenNachfrageAbstand = Duration(seconds: 5);
-
 /// So lange nach einer eigenen Verbindung gilt eine abgelehnte neue als
 /// „gibt noch nicht frei“ statt „aus“; ebenso lange wiederholt die
 /// Warteschlange die Druckverbindung dann in kurzen Schritten (es ging
@@ -51,7 +47,7 @@ const Duration freigabeSchritt = Duration(milliseconds: 250);
 
 /// So lange nach einem eigenen Kontakt (Bon, Abfrage) gilt eine abgelehnte
 /// Verbindung zu einem statusfähigen Drucker als „gerade belegt“ – etwa von
-/// der Nachfrage eines anderen Rechners – statt als „aus“: die Warteschlange
+/// der Abfrage eines anderen Rechners – statt als „aus“: die Warteschlange
 /// wiederholt dann wie bei [freigabeFenster], ohne den Drucker als „gibt
 /// langsam frei“ zu merken.
 const Duration kontaktFenster = Duration(seconds: 10);
@@ -80,7 +76,7 @@ const int endeVerpasstGrenze = 2;
 
 /// Pause vor dem zweiten Druckversuch, wenn der erste schnell abgelehnt
 /// wurde und ein anderer Rechner den Drucker gerade abfragen kann (eine
-/// Nachfrage hält die Verbindung höchstens rund 0,5 s).
+/// Abfrage hält die Verbindung höchstens rund 0,25 s, siehe `handshakeFrist`).
 const Duration zweiterVersuchPause = Duration(milliseconds: 600);
 
 /// Was eine Abfrage ohne gültige Antwort an einem statusfähigen Drucker am

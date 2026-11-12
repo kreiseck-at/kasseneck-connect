@@ -3,7 +3,6 @@ import 'dart:async';
 import 'package:kasseneck_connect/kasseneck_connect.dart';
 import 'package:test/test.dart';
 
-import 'support/agent_klient.dart';
 import 'support/druck_aufbau.dart';
 import 'support/fake_printer.dart';
 import 'support/virtuelles_netz.dart';
@@ -36,21 +35,17 @@ void main() {
   });
 
   /// Statusdienst wie im Agenten, mit der Uhr des Tests.
-  DruckerStatusDienst dienst({Duration? nachfrageAbstand}) =>
-      DruckerStatusDienst(
-        registry: a.registry,
-        queue: a.queue,
-        abfrage: EscPosAbfrage(aufbauGrenze: testAufbauGrenze),
-        kasseZuletzt: () => a.jetzt,
-        arp: a.arp,
-        schnittstellen: () async => a.schnittstellen,
-        clock: () => a.jetzt,
-        budget: testBudgetStatusfaehig,
-        abstand: const Duration(hours: 1),
-        nachfrageAbstand: nachfrageAbstand ?? schweigenNachfrageAbstand,
-        // Kürzeres Antwortfenster: der Fake antwortet sofort oder nie.
-        nachfrageFrist: const Duration(milliseconds: 150),
-      );
+  DruckerStatusDienst dienst() => DruckerStatusDienst(
+    registry: a.registry,
+    queue: a.queue,
+    abfrage: EscPosAbfrage(aufbauGrenze: testAufbauGrenze),
+    kasseZuletzt: () => a.jetzt,
+    arp: a.arp,
+    schnittstellen: () async => a.schnittstellen,
+    clock: () => a.jetzt,
+    budget: testBudgetStatusfaehig,
+    abstand: const Duration(hours: 1),
+  );
 
   Future<PrintResult> drucke(String id, {String jobId = 'beleg-1'}) async {
     final vorher = drucker.druckVerbindungen.length;
@@ -336,7 +331,7 @@ void main() {
       expect((await eintrag())['readiness'], 'ready');
       drucker.dleEot.clear();
       for (var i = 0; i < 8; i++) {
-        a.jetzt = a.jetzt.add(schweigenNachfrageAbstand);
+        a.jetzt = a.jetzt.add(const Duration(seconds: 5));
         await d.runde();
         final jetzt = await eintrag();
         expect(jetzt['readiness'], i == 0 ? 'ready' : 'unknown');
@@ -346,142 +341,11 @@ void main() {
       expect(a.registry.lagen.von(id).stumm(a.jetzt), isFalse);
 
       drucker.dleEot.addAll(_gesund);
-      a.jetzt = a.jetzt.add(schweigenNachfrageAbstand);
+      a.jetzt = a.jetzt.add(const Duration(seconds: 5));
       await d.runde();
       final zu = await eintrag();
       expect(zu['readiness'], 'ready');
       expect(zu.containsKey('readinessHint'), isFalse);
-    });
-
-    test('Nachfragen laufen von selbst, solange er schweigt (nur bei '
-        'laufendem Dienst), einzeln über die Warteschlange, und enden mit der '
-        'ersten Antwort', () async {
-      final id = await a.drucker(
-        drucker.port,
-        statusCapableAt: seit,
-        mac: _mac,
-      );
-      a.arpMac = _mac;
-      final d = dienst(nachfrageAbstand: const Duration(milliseconds: 30));
-      drucker.dleEot.clear();
-      // Ohne start(): keine Nachfrage.
-      await d.runde();
-      expect(d.verfolgt(id), isFalse);
-
-      d.start();
-      addTearDown(d.stop);
-      await d.runde();
-      expect(d.verfolgt(id), isTrue);
-      await warteBis(() async => d.nachfragen >= 2, grund: 'Nachfragen');
-      expect(drucker.hoechstAngenommen, 1, reason: 'nie zwei zugleich');
-      drucker.dleEot.addAll(_gesund);
-      await warteBis(
-        () async => !d.verfolgt(id),
-        grund: 'Ende nach der Antwort',
-      );
-      final danach = d.nachfragen;
-      await Future<void>.delayed(const Duration(milliseconds: 200));
-      expect(d.nachfragen, danach, reason: 'keine weitere Nachfrage');
-      expect((await a.registry.summaries()).single['readiness'], 'ready');
-    });
-
-    test('Sollte 2: unter der Adresse eine andere MAC – keine Nachfrage, '
-        'weder aus dem Takt noch vor dem Bon', () async {
-      final id = await a.drucker(
-        drucker.port,
-        statusCapableAt: seit,
-        mac: _mac,
-      );
-      a.arpMac = '00:26:ab:00:00:09'; // ein anderes Gerät
-      final d = dienst(nachfrageAbstand: const Duration(milliseconds: 30));
-      d.start();
-      addTearDown(d.stop);
-      drucker.dleEot.clear();
-      await d.runde();
-      expect(d.verfolgt(id), isFalse, reason: 'Takt');
-      final verbindungen = drucker.connections;
-      expect(await d.nachfrage(id), isFalse);
-      expect(drucker.connections, verbindungen, reason: 'kein Byte');
-
-      final angestossen = <String>[];
-      a.vorpruefung.beiSchweigen = angestossen.add;
-      a.jetzt = a.jetzt.add(const Duration(minutes: 1));
-      expect((await drucke(id)).ok, isTrue);
-      expect(angestossen, isEmpty, reason: 'vor dem Bon');
-
-      // Gegenprobe: dieselbe MAC – vor dem Bon angestoßen.
-      a.arpMac = _mac;
-      a.jetzt = a.jetzt.add(const Duration(minutes: 1));
-      expect((await drucke(id, jobId: 'beleg-2')).ok, isTrue);
-      expect(angestossen, <String>[id]);
-    });
-
-    test(
-      'nach stop() keine Nachfrage mehr – auch keine schon geplante',
-      () async {
-        final id = await a.drucker(
-          drucker.port,
-          statusCapableAt: seit,
-          mac: _mac,
-        );
-        a.arpMac = _mac;
-        final d = dienst(nachfrageAbstand: const Duration(milliseconds: 150));
-        d.start();
-        drucker.dleEot.clear();
-        await d.runde();
-        expect(d.verfolgt(id), isTrue, reason: 'Nachfrage geplant');
-        final verbindungen = drucker.connections;
-        await d.stop();
-        expect(d.verfolgt(id), isFalse);
-        await Future<void>.delayed(const Duration(milliseconds: 400));
-        expect(d.nachfragen, 0);
-        expect(drucker.connections, verbindungen);
-        // Auch ein neuer Anstoß plant nach dem Anhalten nichts.
-        d.schweigenVerfolgen(id);
-        expect(d.verfolgt(id), isFalse);
-      },
-    );
-
-    test('keine Nachfrage: Kasse zu, status_poll oder printer_status aus, '
-        'nicht bewiesenes Modell, eigener Bon druckt noch', () async {
-      final id = await a.drucker(
-        drucker.port,
-        statusCapableAt: seit,
-        mac: _mac,
-      );
-      a.arpMac = _mac;
-      var kasse = a.jetzt;
-      final d = DruckerStatusDienst(
-        registry: a.registry,
-        queue: a.queue,
-        abfrage: EscPosAbfrage(aufbauGrenze: testAufbauGrenze),
-        kasseZuletzt: () => kasse,
-        arp: a.arp,
-        schnittstellen: () async => a.schnittstellen,
-        clock: () => a.jetzt,
-        budget: testBudgetStatusfaehig,
-      );
-      drucker.dleEot.clear();
-      await d.runde();
-      final verbindungen = drucker.connections;
-
-      // Eigener Bon druckt: keine Abfrage, aber weiter verfolgen.
-      a.registry.lagen.von(id).druckGesendet(8000, a.jetzt);
-      expect(await d.nachfrage(id), isTrue);
-      expect(drucker.connections, verbindungen);
-      a.jetzt = a.jetzt.add(druckNachlauf(8000));
-
-      kasse = a.jetzt.subtract(const Duration(minutes: 3));
-      expect(await d.nachfrage(id), isFalse, reason: 'Kasse zu');
-      kasse = a.jetzt;
-      await a.abschalten(<Neuerung>[Neuerung.statusTakt]);
-      expect(await d.nachfrage(id), isFalse, reason: 'status_poll aus');
-      await a.abschalten(<Neuerung>[Neuerung.druckerStatus]);
-      expect(await d.nachfrage(id), isFalse, reason: 'printer_status aus');
-      await a.abschalten(const <Neuerung>[]);
-      await a.drucker(drucker.port, statusCapableAt: seit, model: 'TM-T88VI');
-      expect(await d.nachfrage(id), isFalse, reason: 'nicht bewiesen');
-      expect(drucker.connections, verbindungen);
     });
 
     test('nie geantwortet: die erste gültige Antwort im Takt macht '

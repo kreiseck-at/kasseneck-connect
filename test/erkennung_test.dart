@@ -171,14 +171,21 @@ void main() {
   });
 
   test('Verdrahtung S1: schweigt ein statusfähiger Drucker vor dem Bon, '
-      'verfolgt der Statusdienst das Schweigen', () async {
+      'geht der Bon wie 1.4.2 hinaus – ohne Nachfrage danach und ohne '
+      'Flackern', () async {
     final id = await anlegen();
     await warteBis(() async {
       final d = await gespeichert(id);
       return d.statusCapableAt != null &&
           d.modelSource == KennungsQuelle.escpos;
     }, grund: 'statusfähig und Modell gelesen');
-    expect(agent.druckerStatus.verfolgt(id), isFalse);
+    final status = await anAgent(
+      agent.port,
+      'POST',
+      '/v1/printers/$id/status',
+      token: token,
+    );
+    expect(status.ok, isTrue);
     drucker.dleEot.clear(); // Deckel auf
     final druck = await anAgent(
       agent.port,
@@ -191,8 +198,22 @@ void main() {
         'bytes': base64Encode(beispielBon),
       },
     );
-    expect(druck.ok, isTrue, reason: 'erstes Schweigen: wie 1.4.2');
-    expect(agent.druckerStatus.verfolgt(id), isTrue);
+    expect(druck.ok, isTrue, reason: 'Schweigen hält keinen Bon auf');
+    await drucker.warteAufDruck(0);
+    final verbindungen = drucker.connections;
+    await Future<void>.delayed(const Duration(milliseconds: 400));
+    expect(drucker.connections, verbindungen, reason: 'keine Nachfrage');
+    final liste = await anAgent(
+      agent.port,
+      'GET',
+      '/v1/printers?probe=0',
+      token: token,
+    );
+    final eintrag =
+        (liste.json['printers']! as List<Object?>).single
+            as Map<String, Object?>;
+    expect(eintrag['readiness'], 'ready', reason: 'eine ändert nichts');
+    expect(eintrag.containsKey('readinessHint'), isFalse);
   });
 
   test('PUT mit neuer Adresse verliert die Kennung', () async {

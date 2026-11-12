@@ -4,33 +4,24 @@ import 'dart:io';
 import 'escpos.dart';
 import 'tcp9100.dart' show SocketConnector;
 
-/// So lange wartet die Abfrage auf die erste Antwort (`DLE EOT 2`). Ein
+/// So lange wartet die Abfrage auf die erste Antwort (`DLE EOT 2`) – für
+/// jedes Gerät, auch für einen Drucker, der schon gültig geantwortet hat. Ein
 /// ESC/POS-Drucker beantwortet Echtzeitbefehle sofort, im LAN in wenigen
-/// Millisekunden, im WLAN selten über 100 ms. Was nach 250 ms nicht
-/// antwortet, gilt als stumm – und kostet den Bon nicht das ganze Budget.
+/// Millisekunden, im WLAN selten über 100 ms (Gerätetest TM-T20III: Antwort
+/// sofort). Was nach 250 ms nicht antwortet, gilt als stumm.
+///
+/// Warum nicht länger: Solange die Abfrage auf eine Antwort wartet, hält sie
+/// einen Drucker, der nur eine Verbindung zugleich bedient, für alle anderen
+/// Rechner besetzt (Gerätetest 12.11.2026). Eine zu kurze Frist kostet
+/// dagegen nichts: Schweigen hält keinen Bon auf und zeigt erst ab der
+/// zweiten Abfrage in Folge einen Hinweis.
 const Duration handshakeFrist = Duration(milliseconds: 250);
-
-/// So lange bekommt ein Drucker, der schon gültig auf `DLE EOT` geantwortet
-/// hat, für die Antwort. Gerätetest TM-T20III: Antwort in wenigen
-/// Millisekunden; mit offenem Deckel oder ohne Papier nimmt er die Verbindung
-/// an und schweigt. 500 ms trennen beides sicher.
-const Duration bereitFrist = Duration(milliseconds: 500);
-
-/// Versuche auf je neuer Verbindung, bevor ein statusfähiger Drucker als
-/// nicht bereit gilt. Der zweite fängt einen Drucker ab, der gerade erst
-/// wieder aufwacht.
-const int bereitVersuche = 2;
 
 /// Dauert der Verbindungsaufbau länger, ist das Netz langsam (verlorenes SYN,
 /// WLAN wacht auf), und Schweigen danach sagt nichts über Deckel und Papier:
 /// es gilt als unbekannt. Im LAN steht eine Verbindung in wenigen
 /// Millisekunden, im WLAN selten nach mehr als 50 ms.
 const Duration langsamerAufbau = Duration(milliseconds: 200);
-
-/// So viel Zeit hält der erste Versuch von [EscPosAbfrage.frageBereit] für den
-/// zweiten frei: ein Aufbau, der nicht langsam ist, und ein volles
-/// Antwortfenster.
-const Duration zweiterVersuchReserve = Duration(milliseconds: 700);
 
 /// Ein `GS I` ohne gültige Antwort zählt für die Kennung nur, wenn es
 /// mindestens so lange Zeit hatte (`EscPosAntworten.gsIOhneAntwortVoll`).
@@ -108,9 +99,8 @@ class EscPosAntworten {
 
   /// Das Gerät hat auf `DLE EOT 2` nachweislich geschwiegen: der Befehl ging
   /// hinaus, das volle Antwortfenster verstrich bei offener Verbindung, und
-  /// der Aufbau war nicht langsam ([langsamerAufbau]). Nur dann sagt Schweigen
-  /// etwas: ein Gerät, das kein ESC/POS spricht, bzw. ein statusfähiger
-  /// Drucker, der nicht bereit ist.
+  /// der Aufbau war nicht langsam ([langsamerAufbau]). Nur dann gilt ein Gerät,
+  /// das nie geantwortet hat, als stumm (kein ESC/POS).
   ///
   /// Alles andere ohne gültige Antwort – zu wenig Zeit, langsamer Aufbau,
   /// Gegenstelle schließt sofort – ist unbekannt (`stumm` `false`,
@@ -145,10 +135,10 @@ class EscPosAbfrage {
   /// Stellt [fragen] an [host]:[port]; alles zusammen höchstens [budget].
   ///
   /// [handshake] ist das Antwortfenster für `DLE EOT 2`. Es endet spätestens
-  /// [reserve] vor dem Ende des Budgets (Platz für einen weiteren Versuch);
-  /// wird es dadurch kürzer, kann Schweigen nicht mehr als `stumm` gelten.
-  /// Was bis dahin nicht gültig beantwortet ist, bleibt `null` (unbekannt).
-  /// Wirft nie.
+  /// [reserve] vor dem Ende des Budgets; wird es dadurch kürzer, kann
+  /// Schweigen nicht mehr als `stumm` gelten. Was bis dahin nicht gültig
+  /// beantwortet ist, bleibt `null` (unbekannt). Die Verbindung ist nach
+  /// höchstens [budget] zu, in jedem Fall. Wirft nie.
   Future<EscPosAntworten> frage(
     String host,
     int port, {
@@ -239,36 +229,10 @@ class EscPosAbfrage {
       // wurde auf dieser Verbindung ohnehin nichts.
       return const EscPosAntworten(verbunden: true);
     } finally {
-      await leser.schliessen();
+      // Erst zu, dann das Lesen beenden: die Verbindung hält einen Drucker,
+      // der nur eine zugleich bedient, keinen Augenblick länger als nötig.
       socket.destroy();
-    }
-  }
-
-  /// Fragt einen Drucker, der schon gültig geantwortet hat: je Versuch
-  /// [bereitFrist] auf die erste Antwort, bei Schweigen ein zweiter Versuch
-  /// auf neuer Verbindung (höchstens [bereitVersuche]).
-  ///
-  /// `stumm` (also „nicht bereit“) steht nur, wenn JEDER Versuch nachweislich
-  /// geschwiegen hat. Der erste hält dafür [zweiterVersuchReserve] frei; reicht
-  /// die Zeit trotzdem nicht, ist das Ergebnis unbekannt.
-  Future<EscPosAntworten> frageBereit(
-    String host,
-    int port, {
-    required Set<EscPosFrage> fragen,
-    required Duration budget,
-  }) async {
-    final uhr = Stopwatch()..start();
-    for (var versuch = 1; ; versuch++) {
-      final letzter = versuch >= bereitVersuche;
-      final antworten = await frage(
-        host,
-        port,
-        fragen: fragen,
-        budget: budget - uhr.elapsed,
-        handshake: bereitFrist,
-        reserve: letzter ? Duration.zero : bereitFrist + aufbauGrenze,
-      );
-      if (!antworten.stumm || letzter) return antworten;
+      unawaited(leser.schliessen());
     }
   }
 

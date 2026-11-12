@@ -23,10 +23,11 @@ import 'zustand.dart';
 /// `stummDauer`.
 const Duration vorpruefungBudget = Duration(milliseconds: 500);
 
-/// Zeitbudget der Prüfungen bei einem statusfähigen Drucker: zwei Versuche zu
-/// je `bereitFrist` samt Verbindungsaufbau und Seriennummer. Ein bereiter
-/// Drucker antwortet in Millisekunden; die 1,5 s zahlt nur einer, der schweigt
-/// (Vorgabe nach dem Gerätetest: höchstens 1,5 s, nur in diesem Fehlerfall).
+/// Zeitbudget der Prüfungen bei einem statusfähigen Drucker: MAC,
+/// Verbindungsaufbau, ein Antwortfenster ([handshakeFrist]) und Seriennummer.
+/// Ein bereiter Drucker antwortet in Millisekunden; ein schweigender kostet
+/// das Antwortfenster (250 ms), mehr nur ein langsamer Verbindungsaufbau
+/// (höchstens 1,5 s, Vorgabe nach dem Gerätetest).
 const Duration vorpruefungBudgetStatusfaehig = Duration(milliseconds: 1500);
 
 /// Nach einem Kennungskonflikt ohne Fund sucht Connect so lange nicht erneut
@@ -67,7 +68,7 @@ enum AbfrageVerlauf {
 
   /// Ein statusfähiger Drucker lehnte sie ab, obwohl dieser Rechner in den
   /// letzten [kontaktFenster] mit ihm verbunden war: er ist da und gerade
-  /// belegt, etwa von der Nachfrage eines anderen Rechners. Die Warteschlange
+  /// belegt, etwa von der Abfrage eines anderen Rechners. Die Warteschlange
   /// wiederholt die Druckverbindung wie bei [ebenErreichbar], merkt ihn aber
   /// nicht als „gibt langsam frei“.
   kurzBelegt,
@@ -143,17 +144,10 @@ class DruckVorpruefung {
   /// Übernahme der Kennung nach einem dauerhaften Konflikt (`null`: keine).
   DauerhafterKonflikt? beiDauerhaftemKonflikt;
 
-  /// Wird mit der Drucker-ID gerufen, wenn ein statusfähiger Drucker vor
-  /// einem Bon nicht antwortet (der Statusdienst fragt dann nach, siehe
-  /// [schweigenNachfrageAbstand]). Darf nicht warten lassen und nicht
-  /// werfen.
-  void Function(String printerId)? beiSchweigen;
-
   /// Zeitbudget der Prüfungen (ohne Wiederfinden).
   final Duration budget;
 
-  /// Zeitbudget bei einem statusfähigen Drucker (zwei Versuche, wenn er
-  /// schweigt).
+  /// Zeitbudget bei einem statusfähigen Drucker.
   final Duration budgetStatusfaehig;
 
   ConfigStore get _store => registry.store;
@@ -230,9 +224,10 @@ class DruckVorpruefung {
           antworten = null;
         } else if (statusfaehig) {
           // Ein Drucker, der schon gültig geantwortet hat, wird immer
-          // gefragt: Papier und Deckel; schweigt er, ist das nur ein Hinweis
-          // (Gerätetest TM-T20III).
-          antworten = await _abfrage.frageBereit(
+          // gefragt: Papier und Deckel. Ein Versuch, ein kurzes
+          // Antwortfenster – schweigt er, ist das nur ein Hinweis
+          // (Gerätetest TM-T20III), und der Bon geht wie bis 1.4.2.
+          antworten = await _abfrage.frage(
             drucker.host,
             drucker.port,
             fragen: fragen,
@@ -256,7 +251,7 @@ class DruckVorpruefung {
               (lage.druckt(jetzt) || lage.ebenVerbunden());
           if (ebenDa) _langsameFreigabe(drucker, lage);
           // Abgelehnt kurz nach eigenem Kontakt: belegt, nicht aus (mehrere
-          // Kassen, ein Drucker – die Nachfrage eines anderen Rechners).
+          // Kassen, ein Drucker – die Abfrage eines anderen Rechners).
           final belegt =
               !antworten.verbunden &&
               !ebenDa &&
@@ -362,9 +357,6 @@ class DruckVorpruefung {
       // Bons zählt es nicht.
       if (lage.druckt(jetzt)) return null;
       lage.ohneAntwort();
-      // Nachgefragt wird nur bei einem Gerät, das nicht nachweislich ein
-      // anderes ist: ein fremdes Gerät bekommt keine Bytes.
-      if (mac != MacVergleich.anders) beiSchweigen?.call(drucker.id);
       return zustandOhneAntwort(lage, mac);
     }
     lage.antwortet();

@@ -137,9 +137,11 @@ class PrinterConfig {
   final KennungsQuelle? identitySource;
 
   /// Seit wann der Drucker nachweislich auf `DLE EOT` antwortet. Schweigt ein
-  /// solcher Drucker, ist er nicht bereit (Gerätetest TM-T20III: mit offenem
-  /// Deckel oder ohne Papier beantwortet er `DLE EOT` gar nicht) – bei einem,
-  /// der nie geantwortet hat, heißt Schweigen nur „unbekannt“.
+  /// solcher Drucker mehrmals in Folge, zeigt er den Hinweis
+  /// `no_status_answer` (Gerätetest TM-T20III: mit offenem Deckel oder ohne
+  /// Papier beantwortet er `DLE EOT` gar nicht – ebenso, solange er einen
+  /// anderen Rechner bedient); einen Bon hält das nie auf. Bei einem, der nie
+  /// geantwortet hat, heißt Schweigen nur „unbekannt“.
   final DateTime? statusCapableAt;
 
   /// Wann das Gerät zum zweiten Mal (frühestens

@@ -388,20 +388,15 @@ class Agent {
     queue
       ..vorgaenge = vorgaenge
       ..wiederfinder = wiederfinder
-      ..vorpruefung =
-          (DruckVorpruefung(
-              registry: registry,
-              abfrage: abfrage,
-              arp: arp,
-              schnittstellen: _schnittstellen,
-              log: log,
-              clock: _clock,
-              schnellesWiederfinden: wiederfinder.schnell,
-            )
-            ..beiDauerhaftemKonflikt = kennung.ersetzen
-            // Schweigt ein statusfähiger Drucker vor einem Bon, beobachtet der
-            // Statusdienst das Schweigen lückenlos weiter (Nachfragen).
-            ..beiSchweigen = status.schweigenVerfolgen);
+      ..vorpruefung = (DruckVorpruefung(
+        registry: registry,
+        abfrage: abfrage,
+        arp: arp,
+        schnittstellen: _schnittstellen,
+        log: log,
+        clock: _clock,
+        schnellesWiederfinden: wiederfinder.schnell,
+      )..beiDauerhaftemKonflikt = kennung.ersetzen);
 
     // Die Brücke steht ab hier, Bluetooth selbst startet erst mit dem ersten
     // Gerätezugriff bzw. der ersten Suche: der Start des Agenten (Anmeldung,

@@ -47,7 +47,9 @@ const List<BewiesenesModell> bewieseneModelle = <BewiesenesModell>[
         'Deckel offen und Rolle heraus: Verbindung angenommen, keine Antwort '
         'am Stück (10.11. und 11.11.2026); nach dem Schließen antwortet er '
         'nach rund 3 s wieder; nach einem Bon von 8 KB schweigt er rund '
-        '0,5 s und antwortet nach 1,0 s – weit unter schweigenMindestdauer.',
+        '0,5 s und antwortet nach 1,0 s. Zwei Connect an einem Drucker '
+        '(12.11.2026): er bedient nur eine Verbindung zugleich, nimmt weitere '
+        'an und schweigt auf sie, solange er die eine bedient.',
   ),
 ];
 

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:kasseneck_connect/kasseneck_connect.dart';
@@ -35,6 +36,8 @@ String nameVon(List<int> bytes) =>
 /// * „Deckel offen“: `printer_not_ready` statt eines gedruckten Bons.
 /// * „kein Flackern“: readiness fiel nach einer einzigen stummen Abfrage auf
 ///   `unknown`.
+/// * „eine Runde“: zwei Verbindungen je Runde zu je rund 500 ms.
+/// * „Takt nach eigenem Bon“: der Takt fragte direkt nach dem Bon.
 /// * „zwei Connect“: `readinessHint` fehlte (Hinweis nie erfüllt).
 void main() {
   late FakeEinzelDrucker fake;
@@ -264,6 +267,79 @@ void main() {
       jetzt = await eintrag(a);
       expect(jetzt['readiness'], 'unknown');
       expect(jetzt['readinessHint'], 'no_status_answer');
+    });
+  });
+
+  group('Abfragen belegen den Drucker nicht', () {
+    test(
+      'eine Runde: eine kurze Verbindung, und keine Nachfrage von selbst',
+      () async {
+        final d = dienst(a)..start();
+        addTearDown(d.stop);
+        await d.runde();
+        fake.deckelAuf();
+        final vorher = fake.verbindungen.length;
+        a.jetzt = a.jetzt.add(const Duration(minutes: 1));
+        await d.runde();
+        await fake.warteBisRuhig();
+        final neu = fake.verbindungen.sublist(vorher);
+        expect(neu, hasLength(1), reason: 'ein Versuch je Runde');
+        expect(
+          neu.single.gehalten,
+          lessThan(const Duration(milliseconds: 480)),
+          reason: 'kurzes Antwortfenster',
+        );
+        // 1.5.0 fragte bei Schweigen alle 5 s nach.
+        await Future<void>.delayed(const Duration(seconds: 6));
+        expect(fake.verbindungen, hasLength(vorher + 1));
+      },
+    );
+
+    test('der Takt fragt nicht, wenn vor ihm ein eigener Bon in der '
+        'Warteschlange stand', () async {
+      final d = dienst(a);
+      final druck = a.queue.enqueue(id, 'A1', bon('A1'));
+      final runde = d.runde();
+      expect((await druck).ok, isTrue);
+      await runde;
+      await fake.warteAufBons(1);
+      expect(fake.abfragen, hasLength(1), reason: 'nur die vor dem Bon');
+    });
+
+    test('der Takt streut: zwei Connect, die zugleich starten, fragen nicht '
+        'dauerhaft im selben Augenblick', () {
+      DruckerStatusDienst mitZufall(int saat) => DruckerStatusDienst(
+        registry: a.registry,
+        queue: a.queue,
+        abfrage: EscPosAbfrage(),
+        kasseZuletzt: () => a.jetzt,
+        random: Random(saat),
+      );
+      final x = mitZufall(1);
+      final y = mitZufall(2);
+      expect(x.streuung, const Duration(seconds: 15));
+      final xs = List<Duration>.generate(20, (_) => x.naechsterAbstand());
+      final ys = List<Duration>.generate(20, (_) => y.naechsterAbstand());
+      for (final d in <Duration>[...xs, ...ys]) {
+        expect(d, greaterThanOrEqualTo(statusTaktAbstand));
+        expect(d, lessThan(statusTaktAbstand + x.streuung));
+      }
+      expect(xs.toSet(), hasLength(greaterThan(1)));
+      // Aufsummiert laufen die beiden Takte auseinander.
+      var vorsprung = Duration.zero;
+      for (var i = 0; i < 20; i++) {
+        vorsprung += xs[i] - ys[i];
+      }
+      expect(vorsprung, isNot(Duration.zero));
+      // Ohne Streuung genau der Abstand.
+      final fest = DruckerStatusDienst(
+        registry: a.registry,
+        queue: a.queue,
+        abfrage: EscPosAbfrage(),
+        kasseZuletzt: () => a.jetzt,
+        streuung: Duration.zero,
+      );
+      expect(fest.naechsterAbstand(), statusTaktAbstand);
     });
   });
 

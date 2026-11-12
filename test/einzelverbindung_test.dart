@@ -190,6 +190,22 @@ void main() {
       expect(fake.bons.map(nameVon), <String>['A1', 'A2', 'A3', 'A4']);
     });
 
+    test('die eigene Verbindung gilt erst ab ihrem Ende als zu (Freigabe '
+        'zählt ab dort)', () async {
+      final lang = DruckAufbau.erstellen(
+        verbinden: fake.verbinden,
+        endeFrist: const Duration(seconds: 6),
+      );
+      addTearDown(lang.aufraeumen);
+      await einrichten(lang);
+      await fake.fremdBelegen(freigabeFenster + const Duration(seconds: 1));
+      expect((await lang.queue.enqueue(id, 'A1', bon('A1'))).ok, isTrue);
+      await lang.queue.exclusive(id, () async {});
+      // Länger als das Freigabefenster nach dem Senden, aber eben zu.
+      expect(lang.registry.lagen.von(id).endeGesehen, isTrue);
+      expect(lang.registry.lagen.von(id).ebenVerbunden(), isTrue);
+    });
+
     test('Ende vom Drucker gesehen: es bleibt beim Abwarten', () async {
       for (final name in <String>['A1', 'A2']) {
         expect((await a.queue.enqueue(id, name, bon(name))).ok, isTrue);

@@ -282,7 +282,8 @@ class PrintQueue {
     } on Object {
       beendet = false;
     }
-    final lage = registry.lagen.von(printerId);
+    // Erst jetzt ist die eigene Verbindung zu: ab hier zählt die Freigabe.
+    final lage = registry.lagen.von(printerId)..verbunden();
     if (beendet) {
       lage.endeGesehen = true;
       return;

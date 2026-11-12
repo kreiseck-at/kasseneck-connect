@@ -295,7 +295,7 @@ WebSocket-Upgrade).
 | POST | `/v1/pair` | `{code}` → `{token}` |
 | POST | `/v1/pair/request` | Kopplung anstoßen: neuer Code, Kopplungsseite geht lokal im Browser auf → `{ok}` (nie der Code) |
 | DELETE | `/v1/pair` | den mitgeschickten Token zurückziehen |
-| GET | `/v1/printers` | konfigurierte Drucker samt Zustand (`?probe=0` fragt die Geräte nicht an) |
+| GET | `/v1/printers` | konfigurierte Drucker samt Zustand (`?probe=0` fragt die Geräte nicht an; ab 1.5.0 bekommt ein bewiesenes Modell, mit dem Connect in den letzten 10 s erfolgreich verbunden war, keine weitere Verbindung) |
 | PUT | `/v1/printers` | anlegen — `{name, kind, host, port?, devid?}`, die ID vergibt der Agent |
 | PUT | `/v1/printers/neu` | dasselbe für Kassen, die im Pfad eine ID brauchen |
 | PUT | `/v1/printers/{id}` | anlegen oder ändern |
@@ -664,9 +664,9 @@ nichts tun. Richtet sie den Drucker unter derselben Adresse neu ein (`PUT`),
 verwirft Connect die alte Kennung sofort. Was sich nicht entscheiden lässt,
 ist unbekannt: gedruckt wird wie bisher. Die Druckverbindung trägt immer genau
 die Bytes der Kasse. Die Prüfungen kosten einen Bon eine Abfrage-Verbindung
-mit einem Antwortfenster von 250 ms (nur, wenn das Gerät schweigt); mehr nur
-bei langsamem Verbindungsaufbau, höchstens 500 ms bzw. 1,5 s bei einem
-Drucker, der schon einmal gültig auf `DLE EOT` geantwortet hat. Ein Gerät, das nie
+mit einem Antwortfenster von 250 ms, bei einem Drucker, der schon einmal
+gültig auf `DLE EOT` geantwortet hat, von 1 s (beides nur, wenn das Gerät
+schweigt); insgesamt höchstens 500 ms bzw. 1,5 s. Ein Gerät, das nie
 gültig antwortet, wird danach 10 min nicht mehr gefragt. `printer_mismatch`
 gibt 1.5.0 nicht aus – ein Konflikt blockiert den Druck nie.
 
@@ -693,10 +693,17 @@ Bon noch druckt (mindestens 3 s nach dem letzten Byte, länger bei großen
 Bons), zählen nicht. Eine Neueinrichtung (`PUT`) setzt `statusCapableAt`
 zurück.
 
-**Abfragen sind kurz und selten.** Jede Abfrage ist eine Verbindung mit einem
-Antwortfenster von 250 ms: der TM-T20III antwortet in Millisekunden, und
-solange eine Abfrage wartet, hält sie einen Drucker, der nur eine Verbindung
-zugleich bedient, für andere Rechner besetzt. Nach Schweigen fragt Connect
+**Abfragen sind kurz und selten.** Jede Abfrage ist eine Verbindung. Ein
+Drucker, der schon einmal gültig geantwortet hat, bekommt 1 s für die Antwort:
+der TM-T20III antwortet in 15–115 ms, aber erst, wenn er die Verbindung
+bedient – und nach dem Ende jeder Verbindung (auch einer, die sofort schließt)
+bedient er die nächste erst nach rund 0,5 s (Gerätetest 12.11.2026). Länger
+als bis zur Antwort hält eine Abfrage ihn nur, wenn er schweigt. Jedes andere
+Gerät bekommt 250 ms. `GET /v1/printers` öffnet zu einem bewiesenen Modell
+keine Verbindung, wenn Connect in den letzten 10 s erfolgreich mit ihm
+verbunden war (Bon, Takt, Prüfung, Probe): eine Kasse, die die Liste jede
+Sekunde abruft, hielte den Drucker sonst mit diesen Proben belegt
+(abschaltbar mit `printer_status`). Nach Schweigen fragt Connect
 nicht eigens nach. Solange eine Kasse offen ist (gültiger Token in den letzten
 2 min), fragt Connect die bewiesenen Drucker im Takt ab – alle 60 s plus ein
 zufälliger Zuschlag bis 15 s, damit zwei gleichzeitig gestartete Connect nicht

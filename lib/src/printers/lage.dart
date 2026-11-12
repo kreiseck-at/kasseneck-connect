@@ -76,7 +76,7 @@ const int endeVerpasstGrenze = 2;
 
 /// Pause vor dem zweiten Druckversuch, wenn der erste schnell abgelehnt
 /// wurde und ein anderer Rechner den Drucker gerade abfragen kann (eine
-/// Abfrage hält die Verbindung höchstens rund 0,25 s, siehe `handshakeFrist`).
+/// Abfrage eines bereiten Druckers hält die Verbindung nur Millisekunden).
 const Duration zweiterVersuchPause = Duration(milliseconds: 600);
 
 /// Was eine Abfrage ohne gültige Antwort an einem statusfähigen Drucker am

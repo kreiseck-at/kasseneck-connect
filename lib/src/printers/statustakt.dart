@@ -49,12 +49,14 @@ const int verfehltBisSuche = 2;
 /// Kassen offen sind.
 ///
 /// Eine Abfrage ist kurz: eine Verbindung, ein Antwortfenster von
-/// [handshakeFrist]. Schweigt ein Drucker, fragt Connect nicht eigens nach –
-/// Schweigen hält keinen Bon auf, und jede Nachfrage hielte einen Drucker, der
-/// nur eine Verbindung zugleich bedient, für andere Rechner besetzt
-/// (Gerätetest 12.11.2026: zwei Connect, die einander alle 5 s nachfragten,
-/// hielten den TM-T20III minutenlang stumm). Der nächste Takt, der nächste Bon
-/// oder eine Abfrage auf Zuruf sehen, wann er wieder antwortet.
+/// [bereitFrist] (ein bereiter Drucker antwortet, sobald er die Verbindung
+/// bedient, in Millisekunden). Schweigt ein Drucker, fragt Connect nicht
+/// eigens nach – Schweigen hält keinen Bon auf, und jede Nachfrage hielte
+/// einen Drucker, der nur eine Verbindung zugleich bedient, für andere
+/// Rechner besetzt (Gerätetest 12.11.2026: zwei Connect, die einander alle
+/// 5 s nachfragten, hielten den TM-T20III minutenlang stumm). Der nächste
+/// Takt, der nächste Bon oder eine Abfrage auf Zuruf sehen, wann er wieder
+/// antwortet.
 class DruckerStatusDienst {
   DruckerStatusDienst({
     required this.registry,
@@ -252,13 +254,15 @@ class DruckerStatusDienst {
         if (!statusfaehig && lage.stumm(jetzt)) {
           return _nurErreichbar(drucker);
         }
-        // Ein Versuch, ein kurzes Antwortfenster – auch bei einem Drucker,
-        // der schon geantwortet hat: Schweigen ist nur ein Hinweis.
+        // Ein Versuch. Ein Drucker, der schon geantwortet hat, bekommt
+        // [bereitFrist]: er bedient eine neue Verbindung erst rund 0,5 s nach
+        // dem Ende der vorigen. Schweigen ist ohnehin nur ein Hinweis.
         final antworten = await _abfrage.frage(
           drucker.host,
           drucker.port,
           fragen: const <EscPosFrage>{EscPosFrage.rollensensor},
           budget: budget,
+          handshake: statusfaehig ? bereitFrist : handshakeFrist,
         );
         if (!antworten.verbunden) {
           // Abgelehnt direkt nach einer eigenen Verbindung: der Drucker gibt

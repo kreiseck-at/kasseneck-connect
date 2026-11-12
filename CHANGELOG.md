@@ -39,9 +39,15 @@ Felder, Routen und Codes sind additiv; die Kasse entscheidet an `features`.
   und neu `readinessHint: "no_status_answer"`; eine einzelne ändert nichts
   (kein Flackern), jede gültige Antwort beendet den Hinweis.
 - **Abfragen kurz und selten:** keine Nachfragen mehr nach Schweigen (bisher
-  alle 5 s); jede Abfrage eine Verbindung mit 250 ms Antwortfenster (bisher
-  zwei zu je 500 ms); Takt 60 s plus zufällig bis 15 s; der Takt fragt nicht,
-  wenn ein eigener Bon vor ihm in der Warteschlange stand.
+  alle 5 s); jede Abfrage eine Verbindung (bisher zwei), Antwortfenster 1 s
+  bei einem Drucker mit `statusCapableAt`, sonst 250 ms; Takt 60 s plus
+  zufällig bis 15 s; der Takt fragt nicht, wenn ein eigener Bon vor ihm in
+  der Warteschlange stand. `GET /v1/printers` öffnet zu einem bewiesenen
+  Modell, mit dem Connect in den letzten 10 s erfolgreich verbunden war, keine
+  Verbindung. Gerätetest 12.11.2026 abends (zwei Connect, Kasse ruft die
+  Liste jede Sekunde ab): der TM-T20III bedient eine neue Verbindung erst rund
+  0,5 s nach dem Ende der vorigen – mit 250 ms und einer Probe je Abruf zeigte
+  ein Connect den Hinweis fast dauernd, obwohl der Drucker bereit war.
 - **Reihenfolge je Drucker** (`print_order`): bei einem bewiesenen Modell geht
   der nächste Bon (oder eine Abfrage) erst an den Drucker, wenn dieser die
   vorige Druckverbindung beendet hat, höchstens 3 s; `ok` kommt wie bis 1.4.2

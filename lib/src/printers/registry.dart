@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:math';
 
 import '../config/model.dart';
+import '../config/neuerungen.dart';
 import '../config/store.dart';
 import '../events/bus.dart';
 import '../log/logger.dart';
@@ -378,14 +379,34 @@ class PrinterRegistry {
   /// Drucker samt Zustand für `GET /v1/printers` und die Langform des Status.
   ///
   /// [probe] fragt die Geräte parallel ab; ohne [probe] kommt der zuletzt
-  /// bekannte Zustand — der Status soll niemals auf Netzwerk warten.
+  /// bekannte Zustand — der Status soll niemals auf Netzwerk warten. Ein
+  /// bewiesenes Modell, das eben erreichbar war ([ebenErreicht]), bekommt
+  /// dabei keine weitere Verbindung (abschaltbar mit `printer_status`).
   Future<List<Map<String, Object?>>> summaries({bool probe = false}) async {
-    final printers = await list();
+    final config = await store.load();
+    final printers = config.printers;
     if (probe) {
-      await Future.wait(printers.map(_probe));
+      final schonen = config.aktiv(Neuerung.druckerStatus);
+      await Future.wait(printers.map((p) => _probe(p, schonen: schonen)));
     }
     return printers.map(zusammenfassung).toList();
   }
+
+  /// Ob [printer] ein bewiesenes Modell ist, mit dem dieser Connect in den
+  /// letzten [kontaktFenster] erfolgreich verbunden war (Bon, Takt, Prüfung
+  /// vor dem Bon, Probe): dann ist sein Zustand frisch, und die
+  /// Erreichbarkeitsprobe von `GET /v1/printers` entfällt.
+  ///
+  /// Warum: Jede Verbindung – auch eine, die sofort wieder schließt – kostet
+  /// einen TM-T20III rund 0,5 s, bevor er die nächste bedient (Gerätetest
+  /// 12.11.2026). Rief die Kasse `GET /v1/printers` jede Sekunde, war der
+  /// Drucker mit zwei Connect fast dauernd mit diesen Proben belegt, und
+  /// die Statusabfragen beider blieben ohne Antwort. War der letzte Kontakt
+  /// nicht erfolgreich, wird geprobt wie bis 1.4.2.
+  bool ebenErreicht(PrinterConfig printer) =>
+      pruefbar(printer) &&
+      stateOf(printer.id) == PrinterState.online &&
+      (lagen.vorhanden(printer.id)?.kuerzlichVerbunden() ?? false);
 
   /// Ein Drucker für die API: die Felder aus 1.4.2 (`toApiJson`, `state`),
   /// dazu ab 1.5.0 `paper`, `cover`, `statusAt` und `identity`.
@@ -413,12 +434,17 @@ class PrinterRegistry {
     };
   }
 
-  Future<void> _probe(PrinterConfig printer) async {
+  Future<void> _probe(PrinterConfig printer, {bool schonen = false}) async {
+    if (schonen && ebenErreicht(printer)) return;
     try {
       final state = await driverFor(printer)
           .status(timeout: probeTimeout)
           .timeout(probeTimeout, onTimeout: () => PrinterState.offline);
       noteState(printer.id, state);
+      // Auch diese Probe ist eine eigene Verbindung zum Drucker.
+      if (schonen && state == PrinterState.online && pruefbar(printer)) {
+        lagen.von(printer.id).verbunden();
+      }
     } on Object catch (e) {
       _log?.warn('Zustand von ${printer.id} nicht ermittelbar: $e');
       noteState(printer.id, PrinterState.offline);

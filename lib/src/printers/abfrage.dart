@@ -4,18 +4,30 @@ import 'dart:io';
 import 'escpos.dart';
 import 'tcp9100.dart' show SocketConnector;
 
-/// So lange wartet die Abfrage auf die erste Antwort (`DLE EOT 2`) – für
-/// jedes Gerät, auch für einen Drucker, der schon gültig geantwortet hat. Ein
-/// ESC/POS-Drucker beantwortet Echtzeitbefehle sofort, im LAN in wenigen
-/// Millisekunden, im WLAN selten über 100 ms (Gerätetest TM-T20III: Antwort
-/// sofort). Was nach 250 ms nicht antwortet, gilt als stumm.
-///
-/// Warum nicht länger: Solange die Abfrage auf eine Antwort wartet, hält sie
-/// einen Drucker, der nur eine Verbindung zugleich bedient, für alle anderen
-/// Rechner besetzt (Gerätetest 12.11.2026). Eine zu kurze Frist kostet
-/// dagegen nichts: Schweigen hält keinen Bon auf und zeigt erst ab der
-/// zweiten Abfrage in Folge einen Hinweis.
+/// So lange wartet die Abfrage auf die erste Antwort (`DLE EOT 2`) bei einem
+/// Gerät, das noch nie gültig geantwortet hat. Ein ESC/POS-Drucker
+/// beantwortet Echtzeitbefehle sofort, im LAN in wenigen Millisekunden, im
+/// WLAN selten über 100 ms. Was nach 250 ms nicht antwortet, gilt als stumm –
+/// und kostet den Bon nicht das ganze Budget.
 const Duration handshakeFrist = Duration(milliseconds: 250);
+
+/// So lange bekommt ein Drucker, der schon gültig auf `DLE EOT` geantwortet
+/// hat (`statusCapableAt`), für die Antwort – im Takt, vor dem Bon und auf
+/// Zuruf.
+///
+/// Gerätetest 12.11.2026 (TM-T20III, WLAN, nur Abfragen): Er antwortet in
+/// 15–115 ms, aber erst, wenn er die Verbindung bedient – und nach dem Ende
+/// JEDER Verbindung bedient er die nächste erst nach rund 0,5 s, auch nach
+/// einer, die sofort wieder schließt (die Erreichbarkeitsprobe von
+/// `GET /v1/printers`). Gemessen: Antwort nach 450–860 ms, wenn die vorige
+/// Verbindung eben zu ging, 250–300 ms nach 200 ms Pause, nach zwei solchen
+/// 0,65–1,4 s. Mit 250 ms blieb deshalb jede Abfrage kurz nach eigenem oder
+/// fremdem Kontakt ohne Antwort; zwei Connect, deren Kasse
+/// `GET /v1/printers` jede Sekunde rief, zeigten den Hinweis fast dauernd.
+/// Eine Sekunde deckt eine vorige Verbindung samt Antwort. Länger hält eine
+/// Abfrage den Drucker nur, wenn er schweigt (Deckel offen) – höchstens
+/// einmal je Takt oder Bon.
+const Duration bereitFrist = Duration(seconds: 1);
 
 /// Dauert der Verbindungsaufbau länger, ist das Netz langsam (verlorenes SYN,
 /// WLAN wacht auf), und Schweigen danach sagt nichts über Deckel und Papier:

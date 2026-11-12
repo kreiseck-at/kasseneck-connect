@@ -49,7 +49,9 @@ const List<BewiesenesModell> bewieseneModelle = <BewiesenesModell>[
         'nach rund 3 s wieder; nach einem Bon von 8 KB schweigt er rund '
         '0,5 s und antwortet nach 1,0 s. Zwei Connect an einem Drucker '
         '(12.11.2026): er bedient nur eine Verbindung zugleich, nimmt weitere '
-        'an und schweigt auf sie, solange er die eine bedient.',
+        'an und schweigt auf sie, solange er die eine bedient; nach dem Ende '
+        'jeder Verbindung (auch einer sofort geschlossenen) bedient er die '
+        'nächste erst nach rund 0,5 s.',
   ),
 ];
 

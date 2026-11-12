@@ -24,10 +24,11 @@ import 'zustand.dart';
 const Duration vorpruefungBudget = Duration(milliseconds: 500);
 
 /// Zeitbudget der Prüfungen bei einem statusfähigen Drucker: MAC,
-/// Verbindungsaufbau, ein Antwortfenster ([handshakeFrist]) und Seriennummer.
-/// Ein bereiter Drucker antwortet in Millisekunden; ein schweigender kostet
-/// das Antwortfenster (250 ms), mehr nur ein langsamer Verbindungsaufbau
-/// (höchstens 1,5 s, Vorgabe nach dem Gerätetest).
+/// Verbindungsaufbau, ein Antwortfenster ([bereitFrist]) und Seriennummer.
+/// Ein bereiter Drucker antwortet in Millisekunden, sobald er die Verbindung
+/// bedient (nach einer vorigen Verbindung rund 0,5 s später – so lange müsste
+/// auch der Bon warten); ein schweigender kostet das Antwortfenster (1 s),
+/// höchstens 1,5 s (Vorgabe nach dem Gerätetest).
 const Duration vorpruefungBudgetStatusfaehig = Duration(milliseconds: 1500);
 
 /// Nach einem Kennungskonflikt ohne Fund sucht Connect so lange nicht erneut
@@ -224,14 +225,15 @@ class DruckVorpruefung {
           antworten = null;
         } else if (statusfaehig) {
           // Ein Drucker, der schon gültig geantwortet hat, wird immer
-          // gefragt: Papier und Deckel. Ein Versuch, ein kurzes
-          // Antwortfenster – schweigt er, ist das nur ein Hinweis
-          // (Gerätetest TM-T20III), und der Bon geht wie bis 1.4.2.
+          // gefragt: Papier und Deckel. Ein Versuch mit [bereitFrist] –
+          // schweigt er, ist das nur ein Hinweis (Gerätetest TM-T20III), und
+          // der Bon geht wie bis 1.4.2.
           antworten = await _abfrage.frage(
             drucker.host,
             drucker.port,
             fragen: fragen,
             budget: rest(),
+            handshake: bereitFrist,
           );
         } else if (fragen.isNotEmpty && !lage.stumm(jetzt)) {
           antworten = await _abfrage.frage(

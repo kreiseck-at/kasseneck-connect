@@ -39,6 +39,10 @@ String nameVon(List<int> bytes) =>
 /// * „eine Runde“: zwei Verbindungen je Runde zu je rund 500 ms.
 /// * „Takt nach eigenem Bon“: der Takt fragte direkt nach dem Bon.
 /// * „zwei Connect“: `readinessHint` fehlte (Hinweis nie erfüllt).
+/// * „Freigabe nach jeder Verbindung“ (gegen eba2b81): mit zwei Connect und
+///   `GET /v1/printers` je Runde fiel readiness auf `unknown` mit Hinweis;
+///   die Abfrage vor dem Bon direkt nach einer anderen Verbindung zählte als
+///   ohne Antwort; jede Liste öffnete eine Verbindung (4 statt 1).
 void main() {
   late FakeEinzelDrucker fake;
   late DruckAufbau a;
@@ -302,8 +306,8 @@ void main() {
         expect(neu, hasLength(1), reason: 'ein Versuch je Runde');
         expect(
           neu.single.gehalten,
-          lessThan(const Duration(milliseconds: 480)),
-          reason: 'kurzes Antwortfenster',
+          lessThan(bereitFrist + const Duration(milliseconds: 250)),
+          reason: 'höchstens das Antwortfenster',
         );
         // 1.5.0 fragte bei Schweigen alle 5 s nach.
         await Future<void>.delayed(const Duration(seconds: 6));
@@ -356,6 +360,76 @@ void main() {
         streuung: Duration.zero,
       );
       expect(fest.naechsterAbstand(), statusTaktAbstand);
+    });
+  });
+
+  group('Freigabe nach jeder Verbindung', () {
+    // Gerätetest 12.11.2026 (TM-T20III, nur Abfragen): nach dem Ende jeder
+    // Verbindung – auch einer, die sofort schließt – bedient er die nächste
+    // erst nach rund 0,5 s. Der Fake gibt nach 300 ms frei: länger als das
+    // alte Antwortfenster von 250 ms, das Muster ist dasselbe.
+    test('Kasse ruft GET /v1/printers auf zwei Connect: die Statusabfragen '
+        'beider bleiben beantwortet, kein Hinweis', () async {
+      fake.freigabeVerzug = const Duration(milliseconds: 300);
+      final b = DruckAufbau.erstellen(verbinden: fake.verbinden);
+      addTearDown(b.aufraeumen);
+      await einrichten(b);
+      final dA = dienst(a);
+      final dB = dienst(b);
+      for (var i = 0; i < 4; i++) {
+        // Wie der Mitschrieb im Gerätetest: GET /v1/printers bei A, dann bei
+        // B, jede Sekunde – dazwischen der Takt.
+        await a.registry.summaries(probe: true);
+        await b.registry.summaries(probe: true);
+        a.jetzt = a.jetzt.add(const Duration(minutes: 1));
+        b.jetzt = b.jetzt.add(const Duration(minutes: 1));
+        await dA.runde();
+        await dB.runde();
+      }
+      for (final x in <DruckAufbau>[a, b]) {
+        final e = await eintrag(x);
+        expect(e['readiness'], 'ready');
+        expect(e.containsKey('readinessHint'), isFalse);
+        expect(x.registry.lagen.von(id).ohneAntwortInFolge, 0);
+      }
+    });
+
+    test('vor dem Bon: eine Abfrage direkt nach einer anderen Verbindung '
+        'wird beantwortet', () async {
+      fake.freigabeVerzug = const Duration(milliseconds: 300);
+      await fake.fremdBelegen(Duration.zero);
+      expect((await a.queue.enqueue(id, 'A1', bon('A1'))).ok, isTrue);
+      expect(a.registry.lagen.von(id).ohneAntwortInFolge, 0);
+      expect((await eintrag(a))['readiness'], 'ready');
+    });
+
+    test('GET /v1/printers: ein bewiesenes Modell, eben erreicht, bekommt '
+        'keine weitere Verbindung; ohne Kontakt, nicht bewiesen oder mit '
+        'printer_status aus wie bis 1.4.2', () async {
+      final d = dienst(a);
+      await d.runde();
+      final nachTakt = fake.verbindungen.length;
+      for (var i = 0; i < 3; i++) {
+        final liste = await a.registry.summaries(probe: true);
+        expect(liste.single['state'], 'online');
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(fake.verbindungen, hasLength(nachTakt), reason: 'eben erreicht');
+
+      Future<void> verbindungen(int n, String grund) =>
+          warteBis(() async => fake.verbindungen.length == n, grund: grund);
+      await a.abschalten(<Neuerung>[Neuerung.druckerStatus]);
+      await a.registry.summaries(probe: true);
+      await verbindungen(nachTakt + 1, 'Not-Aus: Probe wie 1.4.2');
+      await a.abschalten(const <Neuerung>[]);
+
+      await a.drucker(fake.port, model: null);
+      for (var i = 0; i < 2; i++) {
+        await a.registry.summaries(probe: true);
+      }
+      await verbindungen(nachTakt + 3, 'nicht bewiesen: jede Probe');
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(fake.verbindungen, hasLength(nachTakt + 3));
     });
   });
 

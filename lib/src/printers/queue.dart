@@ -3,10 +3,17 @@ import 'dart:typed_data';
 
 import '../betrieb/vorgaenge.dart';
 import '../config/model.dart';
+import '../config/neuerungen.dart';
 import '../events/bus.dart';
 import '../log/logger.dart';
 import 'driver.dart';
-import 'lage.dart' show freigabeFenster, freigabeSchritt, zweiterVersuchPause;
+import 'lage.dart'
+    show
+        endeVerpasstGrenze,
+        freigabeFenster,
+        freigabeSchritt,
+        verbindungsEndeFrist,
+        zweiterVersuchPause;
 import 'registry.dart';
 import 'vorpruefung.dart';
 import 'wiederfinden.dart';
@@ -37,6 +44,12 @@ const Duration defaultAttemptGrace = Duration(seconds: 2);
 /// * **Ein Wiederholversuch, aber nur wenn sicher nichts hinausging** —
 ///   `PrinterFailure.mayHavePrinted` entscheidet. Ein `refused` ist die
 ///   Antwort des Geräts („kein Papier"), die beim zweiten Mal genauso ausfiele.
+/// * **Reihenfolge je Drucker** — der nächste Auftrag (und jede Abfrage über
+///   [exclusive]) beginnt erst, wenn der vorige ganz durch ist, samt
+///   Wiederholung. Bei einem bewiesenen Modell heißt das auch: bis der
+///   Drucker die Druckverbindung beendet hat (höchstens [endeFrist],
+///   `print_order`). Das Ergebnis bekommt die Kasse trotzdem sofort, wie bis
+///   1.4.2.
 ///
 /// Aufträge werden bewusst **nicht** gepuffert: der Beleg ist in der Kasse
 /// gespeichert, ein Nachdruck ist jederzeit möglich, und ein Drucker, der
@@ -50,6 +63,7 @@ class PrintQueue {
     this.jobTimeout = defaultPrintTimeout,
     this.idempotencyWindow = defaultIdempotencyWindow,
     this.attemptGrace = defaultAttemptGrace,
+    this.endeFrist = verbindungsEndeFrist,
     this.nachErfolg,
     this.vorpruefung,
   }) : _events = events,
@@ -70,6 +84,11 @@ class PrintQueue {
 
   /// Zuschlag, bevor die Warteschlange einen Versuch selbst abbricht.
   final Duration attemptGrace;
+
+  /// So lange hält ein Bon an ein bewiesenes Modell die Kette höchstens
+  /// noch, bis der Drucker die Verbindung beendet hat
+  /// ([verbindungsEndeFrist]; Tests geben weniger vor).
+  final Duration endeFrist;
 
   /// Wird nach jedem gelungenen Druck mit der Drucker-ID gerufen (etwa um die
   /// Kennung eines Druckers nachzutragen, der noch keine hat). Darf nicht
@@ -160,10 +179,12 @@ class PrintQueue {
         errorPrintInternal,
         'Der Agent konnte den Druckauftrag nicht ausführen.',
       );
+      final lauf = _Lauf();
       try {
         final PrinterDriver driver;
         PrinterConfig? zielDrucker;
         var abfrage = AbfrageVerlauf.keine;
+        var reihenfolge = false;
         switch (await _vorbereiten(printerId, jobId)) {
           case _Unbekannt():
             // Kein Ergebnis merken: sobald der Drucker angelegt ist, soll
@@ -180,10 +201,16 @@ class PrintQueue {
             _jobs.remove(key);
             result = _fail(printerId, jobId, fehler, 0);
             return;
-          case _Bereit(:final treiber, :final ziel, :final verlauf):
+          case _Bereit(
+            :final treiber,
+            :final ziel,
+            :final verlauf,
+            reihenfolge: final mitReihenfolge,
+          ):
             driver = treiber;
             zielDrucker = ziel;
             abfrage = verlauf;
+            reihenfolge = mitReihenfolge;
         }
         result = await _run(
           printerId,
@@ -192,6 +219,7 @@ class PrintQueue {
           bytes,
           ziel: zielDrucker,
           abfrage: abfrage,
+          lauf: reihenfolge ? lauf : null,
         );
         if (_worthRemembering(result)) {
           record.finish(result, _clock());
@@ -215,13 +243,66 @@ class PrintQueue {
           detail: <String, Object?>{'reason': '$e'},
         );
       } finally {
-        if (vorgang != null) vorgaenge?.beende(vorgang);
-        if (!completer.isCompleted) completer.complete(result);
+        final ende = lauf.ende;
+        if (ende == null) {
+          if (vorgang != null) vorgaenge?.beende(vorgang);
+          if (!completer.isCompleted) completer.complete(result);
+        } else {
+          // Die Kasse bekommt ihr Ergebnis wie bis 1.4.2 sofort; die Kette
+          // (nächster Bon, Abfragen) wartet, bis der Drucker den Bon ganz
+          // gelesen hat.
+          if (!completer.isCompleted) completer.complete(result);
+          await _endeAbwarten(printerId, jobId, ende);
+          if (vorgang != null) vorgaenge?.beende(vorgang);
+        }
       }
     });
     // Die Kette darf nie einen Fehler tragen — der nächste Auftrag hängt daran.
     _chains[printerId] = chain.catchError((Object _) {});
     return completer.future;
+  }
+
+  /// Wartet auf das Ende der Druckverbindung beim Gerät (höchstens
+  /// [endeFrist] samt Zuschlag) und merkt sich, ob es kam. Wirft nie.
+  ///
+  /// Kam es nie und blieb es [endeVerpasstGrenze]-mal aus, beendet dieser
+  /// Drucker die Verbindung nicht selbst: ab da kein Abwarten mehr, Bons wie
+  /// bis 1.4.2. Kam es schon einmal, war er nur gerade belegt.
+  Future<void> _endeAbwarten(
+    String printerId,
+    String jobId,
+    Future<bool> ende,
+  ) async {
+    bool beendet;
+    try {
+      beendet = await ende.timeout(
+        endeFrist + attemptGrace,
+        onTimeout: () => false,
+      );
+    } on Object {
+      beendet = false;
+    }
+    final lage = registry.lagen.von(printerId);
+    if (beendet) {
+      lage.endeGesehen = true;
+      return;
+    }
+    if (lage.endeGesehen) {
+      _log?.info(
+        'Auftrag $jobId an $printerId: der Drucker hat die Verbindung nach '
+        '${endeFrist.inMilliseconds} ms noch nicht beendet (belegt) – der '
+        'nächste Auftrag geht trotzdem.',
+      );
+      return;
+    }
+    lage.endeVerpasst++;
+    if (lage.endeVerpasst >= endeVerpasstGrenze && !lage.beendetNichtSelbst) {
+      lage.beendetNichtSelbst = true;
+      _log?.info(
+        'Drucker $printerId beendet die Verbindung nach dem Bon nicht selbst '
+        '– ab jetzt kein Abwarten mehr (Bons wie bisher).',
+      );
+    }
   }
 
   /// Treiber für den Auftrag – nach der Vorprüfung, falls es eine gibt.
@@ -231,7 +312,7 @@ class PrintQueue {
       final driver = await registry.driverForId(printerId);
       return driver == null
           ? const _Unbekannt()
-          : _Bereit(driver, null, AbfrageVerlauf.keine);
+          : _Bereit(driver, null, AbfrageVerlauf.keine, reihenfolge: false);
     }
     final config = await registry.store.load();
     PrinterConfig? drucker;
@@ -249,7 +330,12 @@ class PrintQueue {
             '${ziel.host}:${ziel.port}.',
           );
         }
-        return _Bereit(registry.driverFor(ziel), ziel, abfrage);
+        return _Bereit(
+          registry.driverFor(ziel),
+          ziel,
+          abfrage,
+          reihenfolge: config.aktiv(Neuerung.druckReihenfolge),
+        );
     }
   }
 
@@ -302,11 +388,18 @@ class PrintQueue {
     Uint8List bytes, {
     PrinterConfig? ziel,
     AbfrageVerlauf abfrage = AbfrageVerlauf.keine,
+    _Lauf? lauf,
   }) async {
     var versuch = 1;
     var druckVersuche = 0;
     // Ein bewiesenes Modell fragen womöglich andere Rechner gerade ab.
     final geteilt = ziel != null && registry.pruefbar(ziel);
+    // Nur ein bewiesenes Modell wartet nach dem Bon auf das Ende beim Gerät
+    // (`print_order`); jeder andere Drucker druckt wie bis 1.4.2.
+    final abwarten =
+        lauf != null &&
+        geteilt &&
+        !(registry.lagen.vorhanden(printerId)?.beendetNichtSelbst ?? false);
     if (abfrage == AbfrageVerlauf.ohneVerbindung) {
       _log?.warn(
         'Auftrag $jobId an $printerId: schon die Abfrage fand keinen Drucker '
@@ -321,9 +414,17 @@ class PrintQueue {
     }
     Stopwatch? freigabe;
     while (true) {
-      final fehler = await _versuche(printerId, driver, bytes);
+      final fehler = await _versuche(
+        printerId,
+        driver,
+        bytes,
+        endeFrist: abwarten ? endeFrist : Duration.zero,
+      );
       druckVersuche++;
       if (fehler == null) {
+        if (abwarten && driver is EndeAbwartbar) {
+          lauf.ende = (driver as EndeAbwartbar).ende;
+        }
         nachErfolg?.call(printerId);
         _events.publish(eventPrintDone, <String, Object?>{
           'printerId': printerId,
@@ -379,8 +480,12 @@ class PrintQueue {
   Future<PrinterFailure?> _versuche(
     String printerId,
     PrinterDriver driver,
-    Uint8List bytes,
-  ) async {
+    Uint8List bytes, {
+    Duration endeFrist = Duration.zero,
+  }) async {
+    if (driver is EndeAbwartbar) {
+      (driver as EndeAbwartbar).endeFrist = endeFrist;
+    }
     try {
       // Das Zeitlimit steht hier zusätzlich zum Treiber: die Warteschlange
       // verlässt sich nicht darauf, dass ein Treiber seine Zusage einhält.
@@ -545,11 +650,25 @@ final class _Abgelehnt extends _Vorbereitung {
 
 /// Drucken mit [treiber] an [ziel] (`null` auf dem Weg ohne Vorprüfung).
 final class _Bereit extends _Vorbereitung {
-  const _Bereit(this.treiber, this.ziel, this.verlauf);
+  const _Bereit(
+    this.treiber,
+    this.ziel,
+    this.verlauf, {
+    required this.reihenfolge,
+  });
 
   final PrinterDriver treiber;
   final PrinterConfig? ziel;
 
   /// Was die Abfrage-Verbindung der Vorprüfung erlebte.
   final AbfrageVerlauf verlauf;
+
+  /// Ob `print_order` an ist.
+  final bool reihenfolge;
+}
+
+/// Was ein Auftrag nach dem Druck noch abwarten muss.
+class _Lauf {
+  /// Ende der Druckverbindung beim Gerät; `null`: nichts abzuwarten.
+  Future<bool>? ende;
 }

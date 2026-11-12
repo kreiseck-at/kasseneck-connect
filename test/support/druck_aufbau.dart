@@ -53,7 +53,8 @@ class DruckAufbau {
   /// Planung. Tests der Zeitgrenzen selbst geben die Werte des Betriebs vor.
   ///
   /// [verbinden] ersetzt den Verbindungsaufbau zu den Geräten (etwa
-  /// `FakeTcpPrinter.verbinden`), auch den des [netz].
+  /// `FakeTcpPrinter.verbinden`), auch den des [netz]. [endeFrist] ersetzt
+  /// die Frist der Warteschlange für das Ende der Druckverbindung.
   static DruckAufbau erstellen({
     DateTime? start,
     VirtuellesNetz? netz,
@@ -61,6 +62,7 @@ class DruckAufbau {
     Duration budgetStatusfaehig = testBudgetStatusfaehig,
     Duration aufbauGrenze = testAufbauGrenze,
     SocketConnector? verbinden,
+    Duration endeFrist = verbindungsEndeFrist,
   }) {
     final temp = Directory.systemTemp.createTempSync('connect-druck-');
     final aufbau = DruckAufbau._(
@@ -75,6 +77,7 @@ class DruckAufbau {
       .._budget = budget
       .._budgetStatusfaehig = budgetStatusfaehig
       .._aufbauGrenze = aufbauGrenze
+      .._endeFrist = endeFrist
       ..jetzt = start ?? DateTime(2026, 11, 10, 9);
     if (netz != null) {
       aufbau.schnittstellen = const <LocalInterface>[VirtuellesNetz.eigene];
@@ -93,6 +96,7 @@ class DruckAufbau {
   Duration _budget = vorpruefungBudget;
   Duration _budgetStatusfaehig = vorpruefungBudgetStatusfaehig;
   Duration _aufbauGrenze = langsamerAufbau;
+  Duration _endeFrist = verbindungsEndeFrist;
   SocketConnector? _verbinden;
 
   /// Das virtuelle Netz, falls eines verwendet wird.
@@ -143,6 +147,7 @@ class DruckAufbau {
       events: events,
       log: log,
       clock: () => jetzt,
+      endeFrist: _endeFrist,
     );
     final abfrage = EscPosAbfrage(
       verbinden: verbinden,

@@ -76,6 +76,28 @@ abstract class PrinterDriver {
   Future<void> abort();
 }
 
+/// Ein Treiber, der nach dem Druck abwarten kann, bis das Gerät die
+/// Verbindung seinerseits beendet hat.
+///
+/// Warum: `print` gilt wie bis 1.4.2 als erledigt, sobald die Bytes dem
+/// Betriebssystem übergeben und die Verbindung geschlossen ist. Hält gerade
+/// ein anderer Rechner einen Drucker, der nur eine Verbindung zugleich
+/// bedient, liegt der Bon dann noch ungelesen in der Leitung – und welche
+/// wartende Verbindung das Gerät danach zuerst bedient, sichert niemand zu
+/// (Gerätetest 12.11.2026: A2 vor A1). Erst wenn das Gerät seine Seite
+/// schließt, hat es den Bon ganz gelesen.
+abstract interface class EndeAbwartbar {
+  /// Ab dem nächsten [PrinterDriver.print]: nach dem Schließen höchstens so
+  /// lange auf das Ende beim Gerät warten. [Duration.zero]: nicht warten,
+  /// Verbindung sofort weg (wie bis 1.4.2).
+  set endeFrist(Duration frist);
+
+  /// Ende des letzten gelungenen Drucks: `true`, sobald das Gerät die
+  /// Verbindung beendet hat, `false`, wenn die Frist ablief (dann ist sie
+  /// trotzdem zu). Ohne Frist sofort `true`. Wirft nie.
+  Future<bool> get ende;
+}
+
 /// Fehlgeschlagener Druckversuch mit Fachcode und deutschem Klartext.
 class PrinterFailure implements Exception {
   const PrinterFailure(

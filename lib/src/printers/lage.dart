@@ -66,6 +66,28 @@ const Duration freigabeSchritt = Duration(milliseconds: 250);
 /// langsam frei“ zu merken.
 const Duration kontaktFenster = Duration(seconds: 10);
 
+/// So lange wartet die Warteschlange nach einem Bon an ein bewiesenes Modell
+/// höchstens darauf, dass der Drucker die Verbindung seinerseits beendet,
+/// bevor der nächste Auftrag oder eine Abfrage an ihn geht (`print_order`).
+///
+/// Erst dann hat er den Bon ganz gelesen; vorher kann eine spätere Verbindung
+/// desselben Rechners vor ihm drankommen (Gerätetest 12.11.2026, TM-T20III mit
+/// zwei Connect: A2 vor A1). Die Kasse bekommt `ok` trotzdem wie bis 1.4.2
+/// sofort; warten muss nur ein Auftrag, der in dieser Zeit folgt – und der
+/// käme bei einem Drucker mit einer Verbindung ohnehin erst danach dran.
+/// Drei Sekunden: der TM-T20III gibt eine Verbindung nach einem Bon von 8 KB
+/// binnen rund 1 s frei (Gerätetest 11.11.2026); dazu Platz für eine kurze
+/// Abfrage oder einen kleinen Bon eines anderen Rechners. Hält ein anderer
+/// Rechner ihn länger (ein langer Abschluss), geht der nächste Auftrag nach
+/// Ablauf wie bis 1.4.2 – die Kasse wartet nie unbegrenzt.
+const Duration verbindungsEndeFrist = Duration(seconds: 3);
+
+/// So oft darf das Ende ausbleiben, ohne dass es je kam, bevor ein Drucker als
+/// „beendet nicht selbst“ gilt ([DruckerLage.beendetNichtSelbst]). Zwei, damit
+/// ein einzelner langer Bon eines anderen Rechners das Abwarten nicht
+/// abschaltet.
+const int endeVerpasstGrenze = 2;
+
 /// Pause vor dem zweiten Druckversuch, wenn der erste schnell abgelehnt
 /// wurde und ein anderer Rechner den Drucker gerade abfragen kann (eine
 /// Nachfrage hält die Verbindung höchstens rund 0,5 s).
@@ -139,6 +161,18 @@ class DruckerLage {
   /// spricht Connect vor seinen Bons und im Takt nicht mehr mit ihm – Druck
   /// wie bis 1.4.2. Nur im Speicher: nach einem Neustart prüft Connect neu.
   bool gibtLangsamFrei = false;
+
+  /// Der Drucker hat nach einem Bon die Verbindung schon einmal selbst
+  /// beendet (das Ende kam binnen [verbindungsEndeFrist]).
+  bool endeGesehen = false;
+
+  /// Wie oft das Ende nach einem Bon ausblieb, solange es nie kam.
+  int endeVerpasst = 0;
+
+  /// Der Drucker beendet die Verbindung nach dem Bon nicht selbst: das Ende
+  /// blieb [endeVerpasstGrenze]-mal aus und kam nie. Dann wartet die
+  /// Warteschlange nicht mehr darauf – Bons wie bis 1.4.2. Nur im Speicher.
+  bool beendetNichtSelbst = false;
 
   /// Seit wann unter der Adresse dieselbe fremde Seriennummer
   /// ([konfliktSerie]) antwortet, und wie oft vor einem Bon.

@@ -28,6 +28,10 @@ enum Neuerung {
   /// Drucker bei offener Kasse alle 60 s abfragen.
   statusTakt('status_poll'),
 
+  /// Nach einem Bon an ein bewiesenes Modell abwarten, bis der Drucker die
+  /// Verbindung beendet hat, bevor der nächste Auftrag an ihn geht.
+  druckReihenfolge('print_order'),
+
   /// Ruhezustand des Rechners während laufender Vorgänge verhindern.
   schlafsperre('sleep_lock'),
 

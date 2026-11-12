@@ -200,7 +200,7 @@ class DruckerStatusDienst {
           drucker.statusCapableAt == null ||
           !registry.pruefbar(drucker) ||
           lage == null ||
-          lage.schweigtSeit == null) {
+          lage.ohneAntwortInFolge == 0) {
         return false;
       }
       final gefunden = drucker;
@@ -369,23 +369,21 @@ class DruckerStatusDienst {
         lage.abgefragt();
         registry.noteState(drucker.id, PrinterState.online);
         final mac = await _macVergleich(drucker);
-        if (antworten.stumm) {
-          if (!statusfaehig) {
-            if (!lage.druckt(jetzt)) _alsStumm(drucker, lage, jetzt);
-            return (erreichbar: true, schweigt: false);
-          }
-          final gezaehlt = !lage.druckt(jetzt);
+        if (antworten.stumm && !statusfaehig) {
+          if (!lage.druckt(jetzt)) _alsStumm(drucker, lage, jetzt);
+          return (erreichbar: true, schweigt: false);
+        }
+        if (statusfaehig && antworten.offlineGrund == null) {
+          // Keine gültige Antwort: nur ein Hinweis, nie „nicht bereit“. Die
+          // erste in Folge ändert nichts, und während eines eigenen Bons
+          // zählt sie nicht.
+          if (lage.druckt(jetzt)) return (erreichbar: true, schweigt: false);
+          lage.ohneAntwort();
           // Nachgefragt wird nie bei einem nachweislich anderen Gerät.
-          final verfolgen = gezaehlt && mac != MacVergleich.anders;
-          if (gezaehlt) lage.schweigt(jetzt);
+          final verfolgen = mac != MacVergleich.anders;
           if (verfolgen) schweigenVerfolgen(drucker.id);
-          registry.noteZustand(
-            drucker.id,
-            schweigenHeisstNichtBereit(mac: mac, lage: lage, jetzt: jetzt)
-                ? DruckerZustand.nichtBereit
-                : DruckerZustand.unbekannt,
-            jetzt,
-          );
+          final zustand = zustandOhneAntwort(lage, mac);
+          if (zustand != null) registry.noteZustand(drucker.id, zustand, jetzt);
           return (erreichbar: true, schweigt: verfolgen);
         }
         if (antworten.offlineGrund != null) lage.antwortet();

@@ -3,6 +3,8 @@
 /// Gedeutet wird nur, was das Gerät plausibel gemeldet hat; alles andere ist
 /// unbekannt, und dann wird gedruckt wie bis 1.4.2. Blockiert wird nur bei
 /// gemeldetem Papierende oder offenem Deckel, „fast leer“ blockiert nie.
+/// Schweigen blockiert nie: es ist nur ein Hinweis
+/// ([BereitschaftsHinweis.keineAntwort]).
 library;
 
 import 'driver.dart';
@@ -34,16 +36,32 @@ enum Deckel {
 
 /// Ob der Drucker druckbereit ist (`readiness` in der API).
 enum Bereitschaft {
-  /// Er hat gültig auf `DLE EOT` geantwortet.
+  /// Er hat gültig auf `DLE EOT` geantwortet, ohne Papierende oder offenen
+  /// Deckel.
   bereit('ready'),
 
-  /// Er hat schon gültig geantwortet und schweigt jetzt: Deckel offen oder
-  /// Papier heraus (Gerätetest TM-T20III, ohne Statusbits).
+  /// Er hat gültig geantwortet und selbst Papierende oder offenen Deckel
+  /// gemeldet. Nie aus Schweigen: ein Drucker, der schweigt, kann ebenso
+  /// gerade einen anderen Rechner bedienen (Gerätetest 12.11.2026).
   nichtBereit('not_ready'),
 
   unbekannt('unknown');
 
   const Bereitschaft(this.wireName);
+
+  final String wireName;
+}
+
+/// Hinweis zur Bereitschaft (`readinessHint` in der API, nur bei
+/// `readiness: unknown`). Die Kasse kann ihn zeigen; einen Bon hält er nie
+/// auf.
+enum BereitschaftsHinweis {
+  /// Ein Drucker, der sonst auf `DLE EOT` antwortet, hat mehrere Abfragen in
+  /// Folge nicht beantwortet: Deckel offen oder Papier heraus (TM-T20III
+  /// meldet beides nur so) – oder ein anderer Rechner hielt ihn gerade.
+  keineAntwort('no_status_answer');
+
+  const BereitschaftsHinweis(this.wireName);
 
   final String wireName;
 }
@@ -54,18 +72,23 @@ class DruckerZustand {
     this.papier = Papier.unbekannt,
     this.deckel = Deckel.unbekannt,
     this.bereitschaft = Bereitschaft.unbekannt,
+    this.hinweis,
   });
 
   static const DruckerZustand unbekannt = DruckerZustand();
 
-  /// Ein statusfähiger Drucker, der schweigt.
-  static const DruckerZustand nichtBereit = DruckerZustand(
-    bereitschaft: Bereitschaft.nichtBereit,
+  /// Ein statusfähiger Drucker, der mehrmals in Folge nicht geantwortet
+  /// hat: unbekannt, mit Hinweis – gedruckt wird wie bis 1.4.2.
+  static const DruckerZustand keineAntwort = DruckerZustand(
+    hinweis: BereitschaftsHinweis.keineAntwort,
   );
 
   final Papier papier;
   final Deckel deckel;
   final Bereitschaft bereitschaft;
+
+  /// Hinweis zur unbekannten Bereitschaft; `null`: keiner.
+  final BereitschaftsHinweis? hinweis;
 
   /// Der Fehler, mit dem ein Druck vor dem ersten Byte abgelehnt wird; `null`,
   /// wenn gedruckt werden darf.
@@ -79,6 +102,8 @@ class DruckerZustand {
     if (deckel == Deckel.offen) {
       return const PrinterFailure(errorCoverOpen, coverOpenMessage);
     }
+    // Nur aus einer Antwort des Geräts (siehe [Bereitschaft.nichtBereit]),
+    // nie aus Schweigen.
     if (bereitschaft == Bereitschaft.nichtBereit) {
       return const PrinterFailure(errorPrinterNotReady, notReadyMessage);
     }
@@ -90,15 +115,16 @@ class DruckerZustand {
       other is DruckerZustand &&
       other.papier == papier &&
       other.deckel == deckel &&
-      other.bereitschaft == bereitschaft;
+      other.bereitschaft == bereitschaft &&
+      other.hinweis == hinweis;
 
   @override
-  int get hashCode => Object.hash(papier, deckel, bereitschaft);
+  int get hashCode => Object.hash(papier, deckel, bereitschaft, hinweis);
 
   @override
   String toString() =>
       'DruckerZustand(${papier.wireName}, ${deckel.wireName}, '
-      '${bereitschaft.wireName})';
+      '${bereitschaft.wireName}${hinweis == null ? '' : ', ${hinweis!.wireName}'})';
 }
 
 /// Satz an die Kasse bei Papierende (Spec, Meldungstabelle).
@@ -107,7 +133,8 @@ const String paperOutMessage = 'Drucker: Papier leer – neue Rolle einlegen.';
 /// Satz an die Kasse bei offenem Deckel.
 const String coverOpenMessage = 'Drucker: Deckel offen – bitte schließen.';
 
-/// Satz an die Kasse, wenn ein statusfähiger Drucker schweigt.
+/// Satz an die Kasse, wenn der Drucker selbst meldet, dass er nicht bereit
+/// ist.
 const String notReadyMessage =
     'Drucker nicht bereit – Deckel schließen und Papier prüfen.';
 
@@ -161,9 +188,11 @@ DruckerZustand zustandAusDleEot({int? offlineGrund, int? rollensensor}) {
   return DruckerZustand(
     papier: papier,
     deckel: deckel,
-    bereitschaft: offline != null || rolle != null
-        ? Bereitschaft.bereit
-        : Bereitschaft.unbekannt,
+    bereitschaft: offline == null && rolle == null
+        ? Bereitschaft.unbekannt
+        : papier == Papier.leer || deckel == Deckel.offen
+        ? Bereitschaft.nichtBereit
+        : Bereitschaft.bereit,
   );
 }
 
@@ -180,13 +209,17 @@ DruckerZustand zustandAusEposStatus(String status) {
   if (wert == null || wert < 0 || (wert & _asbKeineAntwort) != 0) {
     return DruckerZustand.unbekannt;
   }
+  final leer = (wert & _asbLeer) != 0;
+  final offen = (wert & _asbDeckelOffen) != 0;
   return DruckerZustand(
-    bereitschaft: Bereitschaft.bereit,
-    papier: (wert & _asbLeer) != 0
+    bereitschaft: leer || offen
+        ? Bereitschaft.nichtBereit
+        : Bereitschaft.bereit,
+    papier: leer
         ? Papier.leer
         : (wert & _asbFastLeer) != 0
         ? Papier.fastLeer
         : Papier.ok,
-    deckel: (wert & _asbDeckelOffen) != 0 ? Deckel.offen : Deckel.zu,
+    deckel: offen ? Deckel.offen : Deckel.zu,
   );
 }

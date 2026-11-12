@@ -133,15 +133,58 @@ void main() {
             ),
             jetzt,
           )
-          ..noteZustand('p1', DruckerZustand.nichtBereit, jetzt);
+          ..noteZustand('p1', DruckerZustand.keineAntwort, jetzt)
+          ..noteZustand('p1', DruckerZustand.keineAntwort, jetzt);
         await Future<void>.delayed(Duration.zero);
         expect(gesehen.map((e) => e.data['readiness']), <String>[
           'ready',
-          'not_ready',
+          'unknown',
         ]);
+        expect(gesehen.last.data['readinessHint'], 'no_status_answer');
+        expect(
+          gesehen.first.data.containsKey('readinessHint'),
+          isFalse,
+          reason: 'nur, wenn es einen Hinweis gibt',
+        );
         expect(fastLeer.toString(), contains('near_end'));
       },
     );
+
+    test('readiness aus einer Antwort: not_ready nur mit gemeldetem '
+        'Papierende oder offenem Deckel', () {
+      expect(
+        zustandAusDleEot(offlineGrund: _ok, rollensensor: _ok).bereitschaft,
+        Bereitschaft.bereit,
+      );
+      expect(
+        zustandAusDleEot(offlineGrund: _deckelOffen).bereitschaft,
+        Bereitschaft.nichtBereit,
+      );
+      expect(
+        zustandAusDleEot(
+          offlineGrund: _stoppPapierende,
+          rollensensor: _rolleLeer,
+        ).bereitschaft,
+        Bereitschaft.nichtBereit,
+      );
+      expect(
+        zustandAusDleEot(
+          offlineGrund: _ok,
+          rollensensor: _rolleFastLeer,
+        ).bereitschaft,
+        Bereitschaft.bereit,
+        reason: 'fast leer druckt',
+      );
+      expect(zustandAusDleEot().bereitschaft, Bereitschaft.unbekannt);
+      expect(zustandAusEposStatus('2').bereitschaft, Bereitschaft.bereit);
+      expect(
+        zustandAusEposStatus('${0x00000020 | 8}').bereitschaft,
+        Bereitschaft.nichtBereit,
+      );
+      // Ohne Antwort nie „nicht bereit“ und nie eine Sperre.
+      expect(DruckerZustand.keineAntwort.bereitschaft, Bereitschaft.unbekannt);
+      expect(DruckerZustand.keineAntwort.sperre, isNull);
+    });
 
     test('Vertragsnamen', () {
       expect(Papier.values.map((p) => p.wireName), <String>[
@@ -154,6 +197,14 @@ void main() {
         'closed',
         'open',
         'unknown',
+      ]);
+      expect(Bereitschaft.values.map((b) => b.wireName), <String>[
+        'ready',
+        'not_ready',
+        'unknown',
+      ]);
+      expect(BereitschaftsHinweis.values.map((h) => h.wireName), <String>[
+        'no_status_answer',
       ]);
     });
   });

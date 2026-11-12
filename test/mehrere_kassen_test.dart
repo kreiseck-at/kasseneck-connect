@@ -57,7 +57,7 @@ void main() {
   /// A fragt nach (500 ms Antwortfenster, der Drucker schweigt) – liefert,
   /// sobald die Verbindung von A steht.
   Future<Future<bool>> nachfrageVonA(String id) async {
-    a.registry.lagen.von(id).schweigt(a.jetzt);
+    a.registry.lagen.von(id).ohneAntwort();
     final vorher = drucker.connections;
     final lauf = dienstA.nachfrage(id);
     await warteBis(

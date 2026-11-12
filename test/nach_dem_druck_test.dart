@@ -88,44 +88,33 @@ void main() {
       expect(uhr.elapsed, lessThan(const Duration(milliseconds: 1000)));
     });
 
-    test('nach dem Nachlauf zählt Schweigen wieder – „nicht bereit“ erst nach '
-        '30 s lückenlos beobachtet', () async {
+    test('nach dem Nachlauf zählt Schweigen wieder – als Hinweis, nie als '
+        'Sperre', () async {
       final id = await a.drucker(
         drucker.port,
         statusCapableAt: seit,
         mac: _mac,
       );
+      final lage = a.registry.lagen.von(id);
       expect((await drucke(id, bytes: _langerBon)).ok, isTrue);
       drucker.dleEot.clear(); // Deckel auf
+      expect((await drucke(id)).ok, isTrue, reason: 'druckt noch');
+      expect(lage.ohneAntwortInFolge, 0, reason: 'nicht gezählt');
       a.jetzt = a.jetzt.add(druckNachlauf(_langerBon.length));
       expect((await drucke(id)).ok, isTrue, reason: 'erstes Schweigen');
-      // Nur ein späterer Blick, ohne Nachfragen dazwischen: unbekannt.
-      a.jetzt = a.jetzt
-          .add(druckNachlauf(beispielBon.length))
-          .add(schweigenMindestdauer);
-      expect((await drucke(id)).ok, isTrue, reason: 'Lücke: neu begonnen');
-      // Lückenlos: alle 5 s eine Nachfrage, 30 s lang.
-      final dienst = DruckerStatusDienst(
-        registry: a.registry,
-        queue: a.queue,
-        abfrage: EscPosAbfrage(
-          verbinden: drucker.verbinden,
-          aufbauGrenze: testAufbauGrenze,
-        ),
-        kasseZuletzt: () => a.jetzt,
-        arp: a.arp,
-        schnittstellen: () async => a.schnittstellen,
-        clock: () => a.jetzt,
-        budget: testBudgetStatusfaehig,
-        nachfrageFrist: const Duration(milliseconds: 150),
+      expect(lage.ohneAntwortInFolge, 1);
+      expect(
+        (await a.registry.summaries()).single['readiness'],
+        'ready',
+        reason: 'eine Abfrage ohne Antwort ändert nichts',
       );
       a.jetzt = a.jetzt.add(druckNachlauf(beispielBon.length));
-      for (var t = Duration.zero; t < schweigenMindestdauer;) {
-        expect(await dienst.nachfrage(id), isTrue);
-        a.jetzt = a.jetzt.add(schweigenNachfrageAbstand);
-        t += schweigenNachfrageAbstand;
-      }
-      expect((await a.drucke(id)).code, errorPrinterNotReady);
+      final dritter = await drucke(id);
+      expect(dritter.ok, isTrue, reason: '${dritter.code}');
+      final eintrag = (await a.registry.summaries()).single;
+      expect(eintrag['readiness'], 'unknown');
+      expect(eintrag['readinessHint'], 'no_status_answer');
+      expect(drucker.druckVerbindungen, hasLength(4));
     });
 
     test('der Nachlauf wächst mit dem Bon und ist mindestens 3 s', () {
@@ -179,7 +168,7 @@ void main() {
     });
 
     test(
-      'Abfrage auf Zuruf direkt nach dem Bon: Schweigen ist unbekannt',
+      'Abfrage auf Zuruf direkt nach dem Bon: Schweigen ändert nichts',
       () async {
         final id = await a.drucker(
           drucker.port,
@@ -198,7 +187,9 @@ void main() {
         expect((await drucke(id, bytes: _langerBon)).ok, isTrue);
         drucker.dleEot.clear();
         final eintrag = await dienst.jetzt(id);
-        expect(eintrag!['readiness'], 'unknown');
+        expect(eintrag!['readiness'], 'ready', reason: 'Antwort vor dem Bon');
+        expect(eintrag.containsKey('readinessHint'), isFalse);
+        expect(a.registry.lagen.von(id).ohneAntwortInFolge, 0);
       },
     );
   });

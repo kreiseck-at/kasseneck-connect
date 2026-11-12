@@ -21,8 +21,10 @@ const String errorPaperOut = 'paper_out';
 /// `printer_status`).
 const String errorCoverOpen = 'cover_open';
 
-/// Ein Drucker, der nachweislich auf `DLE EOT` antwortet, schweigt: Deckel
-/// offen oder Papier heraus. Kein Byte ging hinaus (ab 1.5.0).
+/// Der Drucker meldet selbst, dass er nicht bereit ist (Antwort auf
+/// `DLE EOT`). Kein Byte ging hinaus (ab 1.5.0). Schweigen ergibt ihn nie:
+/// ein Drucker, der schweigt, bedient womöglich gerade einen anderen Rechner
+/// (Gerätetest 12.11.2026) – dann wird gedruckt wie bis 1.4.2.
 const String errorPrinterNotReady = 'printer_not_ready';
 
 /// Derselbe `jobId` läuft noch.

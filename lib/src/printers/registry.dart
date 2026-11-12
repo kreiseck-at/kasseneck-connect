@@ -186,8 +186,9 @@ class PrinterRegistry {
   /// dann beginnt die Kennung neu.
   ///
   /// `statusCapableAt` übernimmt die Neueinrichtung nie: hängt unter der
-  /// Adresse inzwischen ein Gerät, das nie auf `DLE EOT` antwortet, hieße sein
-  /// Schweigen sonst „nicht bereit“. Die nächste gültige Antwort setzt es neu.
+  /// Adresse inzwischen ein Gerät, das nie auf `DLE EOT` antwortet, zeigte
+  /// sein Schweigen sonst den Hinweis `no_status_answer`. Die nächste gültige
+  /// Antwort setzt es neu.
   static PrinterConfig behalteKennung(
     PrinterConfig alt,
     PrinterConfig neu, {
@@ -369,6 +370,8 @@ class PrinterRegistry {
         'paper': lage.zustand.papier.wireName,
         'cover': lage.zustand.deckel.wireName,
         'readiness': lage.zustand.bereitschaft.wireName,
+        if (lage.zustand.hinweis case final hinweis?)
+          'readinessHint': hinweis.wireName,
         'statusAt': lage.zustandAm?.toIso8601String(),
       };
 

@@ -144,9 +144,9 @@ class DruckVorpruefung {
   DauerhafterKonflikt? beiDauerhaftemKonflikt;
 
   /// Wird mit der Drucker-ID gerufen, wenn ein statusfähiger Drucker vor
-  /// einem Bon nachweislich schweigt (der Statusdienst fragt dann in kurzen
-  /// Abständen nach, siehe [schweigenNachfrageAbstand]). Darf nicht warten
-  /// lassen und nicht werfen.
+  /// einem Bon nicht antwortet (der Statusdienst fragt dann nach, siehe
+  /// [schweigenNachfrageAbstand]). Darf nicht warten lassen und nicht
+  /// werfen.
   void Function(String printerId)? beiSchweigen;
 
   /// Zeitbudget der Prüfungen (ohne Wiederfinden).
@@ -190,7 +190,7 @@ class DruckVorpruefung {
     }
 
     // 1. MAC aus der ARP-Tabelle: kein Byte an den Drucker. Sie dient der
-    // Kennung und entscheidet mit, ob Schweigen „nicht bereit“ heißen darf.
+    // Kennung und entscheidet mit, ob Schweigen den Hinweis zeigt.
     var mac = MacVergleich.unbekannt;
     String? geseheneMac;
     if (drucker.mac != null && (kennungAn || statusfaehig)) {
@@ -230,8 +230,8 @@ class DruckVorpruefung {
           antworten = null;
         } else if (statusfaehig) {
           // Ein Drucker, der schon gültig geantwortet hat, wird immer
-          // gefragt: schweigt er, ist er womöglich nicht bereit (Gerätetest
-          // TM-T20III).
+          // gefragt: Papier und Deckel; schweigt er, ist das nur ein Hinweis
+          // (Gerätetest TM-T20III).
           antworten = await _abfrage.frageBereit(
             drucker.host,
             drucker.port,
@@ -317,7 +317,8 @@ class DruckVorpruefung {
       }
     }
 
-    // 4. Papier und Deckel: blockiert wird nur, was das Gerät gemeldet hat.
+    // 4. Papier und Deckel: blockiert wird nur, was das Gerät gemeldet hat –
+    // Schweigen nie.
     if (zustand != null) {
       registry.noteZustand(drucker.id, zustand, jetzt);
       final sperre = zustand.sperre;
@@ -342,30 +343,29 @@ class DruckVorpruefung {
     required bool statusAn,
   }) {
     if (!antworten.verbunden) return null;
-    if (antworten.stumm) {
-      if (!statusAn || drucker.statusCapableAt == null) {
-        // Nie gültig geantwortet: ein Gerät ohne Echtzeitstatus. Ein Bon,
-        // der noch druckt, ist dafür kein Beweis.
-        if (!lage.druckt(jetzt)) _alsStummMerken(drucker, lage, jetzt);
-        return null;
-      }
-      // Schweigen während eines eigenen Bons beweist nichts; sonst beginnt
-      // (oder läuft) die Strecke, nach der es „nicht bereit“ heißt – und der
-      // Statusdienst beobachtet sie lückenlos weiter.
-      if (!lage.druckt(jetzt)) {
-        lage.schweigt(jetzt);
-        // Nachgefragt wird nur bei einem Gerät, das nicht nachweislich ein
-        // anderes ist: ein fremdes Gerät bekommt keine Bytes.
-        if (mac != MacVergleich.anders) beiSchweigen?.call(drucker.id);
-      }
-      return schweigenHeisstNichtBereit(mac: mac, lage: lage, jetzt: jetzt)
-          ? DruckerZustand.nichtBereit
-          : DruckerZustand.unbekannt;
+    final statusfaehig = statusAn && drucker.statusCapableAt != null;
+    if (antworten.stumm && !statusfaehig) {
+      // Nie gültig geantwortet: ein Gerät ohne Echtzeitstatus. Ein Bon, der
+      // noch druckt, ist dafür kein Beweis.
+      if (!lage.druckt(jetzt)) _alsStummMerken(drucker, lage, jetzt);
+      return null;
     }
     if (antworten.offlineGrund == null) {
-      // Gefragt, aber nicht entscheidbar (zu wenig Zeit, langsamer Aufbau,
-      // Gegenstelle schloss): unbekannt, gedruckt wird wie bis 1.4.2.
-      return statusAn ? DruckerZustand.unbekannt : null;
+      if (!statusfaehig) {
+        // Gefragt, aber nicht entscheidbar (zu wenig Zeit, langsamer
+        // Aufbau, Gegenstelle schloss): unbekannt, gedruckt wird wie bis
+        // 1.4.2.
+        return statusAn ? DruckerZustand.unbekannt : null;
+      }
+      // Ein statusfähiger Drucker ohne gültige Antwort: gedruckt wird wie
+      // bis 1.4.2 (Schweigen ist nur ein Hinweis). Während eines eigenen
+      // Bons zählt es nicht.
+      if (lage.druckt(jetzt)) return null;
+      lage.ohneAntwort();
+      // Nachgefragt wird nur bei einem Gerät, das nicht nachweislich ein
+      // anderes ist: ein fremdes Gerät bekommt keine Bytes.
+      if (mac != MacVergleich.anders) beiSchweigen?.call(drucker.id);
+      return zustandOhneAntwort(lage, mac);
     }
     lage.antwortet();
     // Antwortet unter der Adresse nachweislich ein anderes Gerät (andere MAC),

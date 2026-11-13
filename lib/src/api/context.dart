@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:shelf_router/shelf_router.dart';
 
+import '../betrieb/vorgaenge.dart';
 import '../bluetooth/bridge.dart';
 import '../config/model.dart';
 import '../config/store.dart';
@@ -10,6 +11,7 @@ import '../log/logger.dart';
 import '../pairing/pairing.dart';
 import '../update/system_info.dart';
 import '../update/updater.dart';
+import 'faehigkeiten.dart';
 
 /// Baut zusätzliche Routen in den Router des Agenten ein.
 ///
@@ -80,6 +82,24 @@ class AgentContext {
   /// die beiden Felder weg. [Agent] setzt es beim Start.
   SystemInfoReader? systemInfo;
 
+  /// Fähigkeiten ab 1.5.0, die der Agent angeschlossen hat (`features`).
+  final Set<Faehigkeit> faehigkeiten = <Faehigkeit>{};
+
+  /// Laufende Vorgänge (Druck, Zahlung) – prozessweit; `null` ohne.
+  LaufendeVorgaenge? vorgaenge;
+
+  /// Die Installationskennung dieses Laufs (`sichereInstallationId`); `null`:
+  /// die aus der `config.json`.
+  String? installationId;
+
+  /// Beendet Connect, damit der Autostart ihn neu startet; `null`, wo der
+  /// Autostart einen beendeten Agenten nicht wieder startet.
+  Future<void> Function()? neustart;
+
+  /// Das gemerkte Terminal für die Langform des Status (`terminal`); `null`
+  /// lässt das Feld weg.
+  Map<String, Object?>? Function(TerminalConfig? gemerkt)? terminalZustand;
+
   /// Aktualisieren auf einen Klick (`/v1/update`); `null` ohne – dann gibt es
   /// die Pfade nicht und `features` nennt `update` nicht.
   ConnectUpdater? updater;
@@ -115,6 +135,13 @@ class AgentContext {
   /// verhindern, dass eine Kasse dem Benutzer Browserfenster ins Gesicht
   /// wirft — sie muss keinen Neustart überdauern.
   DateTime? lastPairRequestAt;
+
+  /// Wann zuletzt eine Anfrage mit gültigem Token kam – daran sieht der
+  /// Statustakt, ob eine Kasse offen ist. Ein Wert für alle Kassen und Tabs.
+  DateTime? kasseZuletzt;
+
+  /// Merkt sich eine Anfrage mit gültigem Token.
+  void kasseGesehen() => kasseZuletzt = clock();
 
   Future<AgentConfig> config() => store.load();
 

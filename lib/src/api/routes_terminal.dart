@@ -1,12 +1,16 @@
-import 'dart:async';
-
 import 'package:shelf/shelf.dart';
 import 'package:shelf_router/shelf_router.dart';
 
+import '../betrieb/vorgaenge.dart';
 import '../config/model.dart';
+import '../config/neuerungen.dart';
+import '../terminal/belegung.dart';
 import '../terminal/discovery.dart';
 import '../terminal/hps.dart';
+import '../terminal/tid.dart';
 import '../terminal/warmhalten.dart';
+import '../terminal/wiederfinden.dart';
+import 'auth.dart';
 import 'context.dart';
 import 'responses.dart';
 
@@ -20,51 +24,359 @@ final RegExp _tid = RegExp(r'^\d{1,16}$');
 /// Transaktions-ID: numerisch, höchstens 18 Stellen (Spec).
 final RegExp _transactionId = RegExp(r'^\d{1,18}$');
 
+/// Connect hält gerade einen langen Aufruf für dieses Terminal (ab 1.5.0).
+const String errorTerminalBusy = 'terminal_busy';
+
+/// So lange gilt die Bestätigung einer Ersatzadresse für eine Geldbewegung
+/// ohne neue Diagnose. Ist sie älter, fragt Connect dort zuerst die Diagnose
+/// mit der TID (Gerätetest: 0,1–0,25 s) – Geld geht nie an ein Gerät, das
+/// die TID nicht eben bestätigt hat.
+const Duration umleitungOhneDiagnose = Duration(minutes: 15);
+
+/// Frist der Diagnose vor einer umgeleiteten Geldbewegung: ohne Weckversuch
+/// und kurz – antwortet die Ersatzadresse nicht, bleibt es beim Fehler der
+/// ursprünglichen Adresse.
+const Duration umleitungDiagnoseFrist = Duration(seconds: 3);
+
+/// Den rohen Status, den das Terminal selbst bei „beschäftigt“ nennt (409),
+/// trägt auch [errorTerminalBusy]: eine Kasse, die den Code noch nicht kennt,
+/// liest daran „nachweislich nichts belastet“ – wie bei der Antwort des
+/// Terminals, die sie ohne Connect bekäme.
+const int terminalBusyHttpStatus = 409;
+
 /// Meldet die Terminal-Endpunkte (Hobex HPS) am Router an.
 ///
 /// Alle Pfade sind token- und herkunftsgeschützt — wer drucken darf, darf
 /// auch das Terminal ansprechen; einen eigenen Vertrauenskreis gibt es nicht.
 /// Die Brücke reicht die HPS-Antwort unverändert als `hps` durch.
+///
+/// Ab 1.5.0 (siehe [_Terminal]): ein langer Aufruf belegt das Terminal
+/// ([TerminalBelegung], `busy_lock`), ein Aufruf ohne Verbindung wird genau
+/// einmal an die bestätigte Adresse derselben TID umgeleitet und jede Antwort
+/// nennt die benutzte Adresse (`endpoint`, `terminal_relocate`).
 RouteRegistrar terminalRoutes({
   HpsBridge? bridge,
   // Haelt das Terminal nach dem ersten erfolgreichen Kontakt wach.
   TerminalWarmhalter? warmhalter,
   // Nur für Tests: die echte Suche scannt das Netz des Rechners.
   Future<TerminalDiscoveryResult> Function(HpsBridge, AgentContext)? discover,
+  TerminalBelegung? belegung,
+  TerminalWiederfinder? wiederfinder,
+  LaufendeVorgaenge? vorgaenge,
 }) {
   return (Router router, AgentContext ctx) {
     final hps = bridge ?? HpsBridge(log: ctx.log);
+    final t = _Terminal(
+      hps: hps,
+      ctx: ctx,
+      warmhalter: warmhalter,
+      belegung: belegung ?? TerminalBelegung(clock: ctx.clock),
+      wiederfinder: wiederfinder,
+      vorgaenge: vorgaenge,
+    );
     final suche =
         discover ??
         (HpsBridge h, AgentContext c) =>
-            discoverTerminals(bridge: h, log: c.log);
+            discoverTerminals(bridge: h, log: c.log, belegung: t.belegung);
 
     router
-      ..post(
-        '/v1/terminal/test',
-        (Request r) => _handleTest(hps, r, warmhalter),
-      )
+      ..post('/v1/terminal/test', (Request r) => _handleTest(t, r))
       ..post(
         '/v1/terminal/discover',
-        (Request r) => _handleDiscover(hps, ctx, suche, r),
+        (Request r) => _handleDiscover(t, suche, r),
       )
-      ..post(
-        '/v1/terminal/diagnosis',
-        (Request r) => _handleDiagnosis(hps, r, warmhalter),
-      )
-      ..post(
-        '/v1/terminal/payment',
-        (Request r) => _handlePayment(hps, r, warmhalter),
-      )
-      ..post('/v1/terminal/status', (Request r) => _handleStatus(hps, r))
-      ..post('/v1/terminal/abort', (Request r) => _handleAbort(hps, r))
-      ..post(
-        '/v1/terminal/refund',
-        (Request r) => _handleRefund(hps, r, warmhalter),
-      )
-      ..post('/v1/terminal/cancel', (Request r) => _handleCancel(hps, r));
+      ..post('/v1/terminal/diagnosis', (Request r) => _handleDiagnosis(t, r))
+      ..post('/v1/terminal/payment', (Request r) => _handlePayment(t, r))
+      ..post('/v1/terminal/status', (Request r) => _handleStatus(t, r))
+      ..post('/v1/terminal/abort', (Request r) => _handleAbort(t, r))
+      ..post('/v1/terminal/refund', (Request r) => _handleRefund(t, r))
+      ..post('/v1/terminal/cancel', (Request r) => _handleCancel(t, r))
+      ..post('/v1/terminal/locate', (Request r) => _handleLocate(t, r));
   };
 }
+
+/// Alles, was die Terminal-Routen teilen.
+class _Terminal {
+  _Terminal({
+    required this.hps,
+    required this.ctx,
+    required this.warmhalter,
+    required this.belegung,
+    required this.wiederfinder,
+    required this.vorgaenge,
+  });
+
+  final HpsBridge hps;
+  final AgentContext ctx;
+  final TerminalWarmhalter? warmhalter;
+  final TerminalBelegung belegung;
+  final TerminalWiederfinder? wiederfinder;
+
+  /// Zählt lange Aufrufe als laufende Vorgänge (Update- und Schlafsperre).
+  final LaufendeVorgaenge? vorgaenge;
+
+  /// `terminal_busy`: nachweislich nichts gesendet.
+  Response besetzt() => failJson(
+    errorTerminalBusy,
+    'Am Terminal läuft gerade ein Vorgang – bitte kurz warten.',
+    detail: const <String, Object?>{
+      'terminalHttpStatus': terminalBusyHttpStatus,
+    },
+  );
+
+  /// Ob die Belegung gilt (Not-Aus `busy_lock`).
+  bool sperrtBei(Request request) =>
+      configOf(request).aktiv(Neuerung.betriebSperre);
+
+  /// Führt [aufruf] an [ziel] aus und baut die Antwort.
+  ///
+  /// Kommt keine Verbindung zustande (`terminal_unreachable`, nachweislich
+  /// nichts gesendet) und kennt Connect für [tid] eine andere, höchstens 24 h
+  /// alt bestätigte Adresse, läuft derselbe Aufruf dort genau einmal – auch
+  /// Zahlung und Gutschrift ([geld]; vorher bei älterer Bestätigung eine
+  /// Diagnose dort). Ein Netzscan läuft hier nie.
+  ///
+  /// `endpoint` nennt die Adresse, an die der Aufruf zuletzt ging; kam auch
+  /// an der Ersatzadresse keine Verbindung zustande, die ursprüngliche
+  /// (`relocated: false`) – dann ging nirgends etwas hinaus.
+  Future<Response> ausfuehren(
+    Request request,
+    (String, int) ziel, {
+    required Future<Object?> Function(String host, int port) aufruf,
+    String? tid,
+    bool merken = false,
+    bool geld = false,
+  }) async {
+    final config = configOf(request);
+    final umleiten = config.aktiv(Neuerung.terminalWiederfinden);
+    var host = ziel.$1;
+    var port = ziel.$2;
+    var umgeleitet = false;
+    Map<String, Object?> endpoint() => <String, Object?>{
+      'endpoint': <String, Object?>{
+        'host': host,
+        'port': port,
+        'relocated': umgeleitet,
+      },
+    };
+
+    Object? daten;
+    try {
+      try {
+        daten = await aufruf(host, port);
+      } on HpsWegFehler catch (e) {
+        if (e.code != errorTerminalUnreachable || !umleiten || tid == null) {
+          rethrow;
+        }
+        final alt = umleitungsZiel(
+          host: host,
+          port: port,
+          tid: tid,
+          gemerkt: config.terminal,
+          jetzt: ctx.clock(),
+        );
+        if (alt == null) rethrow;
+        if (geld && !await _ersatzBestaetigt(alt, tid, config.terminal)) {
+          rethrow;
+        }
+        ctx.log.info(
+          'Terminal $tid: keine Verbindung unter $host:$port – derselbe '
+          'Aufruf geht an die bestätigte Adresse ${alt.host}:${alt.port}.',
+        );
+        try {
+          daten = await aufruf(alt.host, alt.port);
+        } on HpsWegFehler catch (zweiter) {
+          // Auch dort keine Verbindung: nirgends ging etwas hinaus, und die
+          // Antwort nennt die Adresse, die die Kasse geschickt hat.
+          if (zweiter.code == errorTerminalUnreachable) throw e;
+          host = alt.host;
+          port = alt.port;
+          umgeleitet = true;
+          rethrow;
+        }
+        host = alt.host;
+        port = alt.port;
+        umgeleitet = true;
+      }
+    } on HpsWegFehler catch (e) {
+      // Den rohen Terminal-Status mitgeben, wo es einen gab: die Kasse
+      // unterscheidet daran `409` ("Terminal is busy", nachweislich nichts
+      // belastet) von jedem anderen Fehler, der den Ausgang offen laesst.
+      // Siehe HpsWegFehler.terminalHttpStatus.
+      return failJson(
+        e.code,
+        e.message,
+        detail: e.terminalHttpStatus == null
+            ? null
+            : <String, Object?>{'terminalHttpStatus': e.terminalHttpStatus},
+        zusatz: umleiten ? endpoint() : null,
+      );
+    }
+    if (merken) {
+      final bestaetigt = tid != null && tidBestaetigt(daten, tid);
+      warmhalter?.merken(
+        host,
+        port,
+        tid: tid,
+        bestaetigt: bestaetigt,
+        serie: bestaetigt ? terminalSerie(daten) : null,
+      );
+    }
+    return okJson(<String, Object?>{'hps': daten, if (umleiten) ...endpoint()});
+  }
+
+  /// Ob die Ersatzadresse [alt] die TID für eine Geldbewegung frisch genug
+  /// bestätigt hat: höchstens [umleitungOhneDiagnose] alt, sonst eben jetzt
+  /// per Diagnose. Wirft nie.
+  Future<bool> _ersatzBestaetigt(
+    ({String host, int port}) alt,
+    String tid,
+    TerminalConfig? gemerkt,
+  ) async {
+    final am = gemerkt?.confirmedAt;
+    if (am != null) {
+      final alter = ctx.clock().difference(am);
+      if (!alter.isNegative && alter <= umleitungOhneDiagnose) return true;
+    }
+    try {
+      final antwort = await hps.diagnosis(
+        host: alt.host,
+        port: alt.port,
+        tid: tid,
+        frist: umleitungDiagnoseFrist,
+      );
+      if (tidBestaetigt(antwort, tid)) {
+        warmhalter?.merken(
+          alt.host,
+          alt.port,
+          tid: tid,
+          bestaetigt: true,
+          serie: terminalSerie(antwort),
+        );
+        return true;
+      }
+      ctx.log.info(
+        'Terminal $tid: ${alt.host}:${alt.port} bestätigt die TID nicht – '
+        'keine Umleitung.',
+      );
+    } on HpsWegFehler catch (f) {
+      ctx.log.info(
+        'Terminal $tid: ${alt.host}:${alt.port} antwortet nicht auf die '
+        'Diagnose (${f.code}) – keine Umleitung.',
+      );
+    }
+    return false;
+  }
+
+  /// Ein kurzer Aufruf (Diagnose, Test): `terminal_busy`, solange ein langer
+  /// das Terminal belegt; sonst angemeldet, damit eine Zahlung ihn abwartet.
+  Future<Response> kurz(
+    Request request,
+    (String, int) ziel, {
+    required String? tid,
+    required Future<Object?> Function(String host, int port) aufruf,
+  }) async {
+    if (!sperrtBei(request)) {
+      return ausfuehren(request, ziel, aufruf: aufruf, tid: tid, merken: true);
+    }
+    final angemeldet = belegung.kurzBeginnen(
+      tid: tid,
+      host: ziel.$1,
+      port: ziel.$2,
+    );
+    if (angemeldet == null) return besetzt();
+    try {
+      return await ausfuehren(
+        request,
+        ziel,
+        aufruf: aufruf,
+        tid: tid,
+        merken: true,
+      );
+    } finally {
+      belegung.kurzBeenden(angemeldet);
+    }
+  }
+
+  /// Ein langer Aufruf: belegt das Terminal für seine Dauer und zählt als
+  /// laufender Vorgang.
+  Future<Response> lang(
+    Request request,
+    (String, int) ziel, {
+    required String tid,
+    required LangerAufruf art,
+    required Future<Object?> Function(String host, int port) aufruf,
+    bool merken = false,
+  }) async {
+    TerminalBeleg? beleg;
+    if (sperrtBei(request)) {
+      beleg = belegung.belegen(
+        tid: tid,
+        host: ziel.$1,
+        port: ziel.$2,
+        art: art,
+      );
+      if (beleg == null) return besetzt();
+    }
+    final vorgang = vorgaenge?.beginne(VorgangsArt.terminal);
+    try {
+      // Neue kurze Aufrufe lehnt die Belegung ab jetzt ab; die schon
+      // unterwegs sind, laufen zu Ende, bevor die Zahlung hinausgeht.
+      if (beleg != null) {
+        await belegung.kurzeAbwarten(tid: tid, host: ziel.$1, port: ziel.$2);
+      }
+      return await ausfuehren(
+        request,
+        ziel,
+        aufruf: aufruf,
+        tid: tid,
+        merken: merken,
+        geld: true,
+      );
+    } finally {
+      if (vorgang != null) vorgaenge?.beende(vorgang);
+      if (beleg != null) belegung.freigeben(beleg);
+    }
+  }
+}
+
+/// Die TID aus dem Rumpf in der Form, die das Terminal annimmt.
+///
+/// Gerätetest HPS 1.14.4: eine TID mit führender Null lehnt es mit
+/// `100108 Invalid TID` ab, dieselbe ohne Null geht. Führende Nullen fallen deshalb weg (nur bei einer reinen
+/// Ziffernfolge, `0` bleibt `0`); gemerkt und verglichen wird ebenfalls diese
+/// Form. Das Paket der Kasse normiert genauso – hier doppelt, damit auch eine
+/// ältere Kasse zahlt.
+String _tidAus(Object? roh) => tidNormal(_tidRoh(roh));
+
+/// Die TID, wie die Kasse sie schickte (nur ohne Leerraum am Rand).
+String _tidRoh(Object? roh) => readString(roh)?.trim() ?? '';
+
+/// Ruft [aufruf] mit der normierten TID [tid]. Lehnt das Terminal sie mit
+/// „Invalid TID“ ab – nachweislich nichts belastet – und schickte die Kasse
+/// eine andere Form ([roh], mit führender Null), geht derselbe Aufruf genau
+/// einmal mit dieser hinaus, wie bis 1.4.2: kennt ein Terminal die TID nur
+/// mit Null, zahlt es so weiter (die Normierung beruht auf einem Gerätetest
+/// mit HPS 1.14.4).
+Future<Object?> _mitRohTid(
+  _Terminal t,
+  String tid,
+  String roh,
+  Future<Object?> Function(String tid) aufruf,
+) async {
+  final antwort = await aufruf(tid);
+  if (roh == tid || roh.isEmpty || !_tidAbgelehnt(antwort)) return antwort;
+  t.ctx.log.info(
+    'Terminal: TID $tid abgelehnt (Invalid TID) – derselbe Aufruf einmal '
+    'in der Form der Kasse.',
+  );
+  return aufruf(roh);
+}
+
+/// Ob [antwort] „Invalid TID“ meldet ([ungueltigeTidCodes]).
+bool _tidAbgelehnt(Object? antwort) =>
+    antwort is Map &&
+    ungueltigeTidCodes.contains('${antwort['responseCode']}'.trim());
 
 /// Host und Port aus dem Rumpf; `null` + fertige Fehlerantwort bei Unsinn.
 (String, int)? _ziel(Map<String, Object?> body) {
@@ -82,77 +394,64 @@ Response _zielFehler() => failJson(
   'Es fehlt die Adresse des Terminals (host, optional port).',
 );
 
-Future<Response> _mitHps(
-  Future<Object?> Function() aufruf, {
-  void Function()? beiErfolg,
-}) async {
-  try {
-    final daten = await aufruf();
-    beiErfolg?.call();
-    return okJson(<String, Object?>{'hps': daten});
-  } on HpsWegFehler catch (e) {
-    // Den rohen Terminal-Status mitgeben, wo es einen gab: die Kasse
-    // unterscheidet daran `409` ("Terminal is busy", nachweislich nichts
-    // belastet) von jedem anderen Fehler, der den Ausgang offen laesst.
-    // Siehe HpsWegFehler.terminalHttpStatus.
-    return failJson(
-      e.code,
-      e.message,
-      detail: e.terminalHttpStatus == null
-          ? null
-          : <String, Object?>{'terminalHttpStatus': e.terminalHttpStatus},
-    );
-  }
-}
-
 /// `POST /v1/terminal/test` `{host, port?, tid?}` — Erreichbarkeit.
 ///
 /// Ohne TID die nebenwirkungsfreie Probe (`/api/terminals/0/diagnosis`,
 /// Antwort „Invalid TID“ beweist das HPS); mit TID die echte Diagnose samt
 /// Gerätestatus. Antwortet die Gegenstelle zwar, aber nicht im HPS-Format,
 /// ist es kein Terminal (`terminal_error`).
-Future<Response> _handleTest(
-  HpsBridge hps,
-  Request request, [
-  TerminalWarmhalter? warmhalter,
-]) async {
+Future<Response> _handleTest(_Terminal t, Request request) async {
   final body = await readJsonBody(request);
   if (body.error != null) return body.error!;
   final ziel = _ziel(body.data!);
   if (ziel == null) return _zielFehler();
-  final tid = readString(body.data!['tid'])?.trim() ?? '';
-  return _mitHps(() async {
-    final antwort = tid.isEmpty
-        ? await hps.probe(host: ziel.$1, port: ziel.$2)
-        : await hps.diagnosis(host: ziel.$1, port: ziel.$2, tid: tid);
-    if (!siehtNachHpsAus(antwort)) {
-      throw HpsWegFehler(
-        errorTerminalError,
-        'Unter ${ziel.$1}:${ziel.$2} antwortet etwas – aber kein '
-        'Hobex-Terminal.',
-      );
-    }
-    return antwort;
-  }, beiErfolg: () => warmhalter?.merken(ziel.$1, ziel.$2));
+  final tid = _tidAus(body.data!['tid']);
+  final roh = _tidRoh(body.data!['tid']);
+  return t.kurz(
+    request,
+    ziel,
+    tid: tid.isEmpty ? null : tid,
+    aufruf: (host, port) async {
+      final antwort = tid.isEmpty
+          ? await t.hps.probe(host: host, port: port)
+          : await _mitRohTid(
+              t,
+              tid,
+              roh,
+              (x) => t.hps.diagnosis(host: host, port: port, tid: x),
+            );
+      if (!siehtNachHpsAus(antwort)) {
+        throw HpsWegFehler(
+          errorTerminalError,
+          'Unter $host:$port antwortet etwas – aber kein Hobex-Terminal.',
+        );
+      }
+      return antwort;
+    },
+  );
 }
 
 /// `POST /v1/terminal/diagnosis` `{host, port?, tid}`.
-Future<Response> _handleDiagnosis(
-  HpsBridge hps,
-  Request request, [
-  TerminalWarmhalter? warmhalter,
-]) async {
+Future<Response> _handleDiagnosis(_Terminal t, Request request) async {
   final body = await readJsonBody(request);
   if (body.error != null) return body.error!;
   final ziel = _ziel(body.data!);
   if (ziel == null) return _zielFehler();
-  final tid = readString(body.data!['tid'])?.trim() ?? '';
+  final tid = _tidAus(body.data!['tid']);
+  final roh = _tidRoh(body.data!['tid']);
   if (!_tid.hasMatch(tid)) {
     return failJson(errorBadRequest, 'Es fehlt die Terminal-ID (tid).');
   }
-  return _mitHps(
-    () => hps.diagnosis(host: ziel.$1, port: ziel.$2, tid: tid),
-    beiErfolg: () => warmhalter?.merken(ziel.$1, ziel.$2),
+  return t.kurz(
+    request,
+    ziel,
+    tid: tid,
+    aufruf: (host, port) => _mitRohTid(
+      t,
+      tid,
+      roh,
+      (x) => t.hps.diagnosis(host: host, port: port, tid: x),
+    ),
   );
 }
 
@@ -169,18 +468,15 @@ Future<Response> _handleDiagnosis(
 /// gesendet“; `terminal_offline`, `timeout` und `terminal_error` (außer
 /// `detail.terminalHttpStatus == 409`) lassen den Ausgang offen — dann über
 /// `/v1/terminal/status` klären, nie blind neu zahlen.
-Future<Response> _handlePayment(
-  HpsBridge hps,
-  Request request, [
-  TerminalWarmhalter? warmhalter,
-]) async {
+Future<Response> _handlePayment(_Terminal t, Request request) async {
   final body = await readJsonBody(request);
   if (body.error != null) return body.error!;
   final daten = body.data!;
   final ziel = _ziel(daten);
   if (ziel == null) return _zielFehler();
 
-  final tid = readString(daten['tid'])?.trim() ?? '';
+  final tid = _tidAus(daten['tid']);
+  final roh = _tidRoh(daten['tid']);
   final transactionId = readString(daten['transactionId'])?.trim() ?? '';
   final amountCents = daten['amountCents'];
   final tipCents = daten['tipCents'];
@@ -208,19 +504,28 @@ Future<Response> _handlePayment(
     return failJson(errorBadRequest, 'Sprache: DE, IT oder SI.');
   }
 
-  return _mitHps(
-    () => hps.payment(
-      host: ziel.$1,
-      port: ziel.$2,
-      tid: tid,
-      amountCents: amountCents,
-      transactionId: transactionId,
-      tipCents: tipCents as int?,
-      reference: readString(daten['reference'])?.trim(),
-      currency: currency ?? 'EUR',
-      language: language,
+  return t.lang(
+    request,
+    ziel,
+    tid: tid,
+    art: LangerAufruf.zahlung,
+    merken: true,
+    aufruf: (host, port) => _mitRohTid(
+      t,
+      tid,
+      roh,
+      (x) => t.hps.payment(
+        host: host,
+        port: port,
+        tid: x,
+        amountCents: amountCents,
+        transactionId: transactionId,
+        tipCents: tipCents as int?,
+        reference: readString(daten['reference'])?.trim(),
+        currency: currency ?? 'EUR',
+        language: language,
+      ),
     ),
-    beiErfolg: () => warmhalter?.merken(ziel.$1, ziel.$2),
   );
 }
 
@@ -233,18 +538,15 @@ Future<Response> _handlePayment(
 /// vergibt und sich merkt; `originalTransactionId` verweist auf die
 /// erstattete Zahlung — beide müssen die Kasse mitbringen, keine wird hier
 /// erzeugt.
-Future<Response> _handleRefund(
-  HpsBridge hps,
-  Request request, [
-  TerminalWarmhalter? warmhalter,
-]) async {
+Future<Response> _handleRefund(_Terminal t, Request request) async {
   final body = await readJsonBody(request);
   if (body.error != null) return body.error!;
   final daten = body.data!;
   final ziel = _ziel(daten);
   if (ziel == null) return _zielFehler();
 
-  final tid = readString(daten['tid'])?.trim() ?? '';
+  final tid = _tidAus(daten['tid']);
+  final roh = _tidRoh(daten['tid']);
   final transactionId = readString(daten['transactionId'])?.trim() ?? '';
   final originalTransactionId =
       readString(daten['originalTransactionId'])?.trim() ?? '';
@@ -277,42 +579,49 @@ Future<Response> _handleRefund(
     return failJson(errorBadRequest, 'Sprache: DE, IT oder SI.');
   }
 
-  return _mitHps(
-    () => hps.refund(
-      host: ziel.$1,
-      port: ziel.$2,
-      tid: tid,
-      amountCents: amountCents,
-      transactionId: transactionId,
-      originalTransactionId: originalTransactionId,
-      reference: readString(daten['reference'])?.trim(),
-      currency: currency ?? 'EUR',
-      language: language,
+  return t.lang(
+    request,
+    ziel,
+    tid: tid,
+    art: LangerAufruf.gutschrift,
+    merken: true,
+    aufruf: (host, port) => _mitRohTid(
+      t,
+      tid,
+      roh,
+      (x) => t.hps.refund(
+        host: host,
+        port: port,
+        tid: x,
+        amountCents: amountCents,
+        transactionId: transactionId,
+        originalTransactionId: originalTransactionId,
+        reference: readString(daten['reference'])?.trim(),
+        currency: currency ?? 'EUR',
+        language: language,
+      ),
     ),
-    beiErfolg: () => warmhalter?.merken(ziel.$1, ziel.$2),
   );
 }
 
 /// `POST /v1/terminal/status` `{host, port?, tid, transactionId}`.
-Future<Response> _handleStatus(HpsBridge hps, Request request) =>
-    _mitTransaktion(hps, request, (hps, ziel, tid, txId) {
-      return hps.status(
-        host: ziel.$1,
-        port: ziel.$2,
-        tid: tid,
-        transactionId: txId,
-      );
-    });
+///
+/// Bewusst nie `terminal_busy`: mit dieser Abfrage klärt die Kasse genau die
+/// Zahlung, die gerade läuft oder eben gerissen ist.
+Future<Response> _handleStatus(_Terminal t, Request request) => _mitTransaktion(
+  t,
+  request,
+  (host, port, tid, txId) {
+    return t.hps.status(host: host, port: port, tid: tid, transactionId: txId);
+  },
+);
 
 /// `POST /v1/terminal/abort` `{host, port?, tid, transactionId}`.
-Future<Response> _handleAbort(HpsBridge hps, Request request) =>
-    _mitTransaktion(hps, request, (hps, ziel, tid, txId) {
-      return hps.abort(
-        host: ziel.$1,
-        port: ziel.$2,
-        tid: tid,
-        transactionId: txId,
-      );
+///
+/// Bewusst nie `terminal_busy`: der Abbruch gilt der laufenden Zahlung.
+Future<Response> _handleAbort(_Terminal t, Request request) =>
+    _mitTransaktion(t, request, (host, port, tid, txId) {
+      return t.hps.abort(host: host, port: port, tid: tid, transactionId: txId);
     });
 
 /// `POST /v1/terminal/cancel`
@@ -323,14 +632,15 @@ Future<Response> _handleAbort(HpsBridge hps, Request request) =>
 /// neue. `amountCents` ist PFLICHT: das Terminal weist einen Void ohne
 /// Betrag mit `400 Missing amount` ab (gemessen 27.08.2026); wird deshalb
 /// hier verlangt, bevor irgendetwas das Netz berührt.
-Future<Response> _handleCancel(HpsBridge hps, Request request) async {
+Future<Response> _handleCancel(_Terminal t, Request request) async {
   final body = await readJsonBody(request);
   if (body.error != null) return body.error!;
   final daten = body.data!;
   final ziel = _ziel(daten);
   if (ziel == null) return _zielFehler();
 
-  final tid = readString(daten['tid'])?.trim() ?? '';
+  final tid = _tidAus(daten['tid']);
+  final roh = _tidRoh(daten['tid']);
   final transactionId = readString(daten['transactionId'])?.trim() ?? '';
   final amountCents = daten['amountCents'];
   final currency = readString(daten['currency'])?.trim();
@@ -351,29 +661,40 @@ Future<Response> _handleCancel(HpsBridge hps, Request request) async {
     return failJson(errorBadRequest, 'Sprache: DE, IT oder SI.');
   }
 
-  return _mitHps(
-    () => hps.cancel(
-      host: ziel.$1,
-      port: ziel.$2,
-      tid: tid,
-      transactionId: transactionId,
-      amountCents: amountCents,
-      currency: currency ?? 'EUR',
-      language: language,
+  return t.lang(
+    request,
+    ziel,
+    tid: tid,
+    art: LangerAufruf.aufhebung,
+    aufruf: (host, port) => _mitRohTid(
+      t,
+      tid,
+      roh,
+      (x) => t.hps.cancel(
+        host: host,
+        port: port,
+        tid: x,
+        transactionId: transactionId,
+        amountCents: amountCents,
+        currency: currency ?? 'EUR',
+        language: language,
+      ),
     ),
   );
 }
 
 Future<Response> _mitTransaktion(
-  HpsBridge hps,
+  _Terminal t,
   Request request,
-  Future<Object?> Function(HpsBridge, (String, int), String, String) aufruf,
+  Future<Object?> Function(String host, int port, String tid, String txId)
+  aufruf,
 ) async {
   final body = await readJsonBody(request);
   if (body.error != null) return body.error!;
   final ziel = _ziel(body.data!);
   if (ziel == null) return _zielFehler();
-  final tid = readString(body.data!['tid'])?.trim() ?? '';
+  final tid = _tidAus(body.data!['tid']);
+  final roh = _tidRoh(body.data!['tid']);
   final txId = readString(body.data!['transactionId'])?.trim() ?? '';
   if (!_tid.hasMatch(tid)) {
     return failJson(errorBadRequest, 'Es fehlt die Terminal-ID (tid).');
@@ -381,20 +702,55 @@ Future<Response> _mitTransaktion(
   if (!_transactionId.hasMatch(txId)) {
     return failJson(errorBadRequest, 'Es fehlt die Transaktions-ID.');
   }
-  return _mitHps(() => aufruf(hps, ziel, tid, txId));
+  return t.ausfuehren(
+    request,
+    ziel,
+    tid: tid,
+    aufruf: (host, port) =>
+        _mitRohTid(t, tid, roh, (x) => aufruf(host, port, x, txId)),
+  );
 }
 
 /// `POST /v1/terminal/discover` `{}` — sucht Hobex-Terminals im Kassen-Netz
 /// (Port-8080-Scan wie bei den Druckern, danach fragt `GET /api/terminals`
 /// nach). Liefert Treffer samt TIDs und die abgesuchten Netze.
 Future<Response> _handleDiscover(
-  HpsBridge hps,
-  AgentContext ctx,
+  _Terminal t,
   Future<TerminalDiscoveryResult> Function(HpsBridge, AgentContext) suche,
   Request request,
 ) async {
   final body = await readJsonBody(request, allowEmpty: true);
   if (body.error != null) return body.error!;
-  final ergebnis = await suche(hps, ctx);
+  // Die Suche fragt jedes Terminal im Netz – nie neben einer Zahlung.
+  if (t.sperrtBei(request) && t.belegung.irgendeins) return t.besetzt();
+  final ergebnis = await suche(t.hps, t.ctx);
   return okJson(ergebnis.toJson());
+}
+
+/// `POST /v1/terminal/locate` `{tid}` — sucht das Terminal dieser TID im Netz
+/// (Suche, dann Diagnose je Treffer) und merkt sich die eine bestätigte
+/// Adresse. Antwort `{tid, host, port, relocated, from?}`; ohne eindeutigen
+/// Treffer `device_not_found`, während eines langen Aufrufs `terminal_busy`.
+Future<Response> _handleLocate(_Terminal t, Request request) async {
+  final body = await readJsonBody(request);
+  if (body.error != null) return body.error!;
+  final tid = _tidAus(body.data!['tid']);
+  if (!_tid.hasMatch(tid)) {
+    return failJson(errorBadRequest, 'Es fehlt die Terminal-ID (tid).');
+  }
+  if (t.belegung.irgendeins) return t.besetzt();
+  final fund = await t.wiederfinder?.suche(tid);
+  if (fund == null) {
+    return failJson(
+      errorDeviceNotFound,
+      'Das Terminal mit dieser TID ist im Netz nicht eindeutig zu finden.',
+    );
+  }
+  return okJson(<String, Object?>{
+    'tid': fund.tid,
+    'host': fund.host,
+    'port': fund.port,
+    'relocated': fund.umgezogen,
+    if (fund.umgezogen) 'from': fund.vorher,
+  });
 }

@@ -586,6 +586,9 @@ class _RecordingDiscovery implements PrinterDiscovery {
   int get scanPort => rawPrintPort;
 
   @override
+  Duration get txtFrist => mdnsTxtFrist;
+
+  @override
   Future<DiscoveryResult> discover({bool scan = false}) async {
     scans.add(scan);
     return DiscoveryResult(

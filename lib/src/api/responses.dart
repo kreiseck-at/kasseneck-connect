@@ -26,6 +26,9 @@ const String errorUpgradeRequired = 'upgrade_required';
 /// kommen base64-kodiert im Rumpf.
 const int defaultJsonBodyLimit = 64 * 1024;
 
+/// Wiederfinden ohne eindeutigen Treffer (`locate`, ab 1.5.0).
+const String errorDeviceNotFound = 'device_not_found';
+
 /// Kopplungscode falsch oder verbraucht.
 const String errorPairInvalid = 'pair_invalid';
 
@@ -49,12 +52,16 @@ Response okJson(Map<String, Object?> data, {Map<String, Object>? headers}) {
 /// Fehlerantwort `{ok: false, error: {code, message, detail?}}`.
 ///
 /// [message] ist deutscher Klartext — die Kasse zeigt ihn unverändert an.
+///
+/// [zusatz] legt weitere Felder neben `error` (etwa `endpoint` der
+/// Terminal-Routen) – additiv, die Form von `error` bleibt.
 Response failJson(
   String code,
   String message, {
   int status = 200,
   Object? detail,
   Map<String, Object>? headers,
+  Map<String, Object?>? zusatz,
 }) {
   return _json(status, <String, Object?>{
     'ok': false,
@@ -63,6 +70,7 @@ Response failJson(
       'message': message,
       if (detail != null) 'detail': detail,
     },
+    ...?zusatz,
   }, headers);
 }
 

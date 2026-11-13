@@ -16,7 +16,8 @@ const String eventPrinterState = 'printer.state';
 const String eventAgentRestarting = 'agent.restarting';
 
 /// Ereignis: Fortschritt einer Aktualisierung
-/// (`{version, phase: download|check|ready, percent}`).
+/// (`{version, phase: download|check|waiting|ready, percent}`); `waiting`
+/// heißt: ein Druck oder eine Zahlung läuft, der Installer öffnet danach.
 const String eventUpdateProgress = 'update.progress';
 
 /// Ereignis: eine Aktualisierung ist gescheitert (`{version, code, message}`);

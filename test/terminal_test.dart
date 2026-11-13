@@ -197,10 +197,10 @@ void main() {
         final antwort = await senden('/v1/terminal/test', {
           'host': '127.0.0.1',
           'port': hps.port,
-          'tid': '3600335',
+          'tid': '12345678',
         });
         expect(antwort['ok'], isTrue);
-        expect(hps.aufrufe.single.pfad, '/api/terminals/3600335/diagnosis');
+        expect(hps.aufrufe.single.pfad, '/api/terminals/12345678/diagnosis');
         expect((antwort['hps'] as Map)['deviceStatus'], 'IN_OPERATION');
       },
     );
@@ -441,6 +441,32 @@ void main() {
       expect(ergebnis.found.single.host, '127.0.0.1');
       // Die Probe kennt die TID nicht — sie steht im Vertrag/Panel.
       expect(ergebnis.found.single.tids, isEmpty);
+      expect(ergebnis.toJson().containsKey('incomplete'), isFalse);
+    });
+
+    test('Terminal-Suche während einer Zahlung: keine Probe', () async {
+      final belegung = TerminalBelegung()
+        ..belegen(
+          tid: '12345678',
+          host: '192.168.0.70',
+          port: 8080,
+          art: LangerAufruf.zahlung,
+        );
+      final ergebnis = await discoverTerminals(
+        bridge: HpsBridge(log: log),
+        log: log,
+        belegung: belegung,
+        port: hps.port,
+        interfaces: () async => <LocalInterface>[
+          LocalInterface(name: 'lo-test', address: '127.0.0.2'),
+        ],
+      );
+      expect(ergebnis.found, isEmpty);
+      expect(hps.aufrufe, isEmpty, reason: 'nie neben einer Zahlung');
+      // Die Kasse erfährt, dass die Suche unvollständig ist.
+      expect(ergebnis.unvollstaendig, isTrue);
+      expect(ergebnis.toJson()['incomplete'], isTrue);
+      expect(ergebnis.toJson()['note'], suchUnvollstaendigHinweis);
     });
 
     test('ein fremder Dienst auf dem HPS-Port ist kein Treffer', () async {
@@ -627,7 +653,7 @@ void main() {
         final antwort = await senden('/v1/terminal/payment', <String, Object?>{
           'host': '127.0.0.1',
           'port': hps.port,
-          'tid': '3600335',
+          'tid': '12345678',
           'transactionId': '178786910603700000',
           'amountCents': 1,
         });
@@ -645,7 +671,7 @@ void main() {
         // Status. Dann darf auch keiner behauptet werden.
         final antwort = await senden('/v1/terminal/payment', <String, Object?>{
           'host': '127.0.0.1', 'port': 1, // nichts hoert dort
-          'tid': '3600335', 'transactionId': '178786910603700000',
+          'tid': '12345678', 'transactionId': '178786910603700000',
           'amountCents': 1,
         });
         expect(antwort['ok'], isFalse);
@@ -1189,6 +1215,71 @@ void main() {
       final linux = await zahle(bruecke('linux'));
       expect(linux?.code, errorTerminalUnreachable);
       expect(linux?.message, isNot(contains('Lokales Netzwerk')));
+    });
+  });
+
+  group('Gesamtfrist je Aufruf', () {
+    late ServerSocket langsam;
+    late Directory temp;
+    // Virtuelle Uhr der Brücke: der Fake stellt sie vor, während er antwortet.
+    late DateTime uhr;
+
+    setUp(() async {
+      temp = Directory.systemTemp.createTempSync('connect-frist-');
+      uhr = DateTime(2026, 11, 10, 9);
+      // Antwortet in zwei Etappen. Bevor der Kopf hinausgeht, ist auf der
+      // virtuellen Uhr die ganze Frist verstrichen; der Rumpf folgt nach
+      // 300 ms echter Zeit.
+      langsam = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+      langsam.listen((socket) {
+        socket.done.ignore();
+        final gelesen = <int>[];
+        socket.listen((daten) async {
+          gelesen.addAll(daten);
+          if (!utf8
+              .decode(gelesen, allowMalformed: true)
+              .contains('\r\n\r\n')) {
+            return;
+          }
+          gelesen.clear();
+          const rumpf = '{"responseCode":"0"}';
+          try {
+            uhr = uhr.add(const Duration(minutes: 1));
+            socket.add(
+              utf8.encode(
+                'HTTP/1.1 200 OK\r\n'
+                'Content-Type: application/json\r\n'
+                'Content-Length: ${rumpf.length}\r\n\r\n',
+              ),
+            );
+            await Future<void>.delayed(const Duration(milliseconds: 300));
+            socket.add(utf8.encode(rumpf));
+            await socket.close();
+          } on Object {
+            // Der Absender hat schon aufgegeben.
+          }
+        }, onError: (Object _) {});
+      });
+    });
+
+    tearDown(() async {
+      await langsam.close();
+      temp.deleteSync(recursive: true);
+    });
+
+    test('Kopf und Rumpf teilen sich eine Frist', () async {
+      // Je Abschnitt eine eigene Frist (wie vorher) ließe den Rumpf noch eine
+      // Minute warten und käme an.
+      final bruecke = HpsBridge(
+        log: AgentLog(Directory(p.join(temp.path, 'logs'))),
+        kurzTimeout: const Duration(minutes: 1),
+        clock: () => uhr,
+      );
+      final fehler = await bruecke
+          .diagnosis(host: '127.0.0.1', port: langsam.port, tid: '12345678')
+          .then<HpsWegFehler?>((_) => null)
+          .onError<HpsWegFehler>((e, _) => e);
+      expect(fehler?.code, errorTerminalTimeout);
     });
   });
 }

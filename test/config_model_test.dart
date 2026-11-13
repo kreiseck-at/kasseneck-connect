@@ -305,4 +305,155 @@ void main() {
       });
     });
   });
+
+  group('Kennung, Adresswechsel, Schalter (ab 1.5.0)', () {
+    test('MAC-Schreibweisen werden einheitlich, Unsinn fällt weg', () {
+      const faelle = <String?, String?>{
+        '0:26:ab:0:0:1': '00:26:ab:00:00:01',
+        '00-26-AB-00-00-01': '00:26:ab:00:00:01',
+        '00:26:ab:00:00:01': '00:26:ab:00:00:01',
+        ' 00:26:ab:00:00:01 ': '00:26:ab:00:00:01',
+        'ff:ff:ff:ff:ff:ff': null,
+        '0:0:0:0:0:0': null,
+        '(incomplete)': null,
+        '00:26:ab:00:00': null,
+        '00:26:ab:00:00:01:02': null,
+        '00:26:ab:00:00:0g': null,
+        '000:26:ab:00:00:01': null,
+        null: null,
+      };
+      faelle.forEach((roh, erwartet) {
+        expect(normalizeMac(roh), erwartet, reason: '$roh');
+      });
+    });
+
+    test('Kennung am Drucker übersteht den Rundlauf', () {
+      final drucker = PrinterConfig(
+        id: 'p1',
+        name: 'Bon',
+        kind: PrinterKind.tcp9100,
+        host: '192.168.0.50',
+        model: 'TM-m30III',
+        serial: 'X5ZT000123',
+        mac: '00:26:ab:00:00:01',
+        identifiedAt: DateTime.utc(2026, 11, 10, 9),
+        identitySource: KennungsQuelle.escpos,
+      );
+      final kopie = PrinterConfig.fromJson(
+        readMap(jsonDecode(jsonEncode(drucker.toJson())))!,
+      );
+      expect(kopie.model, 'TM-m30III');
+      expect(kopie.serial, 'X5ZT000123');
+      expect(kopie.mac, '00:26:ab:00:00:01');
+      expect(kopie.identifiedAt, DateTime.utc(2026, 11, 10, 9));
+      expect(kopie.identitySource, KennungsQuelle.escpos);
+      expect(kopie.hatKennung, isTrue);
+    });
+
+    test('die API-Form eines Druckers bleibt die von 1.4.2', () {
+      final drucker = PrinterConfig(
+        id: 'p1',
+        name: 'Bon',
+        kind: PrinterKind.epos,
+        host: '192.168.0.50',
+        devid: 'local_printer',
+        serial: 'X5ZT000123',
+        extras: const <String, Object?>{'zukunft': 1},
+      );
+      expect(drucker.toApiJson().keys, <String>[
+        'id',
+        'name',
+        'kind',
+        'host',
+        'port',
+        'devid',
+      ]);
+    });
+
+    test('überlange oder leere Kennungstexte werden nicht gespeichert', () {
+      final drucker = PrinterConfig.fromJson(<String, Object?>{
+        'id': 'p1',
+        'kind': 'tcp9100',
+        'host': '192.168.0.50',
+        'model': '',
+        'serial': 'X' * (kennungsTextMaxLength + 1),
+        'mac': 'kaputt',
+        'identitySource': 'unbekannt',
+      });
+      expect(drucker.model, isNull);
+      expect(drucker.serial, isNull);
+      expect(drucker.mac, isNull);
+      expect(drucker.identitySource, isNull);
+    });
+
+    test('Terminal mit TID, MAC und Bestätigung übersteht den Rundlauf', () {
+      final terminal = TerminalConfig(
+        host: '192.168.0.60',
+        tid: '12345678',
+        mac: '00:26:ab:00:00:02',
+        confirmedAt: DateTime.utc(2026, 11, 10, 9),
+      );
+      final kopie = TerminalConfig.fromJson(
+        readMap(jsonDecode(jsonEncode(terminal.toJson())))!,
+      );
+      expect(kopie.tid, '12345678');
+      expect(kopie.mac, '00:26:ab:00:00:02');
+      expect(kopie.confirmedAt, DateTime.utc(2026, 11, 10, 9));
+    });
+
+    test('Adresswechsel: höchstens die letzten 20, kaputte fallen weg', () {
+      var config = AgentConfig();
+      for (var i = 0; i < 25; i++) {
+        config = config.mitAdressWechsel(
+          AdressWechsel(
+            at: DateTime.utc(2026, 11, 10, 9, i),
+            art: i.isEven ? GeraeteArt.drucker : GeraeteArt.terminal,
+            kennung: i.isEven ? 'p_$i' : '12345678',
+            von: '192.168.0.50:9100',
+            nach: '192.168.0.61:9100',
+          ),
+        );
+      }
+      expect(config.relocations, hasLength(adressWechselLimit));
+      expect(config.relocations.first.at, DateTime.utc(2026, 11, 10, 9, 5));
+
+      final roh = config.toJson();
+      final liste = (roh['relocations']! as List<Object?>).toList()
+        ..add(<String, Object?>{'kind': 'printer'})
+        ..add(<String, Object?>{
+          'at': '2026-11-10T09:00:00Z',
+          'kind': 'terminal',
+          'from': 'a',
+          'to': 'b',
+        });
+      final kopie = AgentConfig.fromJson(<String, Object?>{
+        ...roh,
+        'relocations': liste,
+      });
+      expect(kopie.relocations, hasLength(adressWechselLimit));
+      expect(kopie.relocations.last.kennung, 'p_24');
+      expect(kopie.relocations.first.toJson()['tid'], '12345678');
+      expect(kopie.relocations[1].toJson()['id'], 'p_6');
+      // Englisch wie das Ereignis printer.relocated.
+      expect(kopie.relocations.last.toJson(), <String, Object?>{
+        'at': '2026-11-10T09:24:00.000Z',
+        'kind': 'printer',
+        'id': 'p_24',
+        'from': '192.168.0.50:9100',
+        'to': '192.168.0.61:9100',
+      });
+    });
+
+    test('Schalter: Vorgabe an, abgeschaltet nur, was genannt ist', () {
+      final config = AgentConfig.fromJson(<String, Object?>{
+        'disabledFeatures': <Object?>['printer_status', 42, 'unbekannt'],
+      });
+      expect(config.aktiv(Neuerung.druckerStatus), isFalse);
+      expect(config.aktiv(Neuerung.druckerKennung), isTrue);
+      expect(config.disabledFeatures, <String>['printer_status', 'unbekannt']);
+      expect(Neuerung.fromWireName('sleep_lock'), Neuerung.schlafsperre);
+      expect(Neuerung.fromWireName('gibt_es_nicht'), isNull);
+      expect(AgentConfig().toJson().containsKey('disabledFeatures'), isFalse);
+    });
+  });
 }

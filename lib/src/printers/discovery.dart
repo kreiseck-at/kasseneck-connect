@@ -5,6 +5,7 @@ import 'package:multicast_dns/multicast_dns.dart';
 
 import '../config/model.dart';
 import '../log/logger.dart';
+import 'kennung.dart';
 
 /// Dienste, unter denen sich Netzwerkdrucker im LAN melden.
 const List<String> printerServices = <String>[
@@ -45,6 +46,8 @@ class DiscoveredPrinter {
     required this.port,
     required this.kind,
     this.name,
+    this.model,
+    this.serial,
   });
 
   final String host;
@@ -54,6 +57,12 @@ class DiscoveredPrinter {
   /// Anzeigename aus mDNS; beim Netzscan gibt es keinen.
   final String? name;
 
+  /// Modell aus den TXT-Einträgen des Dienstes (ab 1.5.0, `identity`).
+  final String? model;
+
+  /// Seriennummer aus den TXT-Einträgen, falls das Gerät eine nennt.
+  final String? serial;
+
   /// Schlüssel für die Doppelbereinigung.
   String get key => '$host:$port';
 
@@ -62,6 +71,8 @@ class DiscoveredPrinter {
     'port': port,
     if (name != null) 'name': name,
     'kind': kind.wireName,
+    if (model != null) 'model': model,
+    if (serial != null) 'serial': serial,
   };
 
   @override
@@ -141,6 +152,11 @@ typedef InterfaceProbe = Future<List<LocalInterface>> Function();
 typedef TcpProbe =
     Future<bool> Function(String host, int port, Duration timeout);
 
+/// Frist der TXT-Abfrage je gefundenem Dienst (Modell, Seriennummer): ein
+/// Drucker, der keine TXT-Einträge nennt, hielte die Suche sonst bis zum Ende
+/// der mDNS-Frist auf – je Drucker einmal.
+const Duration mdnsTxtFrist = Duration(milliseconds: 500);
+
 /// Findet Netzwerkdrucker: erst per mDNS, auf Wunsch zusätzlich per Netzscan.
 ///
 /// Beide Wege sind über den Konstruktor austauschbar — in Tests läuft weder
@@ -156,10 +172,15 @@ class PrinterDiscovery {
     this.scanBudget = defaultScanBudget,
     this.scanConcurrency = defaultScanConcurrency,
     this.scanPort = rawPrintPort,
+    this.txtFrist = mdnsTxtFrist,
+    Future<bool> Function()? mitKennung,
+    MDnsClient Function()? mdnsClient,
   }) : _log = log,
        _mdns = mdns,
        _interfaces = interfaces,
-       _tcp = tcp ?? tcpReachable;
+       _tcp = tcp ?? tcpReachable,
+       _mitKennung = mitKennung,
+       _mdnsClient = mdnsClient ?? MDnsClient.new;
 
   final AgentLog? _log;
   final MdnsProbe? _mdns;
@@ -180,6 +201,16 @@ class PrinterDiscovery {
 
   /// Port, den der Netzscan abklopft (im Betrieb immer [rawPrintPort]).
   final int scanPort;
+
+  /// Frist der TXT-Abfrage je Dienst ([mdnsTxtFrist]).
+  final Duration txtFrist;
+
+  /// Ob die Suche TXT-Einträge (Modell, Seriennummer) abfragt – aus mit
+  /// `printer_identity`; `null`: immer.
+  final Future<bool> Function()? _mitKennung;
+
+  /// Baut den mDNS-Klienten (Tests ersetzen ihn).
+  final MDnsClient Function() _mdnsClient;
 
   /// Sucht Drucker; [scan] schaltet den Netzscan zu (dauert spürbar länger).
   ///
@@ -243,14 +274,20 @@ class PrinterDiscovery {
   /// eingeschlossen: genau dort bleibt die Suche hängen, wenn ein VPN oder
   /// eine Firewall Multicast verbietet.
   Future<List<DiscoveredPrinter>> _lookupMdns(Duration timeout) async {
-    final client = MDnsClient();
+    final client = _mdnsClient();
     final found = <DiscoveredPrinter>[];
     final clock = Stopwatch()..start();
     try {
+      final txt = await _txtErlaubt();
       await client.start().timeout(timeout);
       final left = timeout - clock.elapsed;
       if (left > Duration.zero) {
-        await _collectMdns(client, found, left).timeout(left, onTimeout: () {});
+        await _collectMdns(
+          client,
+          found,
+          left,
+          txt: txt,
+        ).timeout(left, onTimeout: () {});
       }
     } on Object catch (e) {
       _log?.warn('mDNS nicht verfügbar: $e');
@@ -264,11 +301,20 @@ class PrinterDiscovery {
     return found;
   }
 
+  Future<bool> _txtErlaubt() async {
+    try {
+      return await (_mitKennung?.call() ?? Future<bool>.value(true));
+    } on Object {
+      return false;
+    }
+  }
+
   Future<void> _collectMdns(
     MDnsClient client,
     List<DiscoveredPrinter> found,
-    Duration timeout,
-  ) async {
+    Duration timeout, {
+    required bool txt,
+  }) async {
     for (final service in printerServices) {
       await for (final ptr in client.lookup<PtrResourceRecord>(
         ResourceRecordQuery.serverPointer(service),
@@ -278,17 +324,42 @@ class PrinterDiscovery {
           ResourceRecordQuery.service(ptr.domainName),
           timeout: timeout,
         )) {
+          final kennung = txt
+              ? await _kennungOf(
+                  client,
+                  ptr.domainName,
+                  timeout < txtFrist ? timeout : txtFrist,
+                )
+              : ErkannteKennung.keine;
           found.add(
             DiscoveredPrinter(
               host: await _addressOf(client, srv.target, timeout),
               port: srv.port,
               kind: kindForService(service),
               name: serviceLabel(ptr.domainName, service),
+              model: kennung.model,
+              serial: kennung.serial,
             ),
           );
         }
       }
     }
+  }
+
+  /// Modell und Seriennummer aus den TXT-Einträgen des Dienstes; ohne
+  /// Antwort keine.
+  Future<ErkannteKennung> _kennungOf(
+    MDnsClient client,
+    String domainName,
+    Duration timeout,
+  ) async {
+    await for (final txt in client.lookup<TxtResourceRecord>(
+      ResourceRecordQuery.text(domainName),
+      timeout: timeout,
+    )) {
+      return kennungAusTxt(txt.text);
+    }
+    return ErkannteKennung.keine;
   }
 
   /// Löst den Hostnamen auf; ohne Antwort bleibt der Name stehen.

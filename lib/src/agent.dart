@@ -7,25 +7,47 @@ import 'package:shelf/shelf.dart';
 import 'package:shelf/shelf_io.dart' as shelf_io;
 
 import 'api/context.dart';
+import 'api/faehigkeiten.dart';
 import 'api/routes_bluetooth.dart';
+import 'api/routes_diagnosis.dart';
 import 'api/routes_events.dart';
 import 'api/routes_printers.dart';
+import 'api/routes_restart.dart';
 import 'api/routes_terminal.dart';
 import 'api/routes_update.dart';
 import 'api/server.dart';
+import 'betrieb/betrieb_lock.dart';
+import 'betrieb/schlafsperre.dart';
+import 'betrieb/vorgaenge.dart';
 import 'bluetooth/bridge.dart';
 import 'bluetooth/helper.dart';
+import 'config/installation.dart';
 import 'config/model.dart';
+import 'config/neuerungen.dart';
 import 'config/store.dart';
 import 'downloads.dart';
 import 'events/bus.dart';
 import 'log/logger.dart';
+import 'net/arp.dart';
 import 'pairing/pairing.dart';
+import 'printers/abfrage.dart';
+import 'printers/bewiesen.dart' as bewiesen;
+import 'printers/bewiesen.dart' show BewiesenesModell;
 import 'printers/discovery.dart';
+import 'printers/erkennung.dart';
+import 'printers/funde.dart';
 import 'printers/queue.dart';
 import 'printers/registry.dart';
+import 'printers/statustakt.dart';
+import 'printers/tcp9100.dart' show SocketConnector;
+import 'printers/vorpruefung.dart';
+import 'printers/wiederfinden.dart';
 import 'process_runner.dart';
+import 'terminal/belegung.dart';
+import 'terminal/discovery.dart';
+import 'terminal/hps.dart';
 import 'terminal/warmhalten.dart';
+import 'terminal/wiederfinden.dart';
 import 'tls/certificates.dart';
 import 'tls/trust.dart';
 import 'update/feed.dart';
@@ -39,6 +61,10 @@ const int portFallbackRange = 8;
 
 /// So lange darf das höfliche Schließen dauern, bevor hart geschlossen wird.
 const Duration gracefulStopTimeout = Duration(seconds: 2);
+
+/// So lange wartet das Anhalten höchstens auf die Hintergrundarbeit
+/// (Statustakt, Suchen, Kennung, Schreibvorgänge, Sperren) – alles zusammen.
+const Duration anhaltenHoechstens = Duration(seconds: 5);
 
 /// Wie oft der Agent die Zertifikate prüft (und bei Bedarf erneuert). Dazu
 /// kommt die Prüfung bei jedem Start; erneuert wird 30 Tage vor Ablauf, ein
@@ -82,7 +108,19 @@ class Agent {
     ProcessRunner? runProcess,
     ProcessStarter? startProcess,
     LocalCertificates? certificates,
+    String? betriebssystem,
+    InterfaceProbe? schnittstellen,
+    Future<void> Function()? neustart,
+    SocketConnector? geraeteVerbindung,
+    TcpProbe? geraeteProbe,
+    List<BewiesenesModell> bewieseneModelle = bewiesen.bewieseneModelle,
   }) : _clock = clock ?? DateTime.now,
+       _bewieseneModelle = bewieseneModelle,
+       _neustart = neustart,
+       _geraeteProbe = geraeteProbe ?? tcpReachable,
+       _betriebssystem = betriebssystem ?? Platform.operatingSystem,
+       _schnittstellen = schnittstellen ?? listLocalIpv4Interfaces,
+       _geraeteVerbindung = geraeteVerbindung ?? Socket.connect,
        _pairing = pairing,
        _extraRoutes = extraRoutes,
        _openBrowser = openBrowser,
@@ -134,6 +172,26 @@ class Agent {
   final PrintQueue? _queue;
   final PrinterDiscovery? _discovery;
 
+  /// Beendet den Prozess für einen Neustart durch den Autostart; `null`, wo
+  /// der Autostart das nicht kann (dann kein `POST /v1/restart`).
+  final Future<void> Function()? _neustart;
+
+  /// Betriebssystem für `arp` und die Schlafsperre (Tests setzen es fest).
+  final String _betriebssystem;
+
+  /// Eigene Schnittstellen: daran entscheidet sich, ob eine MAC aus der
+  /// ARP-Tabelle zählt (nur im selben Netz).
+  final InterfaceProbe _schnittstellen;
+
+  /// Verbindungsaufbau zu Druckern für Abfragen (Tests ersetzen ihn).
+  final SocketConnector _geraeteVerbindung;
+
+  /// „Antwortet dort ein Port?“ fürs Wiederfinden (Tests ersetzen es).
+  final TcpProbe _geraeteProbe;
+
+  /// Die im Gerätetest bewiesenen Druckermodelle (Tests geben eigene vor).
+  final List<BewiesenesModell> _bewieseneModelle;
+
   /// Zugang zum Bluetooth-Hilfsprogramm; ohne ihn der dieses Rechners
   /// ([platformBluetoothHelper]). [stop] beendet ihn – auch einen
   /// hereingereichten: ein Hilfsprogramm ohne Agenten hielte nur Geräte fest.
@@ -167,6 +225,13 @@ class Agent {
 
   AgentContext? _context;
   TerminalWarmhalter? _warmhalter;
+  DruckerStatusDienst? _status;
+  Kennungspflege? _kennung;
+  DruckerWiederfinder? _wiederfinder;
+  TerminalWiederfinder? _terminalSuche;
+  BetriebsLock? _betriebsLock;
+  LaufendeVorgaenge? _vorgaenge;
+  Schlafsperre? _schlafsperre;
   PrinterRegistry? _printers;
   BluetoothBridge? _bluetooth;
   List<RouteRegistrar> _routes = const <RouteRegistrar>[];
@@ -188,6 +253,15 @@ class Agent {
   /// Ereignisbus des laufenden Agenten (erst nach [start] gültig).
   EventBus get events => context.events;
 
+  /// Statusdienst der Drucker (erst nach [start] gültig).
+  DruckerStatusDienst get druckerStatus {
+    final status = _status;
+    if (status == null) {
+      throw StateError('Der Agent läuft nicht — zuerst start() aufrufen.');
+    }
+    return status;
+  }
+
   /// Port, auf dem der Agent tatsächlich lauscht (erst nach [start] gültig).
   int get port => _server?.port ?? 0;
 
@@ -208,15 +282,121 @@ class Agent {
   Future<void> start() async {
     if (_server != null) return;
 
+    // Vor allem anderen: die Kasse fragt die Kennung schon im ersten Status.
+    // Wirft nie – ohne speicherbare Kennung gilt eine für diesen Lauf.
+    final installationId = await sichereInstallationId(store, log: log);
+
     // Der Druckstapel gehört zum Agenten: Registry, Warteschlange und Suche
     // hängen alle am selben Ereignisbus, den A4 an `/v1/events` weiterreicht.
     final bus = _events ?? EventBus();
     _ownsEvents = _events == null;
+
+    // Laufende Vorgänge (Druck, Zahlung) – einmal für den ganzen Agenten.
+    final betriebsLock = BetriebsLock(store: store, log: log, clock: _clock);
+    final schlafsperre = Schlafsperre(
+      store: store,
+      betriebssystem: _betriebssystem,
+      start: _startProcess,
+      log: log,
+      clock: _clock,
+    );
+    final vorgaenge = LaufendeVorgaenge(
+      clock: _clock,
+      beobachter: <BetriebsBeobachter>[betriebsLock, schlafsperre],
+    );
+    _vorgaenge = vorgaenge;
+    _schlafsperre = schlafsperre;
+    _betriebsLock = betriebsLock;
+    // Eine Datei aus einem abgestürzten Lauf: hier läuft noch nichts.
+    betriebsLock.frei();
+    // Eine Belegung der Terminals für alle Kassen und Tabs; solange sie
+    // steht, sucht Connect nicht im Netz.
+    final belegung = TerminalBelegung(clock: _clock);
     final registry =
-        _registry ?? PrinterRegistry(store: store, log: log, events: bus);
+        _registry ??
+        PrinterRegistry(
+          store: store,
+          log: log,
+          events: bus,
+          verbinden: _geraeteVerbindung,
+          bewieseneModelle: _bewieseneModelle,
+        );
     final queue =
-        _queue ?? PrintQueue(registry: registry, events: bus, log: log);
+        _queue ??
+        PrintQueue(registry: registry, events: bus, log: log, clock: _clock);
     _printers = registry;
+
+    // Kennung der Drucker (ab 1.5.0): Funde der Suche, GS I, ARP.
+    final arp = ArpTabelle(
+      start: _startProcess,
+      betriebssystem: _betriebssystem,
+      log: log,
+      clock: _clock,
+    );
+    final abfrage = EscPosAbfrage(verbinden: _geraeteVerbindung);
+    final funde = FundGedaechtnis(clock: _clock);
+    final kennung = Kennungspflege(
+      store: store,
+      queue: queue,
+      lagen: registry.lagen,
+      log: log,
+      clock: _clock,
+      erkennung: DruckerErkennung(
+        abfrage: abfrage,
+        arp: arp,
+        schnittstellen: _schnittstellen,
+        funde: funde,
+        clock: _clock,
+      ),
+    );
+    final status = DruckerStatusDienst(
+      registry: registry,
+      queue: queue,
+      abfrage: abfrage,
+      kasseZuletzt: () => _context?.kasseZuletzt,
+      arp: arp,
+      schnittstellen: _schnittstellen,
+      log: log,
+      clock: _clock,
+    );
+    _status = status;
+    final discovery =
+        _discovery ??
+        PrinterDiscovery(
+          log: log,
+          mitKennung: () async =>
+              (await store.load()).aktiv(Neuerung.druckerKennung),
+        );
+    final wiederfinder = DruckerWiederfinder(
+      registry: registry,
+      arp: arp,
+      abfrage: abfrage,
+      schnittstellen: _schnittstellen,
+      queue: queue,
+      events: bus,
+      tcp: _geraeteProbe,
+      zahlungLaeuft: () => belegung.irgendeins,
+      log: log,
+      clock: _clock,
+    );
+    status
+      ..beiDauerndVerfehlt = wiederfinder.gruendlichImHintergrund
+      ..erkennen = kennung.aufZuruf;
+    kennung.wiederfinder = wiederfinder;
+    _kennung = kennung;
+    _wiederfinder = wiederfinder;
+    queue
+      ..vorgaenge = vorgaenge
+      ..wiederfinder = wiederfinder
+      ..vorpruefung = (DruckVorpruefung(
+        registry: registry,
+        abfrage: abfrage,
+        arp: arp,
+        schnittstellen: _schnittstellen,
+        log: log,
+        clock: _clock,
+        schnellesWiederfinden: wiederfinder.schnell,
+      )..beiDauerhaftemKonflikt = kennung.ersetzen);
 
     // Die Brücke steht ab hier, Bluetooth selbst startet erst mit dem ersten
     // Gerätezugriff bzw. der ersten Suche: der Start des Agenten (Anmeldung,
@@ -270,20 +450,77 @@ class Agent {
         cacheDir: Directory(p.join(store.paths.directory.path, 'updates')),
         platformKey: platformKey,
         clock: _clock,
+        beschaeftigt: () async =>
+            vorgaenge.laufen &&
+            (await store.load()).aktiv(Neuerung.betriebSperre),
+        warteBisFrei: (hoechstens) => vorgaenge.leer(hoechstens: hoechstens),
       );
       ctx.updater = updater;
       unawaited(updater.cleanup());
     }
     _context = ctx;
-    _warmhalter = TerminalWarmhalter(store: store, log: log);
-    _warmhalter!.startAus(await store.load());
+    // Terminal: Wachhalter mit TID, Suche nach drei Fehlberührungen.
+    final warmhalter = TerminalWarmhalter(
+      store: store,
+      log: log,
+      belegung: belegung,
+      clock: _clock,
+      macLesen: (host) => macImSelbenNetz(host, arp, _schnittstellen),
+    );
+    final hps = HpsBridge(log: log);
+    final terminalSuche = TerminalWiederfinder(
+      store: store,
+      bridge: hps,
+      belegung: belegung,
+      warmhalter: warmhalter,
+      events: bus,
+      log: log,
+      clock: _clock,
+      suche: () => discoverTerminals(
+        bridge: hps,
+        log: log,
+        interfaces: _schnittstellen,
+        belegung: belegung,
+      ),
+      kasseZuletzt: () => _context?.kasseZuletzt,
+    );
+    warmhalter
+      ..beiDauerndUnerreichbar = terminalSuche.imHintergrund
+      ..beiWiederErreichbar = terminalSuche.wiederErreichbar;
+    _terminalSuche = terminalSuche;
+    ctx
+      ..installationId = installationId
+      ..terminalZustand = warmhalter.statusFeld
+      ..vorgaenge = vorgaenge
+      ..neustart = _neustart
+      ..faehigkeiten.addAll(<Faehigkeit>{
+        Faehigkeit.identitaet,
+        Faehigkeit.druckerStatus,
+        Faehigkeit.wiederfinden,
+        Faehigkeit.betriebSperre,
+        Faehigkeit.diagnose,
+        if (_neustart != null) Faehigkeit.neustart,
+      });
+    _warmhalter = warmhalter..startAus(await store.load());
     _routes = <RouteRegistrar>[
       eventRoutes(),
-      terminalRoutes(warmhalter: _warmhalter),
+      terminalRoutes(
+        bridge: hps,
+        warmhalter: warmhalter,
+        belegung: belegung,
+        wiederfinder: terminalSuche,
+        vorgaenge: vorgaenge,
+      ),
+      restartRoutes(),
+      diagnosisRoutes(),
       printerRoutes(
         registry: registry,
         queue: queue,
-        discovery: _discovery ?? PrinterDiscovery(log: log),
+        kennung: kennung,
+        funde: funde,
+        status: status,
+        wiederfinder: wiederfinder,
+        discovery: discovery,
       ),
       bluetoothRoutes(bridge: bluetooth),
       updateRoutes(),
@@ -303,6 +540,8 @@ class Agent {
     log.info(
       '$agentName $agentVersion lauscht auf http://127.0.0.1:${server.port}',
     );
+
+    _status?.start();
 
     final config = await store.load();
     if (config.port != server.port) {
@@ -326,16 +565,53 @@ class Agent {
     }
   }
 
+  /// Wartet auf [arbeit], höchstens [anhaltenHoechstens]; was dann noch
+  /// läuft, bleibt zurück (Logzeile).
+  Future<void> _hoechstens(List<Future<void>> arbeit) async {
+    try {
+      await Future.wait(arbeit).timeout(anhaltenHoechstens);
+    } on TimeoutException {
+      log.warn(
+        'Anhalten: Hintergrundarbeit nach ${anhaltenHoechstens.inSeconds} s '
+        'nicht fertig – Connect hält trotzdem an.',
+      );
+    } on Object catch (e) {
+      log.warn('Anhalten: $e');
+    }
+  }
+
   /// Hält den Server an: erst höflich (laufende Anfragen dürfen zu Ende
   /// gehen), nach [gracefulStopTimeout] mit Nachdruck.
   Future<void> stop() async {
     _warmhalter?.stop();
+    _vorgaenge?.stop();
+    _vorgaenge = null;
     _tlsTimer?.cancel();
     _tlsTimer = null;
-    // Eine laufende Zertifikatsprüfung zu Ende gehen lassen: sie bände sonst
-    // womöglich einen HTTPS-Zugang neu, nachdem hier alles zu ist.
-    final pendingCheck = _tlsCheck;
-    if (pendingCheck != null) await pendingCheck;
+    // Kein caffeinate über das Ende des Agenten hinaus.
+    _schlafsperre?.frei();
+    // Hintergrundarbeit zu Ende bringen: nach dem Anhalten schreibt nichts
+    // mehr in die config.json. Eine laufende Zertifikatsprüfung bände sonst
+    // womöglich einen HTTPS-Zugang neu, nachdem hier alles zu ist. Alles
+    // zusammen höchstens [anhaltenHoechstens]: ein Neustart oder Update
+    // wartet nie ewig auf eine hängende Suche.
+    await _hoechstens(<Future<void>>[
+      if (_status case final status?) status.stop(),
+      if (_wiederfinder case final suche?) suche.beenden(),
+      if (_terminalSuche case final suche?) suche.beenden(),
+      if (_kennung case final kennung?) kennung.erledigt(),
+      if (_warmhalter case final warmhalter?) warmhalter.erledigt,
+      if (_printers case final drucker?) drucker.hintergrundErledigt(),
+      if (_schlafsperre case final sperre?) sperre.erledigt,
+      if (_betriebsLock case final lock?) lock.erledigt,
+      if (_tlsCheck case final pruefung?) pruefung,
+    ]);
+    _status = null;
+    _wiederfinder = null;
+    _terminalSuche = null;
+    _kennung = null;
+    _schlafsperre = null;
+    _betriebsLock = null;
 
     final server = _server;
     final httpsServer = _httpsServer;

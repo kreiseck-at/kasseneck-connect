@@ -5,6 +5,136 @@ Alle nennenswerten Änderungen an Kasseneck Connect. Die Versionsnummer folgt
 `lib/src/version.dart` und wird über `GET /v1/status` sowie im Update-Feed
 gemeldet.
 
+## 1.5.0 — 2026-11-13
+
+Grundsatz: nie schlechter als 1.4.2 – „es darf nicht kaputt gehen“ geht vor
+Abdeckung. Jede Neuerung lässt sich in der `config.json` einzeln abschalten
+(`disabledFeatures`), abgeschaltet verhält sich Connect dort wie 1.4.2. Neue
+Felder, Routen und Codes sind additiv; die Kasse entscheidet an `features`.
+
+- **Nur bewiesene Modelle:** Papier und Deckel, `printer_not_ready`, die
+  Kennungsprüfung vor dem Bon, das Warten auf das Ende der Druckverbindung und
+  der Statustakt laufen nur für Drucker, deren
+  über `GS I 67` gelesenes Modell im Gerätetest bewiesen ist
+  (`bewieseneModelle`). Jeder andere Drucker druckt exakt wie bis 1.4.2.
+- **Gerätetest Epson TM-T20III** (10. und 11.11.2026, Firmware 20.05,
+  Netzwerk) – damit das erste bewiesene Modell: `DLE EOT 2/4` antworten
+  sofort; Deckel offen oder Rolle heraus: Verbindung angenommen, keine Antwort
+  am Stück; nach dem Schließen antwortet er nach rund 3 s wieder; nach einem
+  Bon von 8 KB schweigt er rund 0,5 s und antwortet nach 1,0 s, auch während
+  er noch druckt.
+- **Gerätetest zwei Connect an einem TM-T20III** (12.11.2026, Firmware
+  20.05): der Drucker bedient nur eine Verbindung zugleich und schweigt auf
+  weitere, solange er die eine bedient. Mit dem Vorabstand von 1.5.0 hielt jeder Connect
+  das Schweigen des anderen für „Deckel offen“, beide blieben nach dem
+  Schließen 90 s und länger `not_ready`, ein Bon wurde mit
+  `printer_not_ready` abgelehnt, während der andere Connect druckte, und Bons
+  eines Connect kamen in falscher Reihenfolge (A2 vor A1). Daraus folgen die
+  drei nächsten Punkte.
+- **Schweigen ist nur ein Hinweis:** Schweigen hält nie einen Bon auf – weder
+  aus dem Takt noch aus der Prüfung vor dem Bon; er geht wie bis 1.4.2 hinaus.
+  `printer_not_ready` und `readiness: not_ready` nur noch aus einer Antwort
+  des Druckers (Papierende, Deckel offen). Bleiben bei einem Drucker mit
+  `statusCapableAt` zwei Abfragen in Folge ohne Antwort: `readiness: unknown`
+  und neu `readinessHint: "no_status_answer"`; eine einzelne ändert nichts
+  (kein Flackern), jede gültige Antwort beendet den Hinweis.
+- **Abfragen kurz und selten:** keine Nachfragen mehr nach Schweigen (bisher
+  alle 5 s); jede Abfrage eine Verbindung (bisher zwei), Antwortfenster 1 s
+  bei einem Drucker mit `statusCapableAt`, sonst 250 ms; Takt 60 s plus
+  zufällig bis 15 s; der Takt fragt nicht, wenn ein eigener Bon vor ihm in
+  der Warteschlange stand. `GET /v1/printers` öffnet zu einem bewiesenen
+  Modell, mit dem Connect in den letzten 10 s erfolgreich verbunden war, keine
+  Verbindung. Gerätetest 12.11.2026 abends (zwei Connect, Kasse ruft die
+  Liste jede Sekunde ab): der TM-T20III bedient eine neue Verbindung erst rund
+  0,5 s nach dem Ende der vorigen – mit 250 ms und einer Probe je Abruf zeigte
+  ein Connect den Hinweis fast dauernd, obwohl der Drucker bereit war.
+- **Reihenfolge je Drucker** (`print_order`): bei einem bewiesenen Modell geht
+  der nächste Bon (oder eine Abfrage) erst an den Drucker, wenn dieser die
+  vorige Druckverbindung beendet hat, höchstens 3 s; `ok` kommt wie bis 1.4.2
+  sofort. Beendet ein Drucker die Verbindung nie selbst, entfällt das Warten.
+- **Nachprüfung zwei Connect an einem TM-T20III** (13.11.2026): 10 Bons
+  abwechselnd von beiden, je 0,1–0,8 s bis `ok`, auf dem Papier genau in
+  dieser Reihenfolge. Deckel offen: die Bons beider angenommen (rund 1,1 s),
+  `readinessHint: "no_status_answer"` statt `not_ready`; nach dem Schließen in
+  Reihenfolge gedruckt, der Hinweis verschwand von selbst. 10 min Leerlauf, die
+  Liste alle 15 s abgerufen: kein falscher Hinweis. Das kurze leere Stück nach
+  dem Schließen des Deckels schneidet der Drucker selbst ab, auch ohne Bon.
+- **Gerätetest Hobex-Testterminal** (12.11.2026, HPS 1.14.4, Testsystem):
+  Terminal unter neuer Adresse über die TID gefunden; ein Aufruf an die alte
+  Adresse ging nach 10 s ohne Verbindung genau einmal an die bestätigte neue
+  (`endpoint.relocated: true`), auch mit führender Null in der TID; während
+  einer Zahlung `terminal_busy` für jeden zweiten Aufruf, Status frei;
+  `betrieb-abwarten` wartet und `caffeinate -w` hält den Mac nur während der
+  Zahlung wach; Abbruch vor dem Karteneinlesen und Aufhebung einer Zahlung
+  über Connect wie beschrieben.
+- **Installationskennung:** `installationId` (UUID v4) in `GET /v1/status`,
+  auch ohne Token; zusätzlich in `installation-id`, damit ein Zurückstufen sie
+  nicht verliert. Der Start scheitert nie an ihr.
+- **Gerätekennung der Drucker** aus mDNS-TXT (Frist 0,5 s), `GS I 67/68` und
+  ARP – beim Anlegen, nach einer Druckersuche und auf Zuruf, nie wegen eines
+  Bons. Nach einem `GS I` ohne gültige Antwort folgt keines mehr; ein Gerät,
+  das `DLE EOT`, aber nicht `GS I 67` beantwortet (volle Frist, kein eigener
+  Bon druckt), bekommt frühestens 6 h später ein zweites und danach keins mehr
+  (`idQueryMissedAt`, `idQueryUnansweredAt`; erst eine andere Adresse oder Art
+  setzt beides zurück). Nur eine andere
+  Seriennummer beweist einen anderen Drucker; der Druck
+  wird dadurch nie blockiert. Steht dort dauerhaft ein anderer und ist der alte
+  nirgends zu finden, übernimmt Connect die neue Kennung (`relocations` mit
+  `kind: replaced`). `POST /v1/printers/discover` nennt je Fund `model` und
+  `serial`.
+- **Papier und Deckel** vor jedem Bon (`DLE EOT 2/4`): `paper_out` und
+  `cover_open` statt eines stillen „gedruckt“, kein Byte gesendet; „fast
+  leer“ druckt. Schweigen siehe „Schweigen ist nur ein Hinweis“. Vor einem
+  Bon fragt Connect nicht, solange der eigene vorige noch druckt (Bons direkt
+  hintereinander ohne Zuschlag). Statustakt bei offener Kasse,
+  `POST /v1/printers/{id}/status`, Felder `paper`, `cover`, `readiness`,
+  `readinessHint`, `statusAt`.
+- **Langsame Freigabe:** lehnt ein Drucker die Druckverbindung direkt nach der
+  eigenen ab, versucht Connect dieselbe Adresse bis zu 3 s lang erneut und
+  prüft danach nicht mehr vor seinen Bons. Das gilt auch auf dem Weg wie bis
+  1.4.2 nach einer eigenen Abfrage-Verbindung (Erkennung nach dem Anlegen oder
+  einer Suche, Statusabfrage, Suche): der Testdruck direkt nach dem Anlegen
+  geht so wie in 1.4.2.
+- **Mehrere Kassen an einem Drucker:** fragt ein anderer Rechner einen
+  bewiesenen Drucker gerade ab und lehnt er deshalb ab, gilt er nach eigenem
+  Kontakt in den letzten 10 s als belegt (Wiederholung bis 3 s, ohne „gibt
+  langsam frei“); nach einer abgelehnten Druckverbindung folgt der zweite
+  Versuch nach 0,6 s – nie weniger Druckversuche als bis 1.4.2.
+- **Wiederfinden:** Drucker unter neuer Adresse nur mit derselben über
+  `GS I 68` gelesenen Seriennummer (die MAC ist nur ein Hinweis), nie unter der
+  Adresse eines anderen eingerichteten Druckers; die gründliche Suche schickt
+  Bytes nur an Geräte mit derselben Herstellerkennung (OUI) wie die gemerkte
+  MAC und sucht ohne gemerkte MAC gar nicht – andere Geräte im Netz bekommen
+  wie bis 1.4.2 kein Byte. Terminal per TID; Terminal-Aufrufe ohne Verbindung laufen genau einmal an der
+  bestätigten Adresse derselben TID (Geld bei älterer Bestätigung erst nach
+  einer Diagnose dort). `endpoint` in Terminal-Antworten, `locate` für Drucker
+  und Terminal, `device_not_found`. Ein ausgeschalteter Drucker kostet nie
+  länger als bis 1.4.2. Die Terminal-Suche im Hintergrund läuft nur bei
+  offener Kasse, im Abstand 5, 15, dann 60 min.
+- **TID ohne führende Nullen:** Connect schickt die TID so, wie das Terminal
+  sie annimmt (`012345678` → `12345678`; HPS 1.14.4 lehnt die Form mit Null
+  ab). Meldet ein Terminal darauf „Invalid TID“, geht derselbe Aufruf genau
+  einmal in der Form der Kasse hinaus (wie 1.4.2). Die gemerkte Adresse des
+  Terminals überschreibt kein älterer Speichervorgang, und die Suche
+  übernimmt nichts, wenn inzwischen ein anderes Terminal gemerkt ist. Die Seriennummer des Terminals (`sn`) wird zusätzlich gemerkt.
+- **terminal_busy:** ein zweiter langer Terminal-Aufruf, Diagnose, Test oder
+  Suche während einer Zahlung bekommt sofort `terminal_busy` (mit
+  `terminalHttpStatus: 409`); eine Suche, die eine Zahlung unterbricht, meldet
+  `incomplete: true`.
+- **Sperren bei laufenden Vorgängen:** `update_device_busy`, Warten vor dem
+  Installer (Phase `waiting`), `betrieb.lock` samt Warten im postinstall,
+  `POST /v1/restart` mit `restart_busy`, Schlafsperre nur während Druck und
+  Zahlung. Jede Sperre läuft nach spätestens 6 min ab; überlappende Vorgänge
+  frischen sie auf. Ein Fehler beim Schreiben von `betrieb.lock` bleibt beim
+  einen Schritt (Logzeile), der nächste Vorgang schreibt wieder.
+- **Diagnose:** `GET /v1/diagnosis` nach Positivliste, Kopplungscodes
+  geschwärzt; `doctor` nennt abgeschaltete Neuerungen.
+- **Log:** 5 MB je Datei, 50 MB insgesamt; `launchd.*.log` beim Start gekürzt.
+  Zwei Prozesse, die zugleich rotieren, überschreiben einander keinen Teil.
+- **Terminal-Aufrufe** haben eine Frist für Verbindung, Kopf und Rumpf
+  zusammen.
+- **Konfiguration:** Felder einer neueren Fassung überleben das Speichern.
+
 ## 1.4.2 — 2026-11-09
 
 - **Terminal: „nichts gesendet“ ist jetzt erkennbar.** Kommt keine Verbindung

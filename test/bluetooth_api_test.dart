@@ -844,16 +844,23 @@ void main() {
       expect(fake.starts, 0);
 
       final status = await _send(agent.port, 'GET', '/v1/status');
-      expect(status.json['features'], ['bluetooth', 'update']);
+      // Ab 1.5.0 kommen Fähigkeiten dazu (Spec 1.9, nur additiv); die aus
+      // 1.4.2 bleiben vorn und in derselben Reihenfolge.
+      expect((status.json['features']! as List<Object?>).take(2), [
+        'bluetooth',
+        'update',
+      ]);
       final bluetooth = status.json['bluetooth']! as Map<String, Object?>;
       expect(bluetooth['state'], 'unknown');
       expect(
-        (await _send(
-          agent.port,
-          'GET',
-          '/v1/status',
-          withToken: false,
-        )).json['features'],
+        ((await _send(
+                  agent.port,
+                  'GET',
+                  '/v1/status',
+                  withToken: false,
+                )).json['features']!
+                as List<Object?>)
+            .take(2),
         ['bluetooth', 'update'],
       );
       expect((await _send(agent.port, 'GET', '/v1/bluetooth')).ok, isTrue);
@@ -909,7 +916,12 @@ void main() {
 
         final status = await _send(agent.port, 'GET', '/v1/status');
         expect(status.ok, isTrue, reason: status.body);
-        expect(status.json['features'], ['bluetooth', 'update']);
+        // Ab 1.5.0 kommen Fähigkeiten dazu (Spec 1.9, nur additiv); die aus
+        // 1.4.2 bleiben vorn und in derselben Reihenfolge.
+        expect((status.json['features']! as List<Object?>).take(2), [
+          'bluetooth',
+          'update',
+        ]);
         final bluetooth = status.json['bluetooth']! as Map<String, Object?>;
         expect(bluetooth['state'], helperStateRestarting);
         final geraet = (bluetooth['devices']! as List).single as Map;

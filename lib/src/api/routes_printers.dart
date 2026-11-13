@@ -1,11 +1,17 @@
+import 'dart:async';
+
 import 'package:shelf/shelf.dart';
 import 'package:shelf_router/shelf_router.dart';
 
 import '../config/model.dart';
 import '../printers/discovery.dart';
 import '../printers/driver.dart';
+import '../printers/erkennung.dart';
+import '../printers/funde.dart';
 import '../printers/queue.dart';
 import '../printers/registry.dart';
+import '../printers/statustakt.dart';
+import '../printers/wiederfinden.dart';
 import 'context.dart';
 import 'responses.dart';
 import 'routes_print.dart';
@@ -32,6 +38,10 @@ RouteRegistrar printerRoutes({
   required PrinterRegistry registry,
   required PrintQueue queue,
   PrinterDiscovery? discovery,
+  Kennungspflege? kennung,
+  FundGedaechtnis? funde,
+  DruckerStatusDienst? status,
+  DruckerWiederfinder? wiederfinder,
 }) {
   return (Router router, AgentContext ctx) {
     final search = discovery ?? PrinterDiscovery(log: ctx.log);
@@ -40,12 +50,17 @@ RouteRegistrar printerRoutes({
       ..get('/v1/printers', (Request r) => handleListPrinters(registry, r))
       ..post(
         '/v1/printers/discover',
-        (Request r) => handleDiscoverPrinters(search, r),
+        (Request r) =>
+            handleDiscoverPrinters(search, r, funde: funde, kennung: kennung),
       )
-      ..put('/v1/printers', (Request r) => handlePutPrinter(registry, r, null))
+      ..put(
+        '/v1/printers',
+        (Request r) => handlePutPrinter(registry, r, null, kennung: kennung),
+      )
       ..put(
         '/v1/printers/<id>',
-        (Request r, String id) => handlePutPrinter(registry, r, id),
+        (Request r, String id) =>
+            handlePutPrinter(registry, r, id, kennung: kennung),
       )
       ..delete(
         '/v1/printers/<id>',
@@ -56,6 +71,18 @@ RouteRegistrar printerRoutes({
         (Request r, String id) => handleTestPrint(queue, r, id),
       )
       ..post('/v1/print', (Request r) => handlePrint(queue, r));
+    if (status != null) {
+      router.post(
+        '/v1/printers/<id>/status',
+        (Request r, String id) => handlePrinterStatus(status, id),
+      );
+    }
+    if (wiederfinder != null) {
+      router.post(
+        '/v1/printers/<id>/locate',
+        (Request r, String id) => handleLocatePrinter(wiederfinder, id),
+      );
+    }
   };
 }
 
@@ -84,8 +111,9 @@ Future<Response> handleListPrinters(
 Future<Response> handlePutPrinter(
   PrinterRegistry registry,
   Request request,
-  String? id,
-) async {
+  String? id, {
+  Kennungspflege? kennung,
+}) async {
   final wanted = (id == null || id.isEmpty || id == newPrinterPathId) ? '' : id;
   if (wanted.isNotEmpty && !_printerId.hasMatch(wanted)) {
     return failJson(errorBadRequest, 'Die Drucker-ID ist unbrauchbar.');
@@ -101,9 +129,13 @@ Future<Response> handlePutPrinter(
   }
 
   final saved = await registry.upsert(parsed.printer!);
+  // Die Kennung ermittelt Connect selbst (mDNS, GS I, ARP) und im Hintergrund:
+  // die Antwort soll nicht auf den Drucker warten. Nie vor einem Bon – fehlt
+  // sie, holen sie die nächste Druckersuche oder eine Statusabfrage nach.
+  if (!saved.hatKennung) unawaited(kennung?.nachAnlegen(saved.id));
   return okJson(<String, Object?>{
     'printer': <String, Object?>{
-      ...saved.toJson(),
+      ...saved.toApiJson(),
       'state': registry.stateOf(saved.id).wireName,
     },
   });
@@ -126,16 +158,69 @@ Future<Response> handleDeletePrinter(
   return okJson(<String, Object?>{'id': id});
 }
 
+/// `POST /v1/printers/{id}/status` — fragt Papier, Deckel und Erreichbarkeit
+/// sofort ab (über die Warteschlange, nie neben einem Bon) und liefert den
+/// Drucker wie `GET /v1/printers`.
+Future<Response> handlePrinterStatus(
+  DruckerStatusDienst status,
+  String id,
+) async {
+  final drucker = await status.jetzt(id);
+  if (drucker == null) {
+    return failJson(errorPrinterUnknown, 'Diesen Drucker gibt es nicht.');
+  }
+  return okJson(<String, Object?>{'printer': drucker});
+}
+
+/// `POST /v1/printers/{id}/locate` — sucht den Drucker gründlich unter einer
+/// neuen Adresse und übernimmt sie, wenn es genau einen bestätigten Treffer
+/// gibt. Antwort: `{relocated: true, from, to, printer}`; ohne eindeutigen
+/// Treffer `device_not_found`.
+Future<Response> handleLocatePrinter(
+  DruckerWiederfinder wiederfinder,
+  String id,
+) async {
+  final vorher = await wiederfinder.registry.find(id);
+  if (vorher == null) {
+    return failJson(errorPrinterUnknown, 'Diesen Drucker gibt es nicht.');
+  }
+  if (!vorher.hatKennung) {
+    return failJson(
+      errorDeviceNotFound,
+      'Der Drucker hat noch keine Kennung – Connect kann ihn nicht suchen.',
+    );
+  }
+  final neu = await wiederfinder.gruendlich(id, erzwingen: true);
+  if (neu == null || neu.host == vorher.host) {
+    return failJson(
+      errorDeviceNotFound,
+      'Der Drucker ist unter keiner anderen Adresse eindeutig zu finden.',
+    );
+  }
+  return okJson(<String, Object?>{
+    'relocated': true,
+    'from': '${vorher.host}:${vorher.port}',
+    'to': '${neu.host}:${neu.port}',
+    'printer': wiederfinder.registry.zusammenfassung(neu),
+  });
+}
+
 /// `POST /v1/printers/discover` — `{scan?: bool}`.
 Future<Response> handleDiscoverPrinters(
   PrinterDiscovery discovery,
-  Request request,
-) async {
+  Request request, {
+  FundGedaechtnis? funde,
+  Kennungspflege? kennung,
+}) async {
   final body = await readJsonBody(request, allowEmpty: true);
   final error = body.error;
   if (error != null) return error;
 
   final found = await discovery.discover(scan: body.data!['scan'] == true);
+  funde?.merke(found.printers);
+  // Eine Suche ist ein Anlass, die eingerichteten Drucker ohne gelesenes
+  // Modell zu erkennen – im Hintergrund, über ihre Warteschlangen.
+  if (kennung != null) unawaited(kennung.nachSuche());
   // `scanned` sagt der Kasse, wo gesucht wurde („Suche in 192.168.0.0/24 …")
   // — und beim Kunden, warum nichts gefunden wurde: steht dort nur das Netz
   // einer virtuellen Maschine, hängt der Drucker woanders.

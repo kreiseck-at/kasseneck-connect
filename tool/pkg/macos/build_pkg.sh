@@ -169,6 +169,14 @@ if [ -z "$CONSOLE_HOME" ] || [ ! -d "$CONSOLE_HOME" ]; then
   exit 0
 fi
 
+# Läuft im alten Connect gerade ein Druck oder eine Zahlung (betrieb.lock im
+# Datenordner, jünger als 6 min), wartet die Installation höchstens 5 min,
+# bevor `install-autostart` den alten Agenten beendet – sonst risse der
+# Neustart die Zahlung ab. Ein Connect vor 1.5.0 schreibt die Datei nicht;
+# dann geht es ohne Warten weiter. Ein Fehlschlag hält nichts auf.
+/bin/launchctl asuser "$CONSOLE_UID" /usr/bin/sudo -H -u "$CONSOLE_USER" \
+  /usr/bin/env HOME="$CONSOLE_HOME" "$BINARY" betrieb-abwarten || true
+
 # `install-autostart` schreibt den LaunchAgent auf die Binary im Paket und
 # lädt ihn; `RunAtLoad` startet den Agenten dabei gleich mit. Beim Update von
 # 1.2.x ersetzt das den alten Eintrag und beendet den alten Agenten.

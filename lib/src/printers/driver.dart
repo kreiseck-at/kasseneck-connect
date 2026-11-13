@@ -13,6 +13,20 @@ const String errorPrintTimeout = 'timeout';
 /// leer oder Deckel offen).
 const String errorPrintRefused = 'refused';
 
+/// Papierende vor dem Druck: kein Byte ging hinaus (ab 1.5.0,
+/// `printer_status`).
+const String errorPaperOut = 'paper_out';
+
+/// Deckel offen vor dem Druck: kein Byte ging hinaus (ab 1.5.0,
+/// `printer_status`).
+const String errorCoverOpen = 'cover_open';
+
+/// Der Drucker meldet selbst, dass er nicht bereit ist (Antwort auf
+/// `DLE EOT`). Kein Byte ging hinaus (ab 1.5.0). Schweigen ergibt ihn nie:
+/// ein Drucker, der schweigt, bedient womöglich gerade einen anderen Rechner
+/// (Gerätetest 12.11.2026) – dann wird gedruckt wie bis 1.4.2.
+const String errorPrinterNotReady = 'printer_not_ready';
+
 /// Derselbe `jobId` läuft noch.
 const String errorPrintInProgress = 'print_in_progress';
 
@@ -64,6 +78,28 @@ abstract class PrinterDriver {
   Future<void> abort();
 }
 
+/// Ein Treiber, der nach dem Druck abwarten kann, bis das Gerät die
+/// Verbindung seinerseits beendet hat.
+///
+/// Warum: `print` gilt wie bis 1.4.2 als erledigt, sobald die Bytes dem
+/// Betriebssystem übergeben und die Verbindung geschlossen ist. Hält gerade
+/// ein anderer Rechner einen Drucker, der nur eine Verbindung zugleich
+/// bedient, liegt der Bon dann noch ungelesen in der Leitung – und welche
+/// wartende Verbindung das Gerät danach zuerst bedient, sichert niemand zu
+/// (Gerätetest 12.11.2026: A2 vor A1). Erst wenn das Gerät seine Seite
+/// schließt, hat es den Bon ganz gelesen.
+abstract interface class EndeAbwartbar {
+  /// Ab dem nächsten [PrinterDriver.print]: nach dem Schließen höchstens so
+  /// lange auf das Ende beim Gerät warten. [Duration.zero]: nicht warten,
+  /// Verbindung sofort weg (wie bis 1.4.2).
+  set endeFrist(Duration frist);
+
+  /// Ende des letzten gelungenen Drucks: `true`, sobald das Gerät die
+  /// Verbindung beendet hat, `false`, wenn die Frist ablief (dann ist sie
+  /// trotzdem zu). Ohne Frist sofort `true`. Wirft nie.
+  Future<bool> get ende;
+}
+
 /// Fehlgeschlagener Druckversuch mit Fachcode und deutschem Klartext.
 class PrinterFailure implements Exception {
   const PrinterFailure(
@@ -71,6 +107,7 @@ class PrinterFailure implements Exception {
     this.message, {
     this.detail,
     this.mayHavePrinted = false,
+    this.abgelehnt = false,
   });
 
   /// Einer der Codes [errorPrinterOffline], [errorPrintTimeout],
@@ -88,6 +125,11 @@ class PrinterFailure implements Exception {
   /// Der Treiber setzt das, sobald er Bytes abgeschickt hat: ab da weiß
   /// niemand mehr, ob der Bon aus dem Gerät gelaufen ist.
   final bool mayHavePrinted;
+
+  /// Ob das Gerät die Verbindung abgelehnt hat: es ist da, nimmt gerade aber
+  /// nicht an (etwa weil ein anderer Rechner es eben abfragt) – im
+  /// Unterschied zu Zeitablauf oder fehlender Route.
+  final bool abgelehnt;
 
   /// Ob ein zweiter Versuch Sinn ergibt.
   ///

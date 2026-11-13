@@ -18,7 +18,7 @@ typedef SocketConnector =
 /// entgegengenommen hat. Deshalb gilt der Auftrag als erledigt, sobald die
 /// Bytes vollständig hinausgeschrieben und die Verbindung sauber geschlossen
 /// ist.
-class Tcp9100Printer implements PrinterDriver {
+class Tcp9100Printer implements PrinterDriver, EndeAbwartbar {
   Tcp9100Printer(
     this.host,
     this.port, {
@@ -44,26 +44,54 @@ class Tcp9100Printer implements PrinterDriver {
   Socket? _current;
 
   @override
+  Duration endeFrist = Duration.zero;
+
+  Future<bool> _ende = Future<bool>.value(true);
+
+  @override
+  Future<bool> get ende => _ende;
+
+  @override
   Future<void> print(
     Uint8List bytes, {
     Duration timeout = defaultPrintTimeout,
   }) async {
     final watch = Stopwatch()..start();
+    final frist = endeFrist;
+    _ende = Future<bool>.value(true);
     final socket = await _connect(timeout);
     _current = socket;
 
     // Der Drucker schickt auf 9100 nichts; gelesen wird trotzdem, damit ein
     // Fehler auf der Verbindung nicht als unbehandelt im Zone-Handler landet.
-    final drain = socket.listen((_) {}, onError: (Object _) {});
+    // Ende oder Fehler heißt: das Gerät hat seine Seite geschlossen.
+    final beendet = Completer<bool>();
+    void zu() {
+      if (!beendet.isCompleted) beendet.complete(true);
+    }
+
+    final drain = socket.listen(
+      (_) {},
+      onError: (Object _) => zu(),
+      onDone: zu,
+    );
 
     // Ab dem ersten `add` weiß niemand mehr, wie viel der Drucker schon
     // gesehen hat — ein zweiter Versuch könnte einen zweiten Bon bedeuten.
     var sent = false;
+    var halten = false;
     try {
       socket.add(bytes);
       sent = true;
       await socket.flush().timeout(_remaining(timeout, watch));
       await socket.close().timeout(_remaining(timeout, watch));
+      // Erledigt wie bis 1.4.2. Auf Wunsch bleibt die (nur noch lesende)
+      // Verbindung stehen, bis das Gerät sie beendet – höchstens [frist].
+      if (frist > Duration.zero) {
+        halten = true;
+        _current = null;
+        _ende = _endeAbwarten(socket, drain, beendet.future, frist);
+      }
     } on TimeoutException {
       throw PrinterFailure(
         errorPrintTimeout,
@@ -83,9 +111,29 @@ class Tcp9100Printer implements PrinterDriver {
         mayHavePrinted: sent,
       );
     } finally {
+      if (!halten) {
+        unawaited(drain.cancel());
+        socket.destroy();
+        _current = null;
+      }
+    }
+  }
+
+  /// Wartet höchstens [frist] auf das Ende beim Gerät und wirft die
+  /// Verbindung danach in jedem Fall weg. Wirft nie.
+  static Future<bool> _endeAbwarten(
+    Socket socket,
+    StreamSubscription<List<int>> drain,
+    Future<bool> beendet,
+    Duration frist,
+  ) async {
+    try {
+      return await beendet.timeout(frist, onTimeout: () => false);
+    } on Object {
+      return true;
+    } finally {
       unawaited(drain.cancel());
       socket.destroy();
-      _current = null;
     }
   }
 
@@ -130,6 +178,7 @@ class Tcp9100Printer implements PrinterDriver {
           betriebssystem: betriebssystem,
         ),
         detail: socketGrund(e),
+        abgelehnt: verbindungAbgelehnt(e),
       );
     }
   }

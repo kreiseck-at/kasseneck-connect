@@ -220,6 +220,20 @@ void main() {
   // außen nicht provozieren: `HttpServer.close()` kehrt auch bei einer offenen,
   // unbeantworteten Anfrage sofort zurück. Getestet ist deshalb, dass `stop()`
   // in diesem Fall nicht hängen bleibt — die Zeitgrenze bleibt Sicherheitsnetz.
+  test('stop bleibt bei hängender Hintergrundarbeit nicht stehen', () async {
+    final agent = makeAgent();
+    await agent.start();
+    // Ein Schreibvorgang, der nie fertig wird (etwa eine gesperrte Datei):
+    // ohne Höchstwartezeit hinge stop() – und mit ihm Neustart und Update.
+    final nie = Completer<void>();
+    addTearDown(() {
+      if (!nie.isCompleted) nie.complete();
+    });
+    agent.printers.imHintergrund('Probe', () => nie.future);
+    await agent.stop();
+    expect(log.file.readAsStringSync(), contains('Connect hält trotzdem an'));
+  });
+
   test('stop bleibt bei einer hängenden Anfrage nicht stehen', () async {
     final hanging = Completer<void>();
     addTearDown(() {

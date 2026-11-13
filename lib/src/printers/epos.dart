@@ -23,6 +23,14 @@ const Duration defaultEposRequestTimeout = Duration(seconds: 12);
 const String eposNamespace =
     'http://www.epson-pos.com/schemas/2011/03/epos-print';
 
+/// Verbindungsaufbau eines `HttpClient` (`connectionFactory`).
+typedef HttpVerbinder =
+    Future<ConnectionTask<Socket>> Function(
+      Uri uri,
+      String? proxyHost,
+      int? proxyPort,
+    );
+
 /// Epson ePOS-Print über HTTP(S).
 ///
 /// Die ESC/POS-Bytes reisen base64-kodiert im `<command>`-Element — dieselben
@@ -38,7 +46,7 @@ class EposPrinter implements PrinterDriver {
     this.connectTimeout = defaultConnectTimeout,
     this.requestTimeout = defaultEposRequestTimeout,
     String? betriebssystem,
-    Future<ConnectionTask<Socket>> Function(Uri, String?, int?)? verbinden,
+    HttpVerbinder? verbinden,
   }) : betriebssystem = betriebssystem ?? Platform.operatingSystem,
        _verbinden = verbinden;
 
@@ -62,7 +70,7 @@ class EposPrinter implements PrinterDriver {
   final String betriebssystem;
 
   /// Nur für Tests: ersetzt den Verbindungsaufbau des `HttpClient`.
-  final Future<ConnectionTask<Socket>> Function(Uri, String?, int?)? _verbinden;
+  final HttpVerbinder? _verbinden;
 
   /// Klient des laufenden Versuchs — nur damit [abort] ihn wegwerfen kann.
   HttpClient? _current;
@@ -120,6 +128,19 @@ class EposPrinter implements PrinterDriver {
           : PrinterState.offline;
     } on PrinterFailure {
       return PrinterState.offline;
+    }
+  }
+
+  /// Die Statusbits des Geräts über einen leeren Auftrag (wie [status]);
+  /// `null`, wenn keine verwertbare Antwort kam. Wirft nie.
+  Future<EposResult?> statusbits({
+    Duration timeout = defaultPrintTimeout,
+  }) async {
+    try {
+      final response = await _post(_statusEnvelope(), timeout);
+      return response.status == 200 ? parseEposResponse(response.body) : null;
+    } on PrinterFailure {
+      return null;
     }
   }
 

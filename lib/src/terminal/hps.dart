@@ -115,8 +115,10 @@ class HpsBridge {
     this.verbindungTimeout = hpsVerbindungTimeout,
     String? betriebssystem,
     Future<ConnectionTask<Socket>> Function(Uri, String?, int?)? verbinden,
+    DateTime Function()? clock,
   }) : betriebssystem = betriebssystem ?? Platform.operatingSystem,
-       _verbinden = verbinden;
+       _verbinden = verbinden,
+       _clock = clock ?? DateTime.now;
 
   final AgentLog log;
 
@@ -138,6 +140,9 @@ class HpsBridge {
   /// Nur für Tests: ersetzt den Verbindungsaufbau des `HttpClient`
   /// (`HttpClient.connectionFactory`), etwa durch einen, der nie fertig wird.
   final Future<ConnectionTask<Socket>> Function(Uri, String?, int?)? _verbinden;
+
+  /// Uhr der Gesamtfrist je Aufruf (Tests geben eine eigene vor).
+  final DateTime Function() _clock;
 
   /// Kurzer Aufruf mit EINEM Weckversuch: ein Terminal im WLAN-Stromsparmodus
   /// verschlaeft gern die erste Anfrage (sie weckt nur das Funkmodul) und
@@ -176,12 +181,22 @@ class HpsBridge {
 
   /// `GET /api/terminals/{tid}/diagnosis` — Diagnose ohne Zahlung; das
   /// Terminal prüft dabei auch die Verbindung zum Autorisierungs-Host.
+  ///
+  /// [frist] ersetzt die Frist der kurzen Aufrufe (Diagnose vor einer
+  /// umgeleiteten Zahlung: kurz, damit sie nie lange aufhält).
   Future<Object?> diagnosis({
     required String host,
     required int port,
     required String tid,
+    Duration? frist,
   }) {
-    return _call('GET', host, port, '/api/terminals/$tid/diagnosis');
+    return _call(
+      'GET',
+      host,
+      port,
+      '/api/terminals/$tid/diagnosis',
+      timeout: frist,
+    );
   }
 
   /// `POST /api/transaction/payment` — Verkauf. Blockiert bis zum Ende des
@@ -254,7 +269,7 @@ class HpsBridge {
   /// [originalTransactionId] verweist auf die erstattete Zahlung. Auf eine
   /// unbekannte Original-Kennung antwortet das Terminal `9002` "Invalid
   /// Transaction": kein Kartenfluss, keine Auszahlung (gemessen 27.08.2026,
-  /// TID 3600335, HPS 1.10.0, FW 7.3.6, Antwort nach 1,2 s).
+  /// Testterminal, HPS 1.10.0, FW 7.3.6, Antwort nach 1,2 s).
   Future<Object?> refund({
     required String host,
     required int port,
@@ -295,7 +310,7 @@ class HpsBridge {
   /// einen JSON-Rumpf schicken.
   ///
   /// [amountCents] ist PFLICHT: ein Void ohne Betrag weist das Terminal mit
-  /// `400 Missing amount` ab (gemessen 27.08.2026, TID 3600335, HPS 1.10.0,
+  /// `400 Missing amount` ab (gemessen 27.08.2026, Testterminal, HPS 1.10.0,
   /// FW 7.3.6). Einen falschen Betrag prueft es dabei NICHT gegen das
   /// Original — ein Void mit abweichendem Betrag wurde ebenso mit `0`
   /// beantwortet. Ein zweiter Void auf eine bereits aufgehobene Zahlung ist
@@ -333,7 +348,16 @@ class HpsBridge {
     Map<String, String>? query,
     Duration? timeout,
   }) async {
+    // Eine Frist für den ganzen Aufruf – Aufbau, Kopf und Rumpf zusammen.
+    // Je Abschnitt eine eigene hieße bei der Zahlung bis zu zweimal vier
+    // Minuten, und die Belegung des Terminals liefe vorher ab.
     final zeitlimit = timeout ?? kurzTimeout;
+    final beginn = _clock();
+    Duration rest() {
+      final r = zeitlimit - _clock().difference(beginn);
+      return r.isNegative ? Duration.zero : r;
+    }
+
     final aufbauLimit = verbindungTimeout < zeitlimit
         ? verbindungTimeout
         : zeitlimit;
@@ -365,11 +389,11 @@ class HpsBridge {
         request.contentLength = bytes.length;
         request.add(bytes);
       }
-      final response = await request.close().timeout(zeitlimit);
+      final response = await request.close().timeout(rest());
       final text = await response
           .transform(utf8.decoder)
           .join()
-          .timeout(zeitlimit);
+          .timeout(rest());
 
       Object? daten;
       try {

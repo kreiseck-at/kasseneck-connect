@@ -5,7 +5,7 @@ Alle nennenswerten Änderungen an Kasseneck Connect. Die Versionsnummer folgt
 `lib/src/version.dart` und wird über `GET /v1/status` sowie im Update-Feed
 gemeldet.
 
-## Unveröffentlicht
+## 1.5.0 — 2026-11-13
 
 Grundsatz: nie schlechter als 1.4.2 – „es darf nicht kaputt gehen“ geht vor
 Abdeckung. Jede Neuerung lässt sich in der `config.json` einzeln abschalten
@@ -25,7 +25,7 @@ Felder, Routen und Codes sind additiv; die Kasse entscheidet an `features`.
   er noch druckt.
 - **Gerätetest zwei Connect an einem TM-T20III** (12.11.2026, Firmware
   20.05): der Drucker bedient nur eine Verbindung zugleich und schweigt auf
-  weitere, solange er die eine bedient. Mit 1.5.0 bisher hielt jeder Connect
+  weitere, solange er die eine bedient. Mit dem Vorabstand von 1.5.0 hielt jeder Connect
   das Schweigen des anderen für „Deckel offen“, beide blieben nach dem
   Schließen 90 s und länger `not_ready`, ein Bon wurde mit
   `printer_not_ready` abgelehnt, während der andere Connect druckte, und Bons
@@ -52,6 +52,13 @@ Felder, Routen und Codes sind additiv; die Kasse entscheidet an `features`.
   der nächste Bon (oder eine Abfrage) erst an den Drucker, wenn dieser die
   vorige Druckverbindung beendet hat, höchstens 3 s; `ok` kommt wie bis 1.4.2
   sofort. Beendet ein Drucker die Verbindung nie selbst, entfällt das Warten.
+- **Nachprüfung zwei Connect an einem TM-T20III** (13.11.2026): 10 Bons
+  abwechselnd von beiden, je 0,1–0,8 s bis `ok`, auf dem Papier genau in
+  dieser Reihenfolge. Deckel offen: die Bons beider angenommen (rund 1,1 s),
+  `readinessHint: "no_status_answer"` statt `not_ready`; nach dem Schließen in
+  Reihenfolge gedruckt, der Hinweis verschwand von selbst. 10 min Leerlauf, die
+  Liste alle 15 s abgerufen: kein falscher Hinweis. Das kurze leere Stück nach
+  dem Schließen des Deckels schneidet der Drucker selbst ab, auch ohne Bon.
 - **Gerätetest Hobex-Testterminal** (12.11.2026, HPS 1.14.4, Testsystem):
   Terminal unter neuer Adresse über die TID gefunden; ein Aufruf an die alte
   Adresse ging nach 10 s ohne Verbindung genau einmal an die bestätigte neue
